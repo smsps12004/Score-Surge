@@ -1,0 +1,7 @@
+streamlit
+pandas
+fpdf2
+anthropic
+pymupdf
+pillow
+pytesseract
