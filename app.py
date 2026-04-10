@@ -676,7 +676,9 @@ if "tutor_history" in st.session_state and len(st.session_state.tutor_history) >
                     st.markdown(answer)
                 except Exception as e:
                     st.error("Error: " + str(e))
-
+# SCORE HISTORY TRACKER
+if "score_history" not in st.session_state:
+    st.session_state.score_history = []
 
 # CYCLE COUNTDOWN
 import datetime
@@ -774,6 +776,20 @@ Grade each answer. State correct or incorrect. Explain the right answer. Referen
                     grade_result = message.content[0].text
                     st.subheader("📊 Your Grade")
                     st.markdown(grade_result)
+                    import re as re2
+                    score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
+                    if score_match:
+                        scored = int(score_match.group(1))
+                        total = int(score_match.group(2))
+                        if "score_history" not in st.session_state:
+                            st.session_state.score_history = []
+                        st.session_state.score_history.append({
+                            "date": datetime.date.today().strftime("%b %d"),
+                            "topic": pq_topic,
+                            "score": scored,
+                            "total": total,
+                            "pct": round((scored/total)*100)
+                        })
                     st.download_button(
                         "📥 Download Practice Results",
                         data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
@@ -782,4 +798,213 @@ Grade each answer. State correct or incorrect. Explain the right answer. Referen
                         use_container_width=True
                     )
                 except Exception as e:
+                    st.error("Error: " + str(e))# SCORE HISTORY CHART
+if "score_history" in st.session_state and len(st.session_state.score_history) > 0:
+    st.divider()
+    st.subheader("📈 Your Score History")
+    st.caption("Track your improvement over time.")
+    history_df = pd.DataFrame(st.session_state.score_history)
+    st.line_chart(history_df.set_index("date")["pct"])
+    st.dataframe(history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
+        "date": "Date", "topic": "Topic", "score": "Score", "total": "Total", "pct": "% Correct"
+    }), use_container_width=True)# PS RATE EXPERT — ASK THE CHIEF
+st.divider()
+st.subheader("👨‍✈️ Ask the Chief")
+st.caption("Got a work question? Ask the Chief. He knows every PS instruction and has no patience for wrong answers.")
+
+expert_api_key = st.text_input("Claude API Key", type="password", key="expert_key", placeholder="sk-ant-...")
+work_question = st.text_area(
+    "What's your question?",
+    placeholder="e.g. A sailor wants to know if they can take leave during a PCS move. What are the rules?",
+    height=100
+)
+
+if st.button("Ask the Chief", use_container_width=True):
+    if not expert_api_key:
+        st.error("Enter your Claude API key.")
+    elif not work_question:
+        st.error("Type your question first.")
+    else:
+        expert_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
+You know every Navy instruction relevant to the PS rating inside and out including:
+- MILPERSMAN (all 1000, 1050, 1070, 1160, 1300, 1306, 1320, 1600, 1740, 1770, 1800, 1830, 1910 series)
+- BUPERSINST 1430.16G (Advancement Manual)
+- BUPERSINST 1900.8F (DD214 / Separations)
+- BUPERSINST 1750.10E (ID Cards / DEERS)
+- JTR (Joint Travel Regulations)
+- DOD 7000.14-R Volumes 5, 7A, 9 (Pay and Travel)
+- OPNAVINST 1160.8B (SRB)
+- RESPERS M-1001.5 (Reserve Personnel)
+- SECNAVINST 1650.1J (Awards)
+- NAVSUP P-727 (Navy Cash)
+- Navy DJMS Procedures Training Guide
+- NAVADMIN 008/26 (Cycle 271)
+
+A PS sailor at the front office just asked you this question:
+{work_question}
+
+Answer like you are talking directly to that sailor face to face.
+Be direct and clear.
+Give the correct answer first, then explain why.
+Cite the exact instruction, article, or chapter that governs this.
+If there are exceptions or edge cases, mention them.
+No fluff. No wasted words.
+If you are not certain, say so and tell them where to verify."""
+
+        with st.spinner("Chief is looking that up..."):
+            try:
+                client = anthropic.Anthropic(api_key=expert_api_key)
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": expert_prompt}]
+                )
+                answer = message.content[0].text
+                st.subheader("Chief says:")
+                st.markdown(answer)
+                st.download_button(
+                    "📥 Save This Answer",
+                    data=f"QUESTION:\n{work_question}\n\nCHIEF'S ANSWER:\n{answer}",
+                    file_name="ChiefAnswer.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error("Error: " + str(e))# PS HOT TOPICS
+st.divider()
+st.subheader("🔥 PS Hot Topics")
+st.caption("Stay current. The Chief keeps you informed on everything happening in the PS world.")
+
+hot_api_key = st.text_input("Claude API Key", type="password", key="hot_key", placeholder="sk-ant-...")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("📰 Get Daily PS Briefing", use_container_width=True):
+        if not hot_api_key:
+            st.error("Enter your Claude API key.")
+        else:
+            briefing_prompt = """You are a senior PS Chief Petty Officer giving a morning briefing to your PS shop.
+
+Cover the following in your briefing:
+1. NWAE Cycle 271 status and what sailors should be doing RIGHT NOW
+2. Any recent NAVADMIN messages relevant to PS rating (advancement, pay, personnel policy)
+3. Current MNCC policy updates affecting PS work
+4. Upcoming deadlines PS sailors need to know about
+5. Any changes to governing instructions (MILPERSMAN, BUPERSINST, JTR, etc.)
+6. One piece of advice for PS sailors this week
+
+Format it like a real morning briefing — direct, organized, no fluff.
+If something is time-sensitive, flag it clearly.
+Cite specific NAVADMINs or instructions where applicable.
+Keep it under 500 words — sailors are busy."""
+
+            with st.spinner("Chief is preparing the morning briefing..."):
+                try:
+                    client = anthropic.Anthropic(api_key=hot_api_key)
+                    message = client.messages.create(
+                        model="claude-opus-4-5",
+                        max_tokens=1500,
+                        messages=[{"role": "user", "content": briefing_prompt}]
+                    )
+                    briefing = message.content[0].text
+                    st.subheader("📋 Morning Briefing")
+                    st.markdown(briefing)
+                    st.download_button(
+                        "📥 Save Briefing",
+                        data=briefing,
+                        file_name="PS_Morning_Briefing.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                except Exception as e:
                     st.error("Error: " + str(e))
+
+with col2:
+    hot_topics_list = [
+        "Latest NAVADMIN affecting PS rating",
+        "Cycle 271 advancement cutoffs",
+        "MNCC recent policy updates",
+        "Changes to JTR travel policy",
+        "BAH rate updates",
+        "SRB program changes",
+        "ID card / DEERS policy updates",
+        "Separation and retirement processing changes",
+        "Reserve component PS updates",
+        "Officer programs open to PS sailors",
+    ]
+    selected_topic = st.selectbox("Quick Topic Lookup", hot_topics_list, key="hot_topic_select")
+    if st.button("🔍 Brief Me On This", use_container_width=True):
+        if not hot_api_key:
+            st.error("Enter your Claude API key.")
+        else:
+            topic_prompt = f"""You are a senior PS Chief Petty Officer.
+A sailor just asked you to brief them on: {selected_topic}
+
+Give them:
+1. Current status — what's the latest on this topic
+2. What it means for PS sailors specifically
+3. Any action items or deadlines
+4. Exact instructions or NAVADMINs that govern this
+5. Common mistakes sailors make on this topic
+
+Be direct. Cite your sources. No fluff."""
+
+            with st.spinner(f"Chief is looking up {selected_topic}..."):
+                try:
+                    client = anthropic.Anthropic(api_key=hot_api_key)
+                    message = client.messages.create(
+                        model="claude-opus-4-5",
+                        max_tokens=1000,
+                        messages=[{"role": "user", "content": topic_prompt}]
+                    )
+                    topic_answer = message.content[0].text
+                    st.subheader(f"📌 {selected_topic}")
+                    st.markdown(topic_answer)
+                except Exception as e:
+                    st.error("Error: " + str(e))
+
+st.divider()
+st.subheader("🔎 Search Any PS Topic")
+st.caption("Type anything — policy, instruction, process, entitlement. The Chief will find it.")
+
+custom_topic = st.text_input("Search topic", placeholder="e.g. posthumous promotion, SDAP eligibility, erroneous enlistment")
+if st.button("Search", use_container_width=True):
+    if not hot_api_key:
+        st.error("Enter your Claude API key.")
+    elif not custom_topic:
+        st.error("Type a topic to search.")
+    else:
+        search_prompt = f"""You are a senior PS Chief Petty Officer.
+A sailor asked you about: {custom_topic}
+
+Give them everything they need to know:
+1. What this is in plain English
+2. The governing instruction(s) with specific articles or chapters
+3. Current policy and any recent changes
+4. How it applies to their day-to-day PS work
+5. Common errors or misconceptions
+6. Where to go for more info (NSIPS, MNCC, MyNavyHR, etc.)
+
+Be the expert. Cite everything. No fluff."""
+
+        with st.spinner("Chief is on it..."):
+            try:
+                client = anthropic.Anthropic(api_key=hot_api_key)
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": search_prompt}]
+                )
+                search_result = message.content[0].text
+                st.subheader(f"📖 {custom_topic}")
+                st.markdown(search_result)
+                st.download_button(
+                    "📥 Save This",
+                    data=f"TOPIC: {custom_topic}\n\n{search_result}",
+                    file_name=f"PS_Topic_{custom_topic[:30].replace(' ','_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error("Error: " + str(e))
