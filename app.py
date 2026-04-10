@@ -31,6 +31,37 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 | 271   | **44.0**           |
 """)
 
+# CYCLE COUNTDOWN
+import datetime
+
+st.subheader("⏱️ Cycle 271 Countdown")
+
+today = datetime.date.today()
+deadlines = [
+    ("PMK-EE Deadline", datetime.date(2026, 1, 31)),
+    ("ILDC Deadline (E6)", datetime.date(2026, 2, 28)),
+    ("E6 Exam Day", datetime.date(2026, 3, 5)),
+    ("E5 Exam Day", datetime.date(2026, 3, 12)),
+]
+
+cols = st.columns(4)
+for i, (label, date) in enumerate(deadlines):
+    days_left = (date - today).days
+    if days_left < 0:
+        status = "✅ Passed"
+        color = "green"
+    elif days_left <= 14:
+        status = f"🔴 {days_left} days"
+        color = "red"
+    elif days_left <= 30:
+        status = f"🟡 {days_left} days"
+        color = "orange"
+    else:
+        status = f"🟢 {days_left} days"
+        color = "green"
+    cols[i].metric(label, status)
+
+st.divider()
 # CONSTANTS
 MIN_FMS = 44.0
 
