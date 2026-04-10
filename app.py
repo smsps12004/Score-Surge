@@ -31,37 +31,6 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 | 271   | **44.0**           |
 """)
 
-# CYCLE COUNTDOWN
-import datetime
-
-st.subheader("⏱️ Cycle 271 Countdown")
-
-today = datetime.date.today()
-deadlines = [
-    ("PMK-EE Deadline", datetime.date(2026, 1, 31)),
-    ("ILDC Deadline (E6)", datetime.date(2026, 2, 28)),
-    ("E6 Exam Day", datetime.date(2026, 3, 5)),
-    ("E5 Exam Day", datetime.date(2026, 3, 12)),
-]
-
-cols = st.columns(4)
-for i, (label, date) in enumerate(deadlines):
-    days_left = (date - today).days
-    if days_left < 0:
-        status = "✅ Passed"
-        color = "green"
-    elif days_left <= 14:
-        status = f"🔴 {days_left} days"
-        color = "red"
-    elif days_left <= 30:
-        status = f"🟡 {days_left} days"
-        color = "orange"
-    else:
-        status = f"🟢 {days_left} days"
-        color = "green"
-    cols[i].metric(label, status)
-
-st.divider()
 # CONSTANTS
 MIN_FMS = 44.0
 
@@ -705,5 +674,112 @@ if "tutor_history" in st.session_state and len(st.session_state.tutor_history) >
                     st.session_state.tutor_history.append({"role": "assistant", "content": answer})
                     st.markdown("**Chief says:**")
                     st.markdown(answer)
+                except Exception as e:
+                    st.error("Error: " + str(e))
+
+
+# CYCLE COUNTDOWN
+import datetime
+
+st.subheader("⏱️ Cycle 271 Countdown")
+
+today = datetime.date.today()
+deadlines = [
+    ("PMK-EE Deadline", datetime.date(2026, 1, 31)),
+    ("ILDC Deadline (E6)", datetime.date(2026, 2, 28)),
+    ("E6 Exam Day", datetime.date(2026, 3, 5)),
+    ("E5 Exam Day", datetime.date(2026, 3, 12)),
+]
+
+cols = st.columns(4)
+for i, (label, date) in enumerate(deadlines):
+    days_left = (date - today).days
+    if days_left < 0:
+        status = "✅ Passed"
+    elif days_left <= 14:
+        status = f"🔴 {days_left} days"
+    elif days_left <= 30:
+        status = f"🟡 {days_left} days"
+    else:
+        status = f"🟢 {days_left} days"
+    cols[i].metric(label, status)
+
+st.divider()
+
+# PRACTICE QUESTION MODE
+st.subheader("🎯 Practice Question Mode")
+st.caption("Answer like the exam is tomorrow. The Chief will grade you and explain every answer.")
+
+with st.form("practice_form"):
+    col1, col2 = st.columns(2)
+    with col1:
+        pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+    with col2:
+        pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
+    pq_api_key = st.text_input("Claude API Key", type="password", key="pq_key", placeholder="sk-ant-...")
+    pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+
+if pq_submit:
+    if not pq_api_key:
+        st.error("Enter your Claude API key.")
+    else:
+        bib_refs = PS_TOPICS[pq_topic]["bib"]
+        pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+Generate exactly {pq_num} multiple choice practice questions for:
+- Topic: {pq_topic}
+- Governing References: {bib_refs}
+Format each question EXACTLY like this:
+Q1: [Question text]
+A) [Option]
+B) [Option]
+C) [Option]
+D) [Option]
+ANSWER: [Letter]
+EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
+Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
+
+        with st.spinner("Chief is writing your exam..."):
+            try:
+                client = anthropic.Anthropic(api_key=pq_api_key)
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": pq_prompt}]
+                )
+                questions_text = message.content[0].text
+                st.session_state.practice_questions = questions_text
+                st.session_state.pq_key_saved = pq_api_key
+            except Exception as e:
+                st.error("Error: " + str(e))
+
+if "practice_questions" in st.session_state:
+    st.subheader("📝 Your Practice Questions")
+    st.markdown(st.session_state.practice_questions)
+    st.subheader("✍️ Submit Your Answers")
+    sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
+    if st.button("Grade My Answers", use_container_width=True):
+        if sailor_answers:
+            with st.spinner("Chief is grading..."):
+                try:
+                    client = anthropic.Anthropic(api_key=st.session_state.pq_key_saved)
+                    grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
+Questions: {st.session_state.practice_questions}
+Sailor's answers: {sailor_answers}
+Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff."""
+                    message = client.messages.create(
+                        model="claude-opus-4-5",
+                        max_tokens=1500,
+                        messages=[{"role": "user", "content": grade_prompt}]
+                    )
+                    grade_result = message.content[0].text
+                    st.subheader("📊 Your Grade")
+                    st.markdown(grade_result)
+                    st.download_button(
+                        "📥 Download Practice Results",
+                        data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
+                        file_name="PracticeResults.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
                 except Exception as e:
                     st.error("Error: " + str(e))
