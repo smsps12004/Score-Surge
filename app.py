@@ -1007,4 +1007,82 @@ Be the expert. Cite everything. No fluff."""
                     use_container_width=True
                 )
             except Exception as e:
+                st.error("Error: " + str(e))# EVAL BULLET GENERATOR
+st.divider()
+st.subheader("📝 Eval Bullet Generator")
+st.caption("Describe what the sailor did. The Chief will write it in proper Navy eval format.")
+
+eval_api_key = st.text_input("Claude API Key", type="password", key="eval_key", placeholder="sk-ant-...")
+
+with st.form("eval_form"):
+    col1, col2 = st.columns(2)
+    with col1:
+        eval_rank = st.selectbox("Sailor's Rank", ["E1","E2","E3","E4","E5","E6","E7","E8","E9"])
+        eval_rate = st.text_input("Rate", placeholder="e.g. PS2, YN1, BM3")
+    with col2:
+        eval_trait = st.selectbox("Eval Trait", [
+            "Professional Knowledge",
+            "Quality of Work",
+            "Command or Organizational Climate/Equal Opportunity",
+            "Military Bearing/Character",
+            "Personal Job Accomplishment/Initiative",
+            "Teamwork",
+            "Leadership",
+            "Collateral Duties",
+        ])
+        eval_impact = st.selectbox("Impact Level", ["Individual", "Division", "Department", "Command", "Fleet/Navy"])
+    
+    achievement = st.text_area(
+        "Describe the achievement or performance (be specific — numbers, results, timeframes)",
+        placeholder="e.g. Processed 47 PCS transfers in 30 days with zero errors during a major deployment surge. Trained 2 junior PS on NSIPS procedures.",
+        height=120
+    )
+    eval_submitted = st.form_submit_button("Generate Eval Bullet", use_container_width=True)
+
+if eval_submitted:
+    if not eval_api_key:
+        st.error("Enter your Claude API key.")
+    elif not achievement:
+        st.error("Describe the achievement first.")
+    else:
+        eval_prompt = f"""You are a senior PS Chief Petty Officer who writes exceptional Navy performance evaluations.
+
+Write a Navy eval bullet for the following:
+- Sailor: {eval_rate} ({eval_rank})
+- Eval Trait: {eval_trait}
+- Impact Level: {eval_impact}
+- Achievement: {achievement}
+
+Rules for Navy eval bullets:
+1. Start with a strong action verb in ALL CAPS
+2. Be specific — include numbers, percentages, timeframes when possible
+3. Show impact at the {eval_impact} level
+4. Use Navy-specific terminology and abbreviations correctly
+5. Keep it to 1-2 sentences maximum
+6. End with the impact on the command/Navy mission
+7. Do NOT use "I" — write in third person
+
+Write 3 versions of the bullet — ranked from good to best.
+Label them VERSION 1, VERSION 2, VERSION 3.
+After the bullets, explain what makes VERSION 3 the strongest."""
+
+        with st.spinner("Chief is writing your eval bullet..."):
+            try:
+                client = anthropic.Anthropic(api_key=eval_api_key)
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": eval_prompt}]
+                )
+                eval_result = message.content[0].text
+                st.subheader("✅ Your Eval Bullets")
+                st.markdown(eval_result)
+                st.download_button(
+                    "📥 Save Eval Bullets",
+                    data=f"RATE: {eval_rate}\nTRAIT: {eval_trait}\nACHIEVEMENT: {achievement}\n\n{eval_result}",
+                    file_name=f"EvalBullet_{eval_rate.replace(' ','_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            except Exception as e:
                 st.error("Error: " + str(e))
