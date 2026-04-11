@@ -1085,4 +1085,66 @@ After the bullets, explain what makes VERSION 3 the strongest."""
                     use_container_width=True
                 )
             except Exception as e:
+                st.error("Error: " + str(e))# LES DECODER
+st.divider()
+st.subheader("💰 LES Decoder")
+st.caption("Paste your LES data and the Chief will explain every line in plain English.")
+
+les_api_key = st.text_input("Claude API Key", type="password", key="les_key", placeholder="sk-ant-...")
+
+les_data = st.text_area(
+    "Paste your LES information here (copy from MyPay)",
+    placeholder="""Paste any part of your LES here. Examples:
+- Your entitlements (BAH, BAS, special pays)
+- Your deductions (SGLI, TSP, taxes)
+- Your leave balance
+- Any codes or amounts you don't understand""",
+    height=200
+)
+
+if st.button("Decode My LES", use_container_width=True):
+    if not les_api_key:
+        st.error("Enter your Claude API key.")
+    elif not les_data:
+        st.error("Paste your LES data first.")
+    else:
+        les_prompt = f"""You are a senior PS Chief Petty Officer and pay expert.
+A sailor just pasted their LES data and needs you to explain it in plain English.
+
+LES DATA:
+{les_data}
+
+Do the following:
+1. Explain each entitlement line — what it is, why they get it, and how it's calculated
+2. Explain each deduction line — what it is and why it's being taken out
+3. Flag anything that looks wrong, unusual, or that they should verify
+4. Explain their leave balance if present
+5. Give them 2-3 action items if anything needs attention
+
+Use plain English — explain it like they've never seen a pay statement before.
+Be specific about the dollar amounts they provided.
+Cite the governing regulation for any pay or deduction (DOD FMR Vol 7A, JTR, etc.)
+If something looks off, tell them straight up and tell them who to contact.
+
+Format your response with clear sections so it's easy to read."""
+
+        with st.spinner("Chief is reviewing your LES..."):
+            try:
+                client = anthropic.Anthropic(api_key=les_api_key)
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": les_prompt}]
+                )
+                les_result = message.content[0].text
+                st.subheader("📋 Your LES Explained")
+                st.markdown(les_result)
+                st.download_button(
+                    "📥 Save LES Explanation",
+                    data=f"LES DATA:\n{les_data}\n\nCHIEF'S EXPLANATION:\n{les_result}",
+                    file_name="LES_Explanation.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            except Exception as e:
                 st.error("Error: " + str(e))
