@@ -431,20 +431,20 @@ with st.form("study_guide_form"):
 
 if sg_submit:
     if sg_gap > 10:
-            strategy = "broad coverage — this sailor needs significant improvement across all areas"
-        elif sg_gap > 5:
-            strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
-        elif sg_gap > 0:
-            strategy = "precision mode — plug specific holes, every point counts"
-        else:
-            strategy = "rank maximization — sailor is eligible but wants to score higher"
+        strategy = "broad coverage — this sailor needs significant improvement across all areas"
+    elif sg_gap > 5:
+        strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
+    elif sg_gap > 0:
+        strategy = "precision mode — plug specific holes, every point counts"
+    else:
+        strategy = "rank maximization — sailor is eligible but wants to score higher"
 
-        if sg_type == "Single Subject Deep Dive" and sg_subject:
-            topic_instruction = f"Focus exclusively on: {sg_subject}"
-        else:
-            topic_instruction = f"Guide type: {sg_type}"
+    if sg_type == "Single Subject Deep Dive" and sg_subject:
+        topic_instruction = f"Focus exclusively on: {sg_subject}"
+    else:
+        topic_instruction = f"Guide type: {sg_type}"
 
-        prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service. 
+    prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
 You know NAVADMIN 008/26 (Cycle 271) inside and out.
@@ -480,26 +480,26 @@ Structure the guide as follows:
 Use plain English. Write like you're talking to the sailor face to face.
 Keep it tight. Every sentence must earn its place."""
 
-        with st.spinner("Chief is reviewing your record..."):
-            try:
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                guide_text = message.content[0].text
-                st.subheader("📋 Your Personalized Study Guide")
-                st.markdown(guide_text)
+    with st.spinner("Chief is reviewing your record..."):
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-5",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            guide_text = message.content[0].text
+            st.subheader("📋 Your Personalized Study Guide")
+            st.markdown(guide_text)
 
-                st.download_button(
-                    "📥 Download Study Guide",
-                    data=guide_text,
-                    file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error("Something went wrong: " + str(e))
+            st.download_button(
+                "📥 Download Study Guide",
+                data=guide_text,
+                file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error("Something went wrong: " + str(e))
 
                 # ── INTERACTIVE AI TUTOR ──────────────────────────────────────────────────────
 st.divider()
@@ -585,7 +585,7 @@ with col2:
 
 if st.button("📖 Start Lesson", use_container_width=True):
     bib_refs = PS_TOPICS[tutor_topic]["bib"]
-        lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
+    lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
 You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
 Explain everything like the sailor is smart but has never seen this material before.
 Be direct, clear, and use real Navy examples.
@@ -605,36 +605,36 @@ Teach this lesson as follows:
 
 Keep it tight. Make it stick."""
 
-        with st.spinner("Chief is preparing your lesson..."):
-            try:
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": lesson_prompt}]
-                )
-                lesson = message.content[0].text
+    with st.spinner("Chief is preparing your lesson..."):
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-5",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": lesson_prompt}]
+            )
+            lesson = message.content[0].text
 
-                st.subheader(f"📚 Lesson: {tutor_subtopic}")
-                st.markdown(lesson)
+            st.subheader(f"📚 Lesson: {tutor_subtopic}")
+            st.markdown(lesson)
 
-                if "tutor_history" not in st.session_state:
-                    st.session_state.tutor_history = []
-                st.session_state.tutor_history = [
-                    {"role": "user", "content": lesson_prompt},
-                    {"role": "assistant", "content": lesson}
-                ]
-                st.session_state.tutor_topic = tutor_topic
-                st.session_state.tutor_subtopic = tutor_subtopic
+            if "tutor_history" not in st.session_state:
+                st.session_state.tutor_history = []
+            st.session_state.tutor_history = [
+                {"role": "user", "content": lesson_prompt},
+                {"role": "assistant", "content": lesson}
+            ]
+            st.session_state.tutor_topic = tutor_topic
+            st.session_state.tutor_subtopic = tutor_subtopic
 
-                st.download_button(
-                    "📥 Download This Lesson",
-                    data=lesson,
-                    file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error("Error: " + str(e))
+            st.download_button(
+                "📥 Download This Lesson",
+                data=lesson,
+                file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error("Error: " + str(e))
 
 # Follow-up Q&A
 if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
@@ -704,7 +704,7 @@ with st.form("practice_form"):
 
 if pq_submit:
     bib_refs = PS_TOPICS[pq_topic]["bib"]
-        pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+    pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
 - Governing References: {bib_refs}
@@ -718,17 +718,17 @@ ANSWER: [Letter]
 EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
 Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
 
-        with st.spinner("Chief is writing your exam..."):
-            try:
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": pq_prompt}]
-                )
-                questions_text = message.content[0].text
-                st.session_state.practice_questions = questions_text
-            except Exception as e:
-                st.error("Error: " + str(e))
+    with st.spinner("Chief is writing your exam..."):
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-5",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": pq_prompt}]
+            )
+            questions_text = message.content[0].text
+            st.session_state.practice_questions = questions_text
+        except Exception as e:
+            st.error("Error: " + str(e))
 
 if "practice_questions" in st.session_state:
     st.subheader("📝 Your Practice Questions")
