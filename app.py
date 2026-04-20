@@ -6,19 +6,11 @@ import os
 from fpdf import FPDF
 import anthropic
 
-# Optional imports
-try:
-    import pytesseract
-    from PIL import Image
-    OCR_IMAGE_AVAILABLE = True
-except ImportError:
-    OCR_IMAGE_AVAILABLE = False
-
 try:
     import fitz
-    OCR_PDF_AVAILABLE = True
+    PDF_AVAILABLE = True
 except ImportError:
-    OCR_PDF_AVAILABLE = False
+    PDF_AVAILABLE = False
 
 # PAGE CONFIG
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -34,40 +26,6 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 # CONSTANTS
 MIN_FMS = 44.0
 
-LABEL_PATTERNS = {  
-    "exam_score": [
-        r"exam\s*standard\s*score",
-        r"standard\s*score",
-        r"exam\s*score",
-        r"written\s*exam",
-    ],
-    "pma": [
-        r"performance\s*mark\s*average",
-        r"\bpma\b",
-        r"eval\s*avg",
-        r"eval\s*average",
-    ],
-    "tir": [
-        r"time\s*in\s*rate",
-        r"\btir\b",
-        r"time-in-rate",
-    ],
-    "awards": [
-        r"awards?\s*points?",
-        r"\bawards?\b",
-    ],
-    "education": [
-        r"education\s*points?",
-        r"\beducation\b",
-        r"\bedu\b",
-    ],
-    "pna": [
-        r"passed\s*not\s*advanced",
-        r"\bpna\b",
-        r"pna\s*points?",
-    ],
-}
-
 DEFAULT_VALUES = {
     "exam_score": 42.0,
     "pma": 4.2,
@@ -77,57 +35,80 @@ DEFAULT_VALUES = {
     "pna": 0.5,
 }
 
-# SMART OCR PARSER
-def extract_number_near_label(text, patterns):
-    text_lower = text.lower()
-    for pattern in patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            after = text[match.end(): match.end() + 80]
-            num_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", after)
-            if num_match:
-                return float(num_match.group(1))
-    return None
+import base64
+
+VISION_PROMPT = (
+    "This is a Navy advancement profile sheet. "
+    "Extract and return ONLY a JSON object with these exact keys: "
+    "exam_score, pma, tir, awards, education, pna. "
+    "exam_score = Exam Standard Score (number, typically between 20 and 80). "
+    "pma = Performance Mark Average (decimal between 1.0 and 5.0). "
+    "tir = Time in Rate in years (decimal, e.g. 2.0 or 3.5). "
+    "awards = Awards points (decimal). "
+    "education = Education points (decimal). "
+    "pna = Passed Not Advanced points (decimal, 0 to 9). "
+    "Use null for any value you cannot clearly read. Return ONLY valid JSON, no other text."
+)
 
 
-def parse_ocr_text(raw_text):
-    results = {}
-    missing = []
-    for field, patterns in LABEL_PATTERNS.items():
-        value = extract_number_near_label(raw_text, patterns)
-        if value is not None:
-            results[field] = value
-        else:
-            results[field] = DEFAULT_VALUES[field]
-            missing.append(field)
-    return results, missing
+def extract_fields_from_upload(uploaded_file):
+    """
+    Extract FMS fields from a profile sheet using Claude vision.
+    PDFs are rendered to images via PyMuPDF. Image files are sent directly.
+    Returns (fields_dict, method_label).
+    """
+    import json
+    suffix = os.path.splitext(uploaded_file.name)[1].lower()
+    file_bytes = uploaded_file.read()
+    images_b64 = []  # list of (b64_data, media_type)
 
-
-def extract_text_from_upload(uploaded_file):
-    raw_text = ""
-    suffix = os.path.splitext(uploaded_file.name)[1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
-
-    try:
-        if uploaded_file.type == "application/pdf":
-            if not OCR_PDF_AVAILABLE:
-                st.error("PyMuPDF not installed. Run: python3 -m pip install pymupdf")
-                return ""
+    if suffix == ".pdf":
+        if not PDF_AVAILABLE:
+            st.error("PyMuPDF not installed. Run: pip install pymupdf — or enter values manually.")
+            return {}, "error"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
             doc = fitz.open(tmp_path)
             for page in doc:
-                raw_text += page.get_text()
-        else:
-            if not OCR_IMAGE_AVAILABLE:
-                st.error("pytesseract or Pillow not installed.")
-                return ""
-            image = Image.open(tmp_path)
-            raw_text = pytesseract.image_to_string(image)
-    finally:
-        os.unlink(tmp_path)
+                pix = page.get_pixmap(dpi=200)
+                images_b64.append((
+                    base64.standard_b64encode(pix.tobytes("png")).decode(),
+                    "image/png",
+                ))
+        finally:
+            os.unlink(tmp_path)
+        method = "claude-vision-pdf"
+    else:
+        media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+        media_type = media_types.get(suffix, "image/jpeg")
+        images_b64.append((base64.standard_b64encode(file_bytes).decode(), media_type))
+        method = "claude-vision-image"
 
-    return raw_text
+    if not images_b64:
+        return {}, "error"
+
+    content = []
+    for b64_data, media_type in images_b64:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+        })
+    content.append({"type": "text", "text": VISION_PROMPT})
+
+    try:
+        cl = anthropic.Anthropic()
+        msg = cl.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=256,
+            messages=[{"role": "user", "content": content}]
+        )
+        fields = json.loads(msg.content[0].text.strip())
+        return fields, method
+    except Exception as e:
+        st.error(f"Claude vision extraction failed: {e}")
+        return {}, "error"
 
 
 # OCR UPLOAD SECTION
@@ -141,22 +122,35 @@ uploaded_file = st.file_uploader(
 extracted_data = DEFAULT_VALUES.copy()
 
 if uploaded_file is not None:
-    with st.spinner("Reading your document..."):
-        raw_text = extract_text_from_upload(uploaded_file)
+    with st.spinner("Reading your profile sheet with Claude vision..."):
+        claude_fields, read_method = extract_fields_from_upload(uploaded_file)
 
-    if raw_text.strip():
-        extracted_data, missing_fields = parse_ocr_text(raw_text)
-        if not missing_fields:
-            st.success("✅ All fields extracted! Review and edit below if needed.")
-        else:
+    if claude_fields:
+        for field in DEFAULT_VALUES:
+            val = claude_fields.get(field)
+            if val is not None:
+                try:
+                    extracted_data[field] = float(val)
+                except (TypeError, ValueError):
+                    pass
+
+        missing_fields = [f for f in DEFAULT_VALUES if extracted_data[f] == DEFAULT_VALUES[f]]
+
+        method_labels = {
+            "claude-vision-pdf":   "✅ Profile sheet read via Claude vision (PDF)",
+            "claude-vision-image": "✅ Profile sheet read via Claude vision (image)",
+        }
+        st.success(
+            method_labels.get(read_method, "✅ Document read successfully") +
+            (" — all fields found!" if not missing_fields else "")
+        )
+        if missing_fields:
             st.warning(
                 "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
                 "Default values used — please fill them in manually."
             )
-        with st.expander("🔍 Show raw OCR text (for debugging)"):
-            st.text(raw_text[:2000])
     else:
-        st.error("Could not extract text. Try a clearer image or enter values manually.")
+        st.error("Could not read the document. Try a clearer image or enter values manually.")
 
 
 # INPUT FORM
