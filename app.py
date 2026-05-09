@@ -394,7 +394,7 @@ with st.form("fms_form"):
             min_value=0.0, max_value=9.0,
             value=min(9.0, max(0.0, float(extracted_data["pna"]))),
             step=0.5,
-            help="Top 25% in SS and PMA earn PNA points each cycle they pass but aren't advanced. Cap is 9.",
+            help="Top 25% in both SS and PMA each cycle you pass but aren't advanced earns PNA points: 1.5 pts/cycle for E5, 1 pt/cycle for E6. Cap is 9.",
         )
 
     st.markdown("---")
@@ -540,6 +540,15 @@ if submitted:
         })
 
     if pna == 0:
+        # PNA accrues at different rates per paygrade per BUPERSINST 1430.16G:
+        #   E5 = 1.5 pts/cycle (max 9 over 6 cycles)
+        #   E6 = 1.0 pt/cycle  (max 9 over 9 cycles)
+        if paygrade == "E6":
+            pna_rate_text = "1 point per cycle (capped at 9)"
+            pna_math_text = "9 cycles in the top 25% maxes you out at 9 points."
+        else:
+            pna_rate_text = "1.5 points per cycle (capped at 9)"
+            pna_math_text = "6 cycles in the top 25% maxes you out at 9 points."
         guide_items.append({
             "area": "PNA Points",
             "priority": "INFO",
@@ -547,9 +556,10 @@ if submitted:
             "target": "Accumulates automatically",
             "gain": "up to 9",
             "actions": [
-                "PNA points are awarded each cycle you pass but are not advanced.",
-                "Keep taking and passing the exam every cycle.",
-                "Max is 3 cycles x 3 pts = 9 points.",
+                f"PNA points are awarded each cycle you finish in the top 25% of your rate (in both SS and PMA) but aren't advanced.",
+                f"For {paygrade} sailors that's {pna_rate_text}.",
+                pna_math_text,
+                "Keep taking and passing the exam every cycle — the points carry forward.",
             ],
         })
 
