@@ -4,6 +4,7 @@ import re
 import json
 import tempfile
 import os
+import base64
 import datetime
 from fpdf import FPDF
 import anthropic
@@ -14,10 +15,28 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 
-client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-
-# PAGE CONFIG
+# PAGE CONFIG must come before any other Streamlit call.
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
+
+# API KEY GUARD — show a friendly message instead of a Python stack trace
+# if the secret is missing or rotated. Without the key the app can't function,
+# so we stop here cleanly.
+try:
+    _api_key = st.secrets["ANTHROPIC_API_KEY"]
+except (KeyError, FileNotFoundError):
+    _api_key = None
+
+if not _api_key:
+    st.title("⚓ Score Surge | by Strategic Sailor")
+    st.error(
+        "⚠️ **Score Surge is temporarily unavailable.** "
+        "The AI service connection is missing. The site owner has been notified — "
+        "please check back in a few minutes."
+    )
+    st.caption("(Admin: set ANTHROPIC_API_KEY in Streamlit Cloud secrets to restore service.)")
+    st.stop()
+
+client = anthropic.Anthropic(api_key=_api_key)
 
 # CONSTANTS — FMS formula per BUPERSINST 1430.16G (E4-E6 FMS Chart)
 # E5: FMS = SS + (PMA*80 - 256) + SIPG/5 (cap 2) + Awards (cap 10) + Education (0/2/4) + PNA (cap 9). Max 169.
@@ -26,12 +45,130 @@ MAX_FMS = {"E5": 169.0, "E6": 222.0}
 AWARDS_MAX = {"E5": 10.0, "E6": 12.0}
 SIPG_POINTS_MAX = {"E5": 2.0, "E6": 3.0}
 
+# NAVY RATES — active-duty enlisted ratings. PS has a hand-curated topic library;
+# all others use freeform topic mode where the sailor types what they want to study.
+# Format: (rate_code, full_name) so the dropdown shows "PS — Personnel Specialist".
+NAVY_RATES = [
+    ("AB",  "Aviation Boatswain's Mate"),
+    ("ABE", "Aviation Boatswain's Mate (Equipment)"),
+    ("ABF", "Aviation Boatswain's Mate (Fuels)"),
+    ("ABH", "Aviation Boatswain's Mate (Handling)"),
+    ("AC",  "Air Traffic Controller"),
+    ("AD",  "Aviation Machinist's Mate"),
+    ("AE",  "Aviation Electrician's Mate"),
+    ("AG",  "Aerographer's Mate"),
+    ("AM",  "Aviation Structural Mechanic"),
+    ("AME", "Aviation Structural Mechanic (Safety Equipment)"),
+    ("AO",  "Aviation Ordnanceman"),
+    ("AS",  "Aviation Support Equipment Technician"),
+    ("AT",  "Aviation Electronics Technician"),
+    ("AWF", "Naval Aircrewman Mechanical"),
+    ("AWO", "Naval Aircrewman Operator"),
+    ("AWR", "Naval Aircrewman Tactical-Helicopter"),
+    ("AWS", "Naval Aircrewman Helicopter"),
+    ("AWV", "Naval Aircrewman Avionics"),
+    ("AZ",  "Aviation Maintenance Administrationman"),
+    ("BM",  "Boatswain's Mate"),
+    ("BU",  "Builder"),
+    ("CE",  "Construction Electrician"),
+    ("CM",  "Construction Mechanic"),
+    ("CS",  "Culinary Specialist"),
+    ("CSS", "Culinary Specialist (Submarine)"),
+    ("CTI", "Cryptologic Technician (Interpretive)"),
+    ("CTM", "Cryptologic Technician (Maintenance)"),
+    ("CTN", "Cryptologic Technician (Networks)"),
+    ("CTR", "Cryptologic Technician (Collection)"),
+    ("CTT", "Cryptologic Technician (Technical)"),
+    ("DC",  "Damage Controlman"),
+    ("EA",  "Engineering Aide"),
+    ("EM",  "Electrician's Mate"),
+    ("EMN", "Electrician's Mate (Nuclear)"),
+    ("EN",  "Engineman"),
+    ("EO",  "Equipment Operator"),
+    ("EOD", "Explosive Ordnance Disposal"),
+    ("ET",  "Electronics Technician"),
+    ("ETN", "Electronics Technician (Nuclear)"),
+    ("ETR", "Electronics Technician (Communications)"),
+    ("ETV", "Electronics Technician (Submarine - Navigation)"),
+    ("FC",  "Fire Controlman"),
+    ("FCA", "Fire Controlman (Aegis)"),
+    ("FT",  "Fire Control Technician"),
+    ("GM",  "Gunner's Mate"),
+    ("GSE", "Gas Turbine Systems Technician (Electrical)"),
+    ("GSM", "Gas Turbine Systems Technician (Mechanical)"),
+    ("HM",  "Hospital Corpsman"),
+    ("HT",  "Hull Maintenance Technician"),
+    ("IC",  "Interior Communications Electrician"),
+    ("IS",  "Intelligence Specialist"),
+    ("IT",  "Information Systems Technician"),
+    ("ITS", "Information Systems Technician (Submarine)"),
+    ("LN",  "Legalman"),
+    ("LS",  "Logistics Specialist"),
+    ("LSS", "Logistics Specialist (Submarine)"),
+    ("MA",  "Master-at-Arms"),
+    ("MC",  "Mass Communication Specialist"),
+    ("MM",  "Machinist's Mate"),
+    ("MMA", "Machinist's Mate (Auxiliary - Submarine)"),
+    ("MMN", "Machinist's Mate (Nuclear)"),
+    ("MMW", "Machinist's Mate (Weapons - Submarine)"),
+    ("MN",  "Mineman"),
+    ("MR",  "Machinery Repairman"),
+    ("MT",  "Missile Technician"),
+    ("MU",  "Musician"),
+    ("NC",  "Navy Counselor"),
+    ("ND",  "Navy Diver"),
+    ("OS",  "Operations Specialist"),
+    ("PR",  "Aircrew Survival Equipmentman"),
+    ("PS",  "Personnel Specialist"),
+    ("QM",  "Quartermaster"),
+    ("RP",  "Religious Program Specialist"),
+    ("RS",  "Retail Services Specialist"),
+    ("SB",  "Special Warfare Boat Operator"),
+    ("SO",  "Special Warfare Operator (SEAL)"),
+    ("STG", "Sonar Technician (Surface)"),
+    ("STS", "Sonar Technician (Submarine)"),
+    ("SW",  "Steelworker"),
+    ("TM",  "Torpedoman's Mate"),
+    ("UT",  "Utilitiesman"),
+    ("YN",  "Yeoman"),
+    ("YNS", "Yeoman (Submarine)"),
+]
+NAVY_RATE_LABELS = [f"{code} — {name}" for code, name in NAVY_RATES]
+NAVY_RATE_CODE_FROM_LABEL = {f"{code} — {name}": code for code, name in NAVY_RATES}
+
+# Rates with hand-curated PS_TOPICS-style libraries.
+# Add a rate code here when you build out its full topic dictionary.
+TUTOR_CURATED_RATINGS = {"PS"}
+
 # UPLOAD SAFETY — keep token costs predictable and prevent abuse on the public app.
 MAX_UPLOAD_MB = 8       # Profile sheets fit easily under this; Streamlit default is 200 MB.
 MAX_PDF_PAGES = 3       # Profile sheets are 1-2 pages. Cap protects API spend on bad uploads.
 
+# AI RATE LIMIT — protects API spend on a free, public app.
+# Counts every Claude call (vision, study guide, lesson, Q&A, practice, grading)
+# in a single browser session. Resets when the sailor refreshes or returns later.
+MAX_AI_CALLS_PER_SESSION = 20
+
+
+def check_ai_quota():
+    """
+    Returns True if the sailor still has AI calls left in this session.
+    Returns False AND shows a friendly warning if the cap is hit.
+    Increments the counter on True so callers don't have to.
+    """
+    used = st.session_state.get("ai_calls_used", 0)
+    if used >= MAX_AI_CALLS_PER_SESSION:
+        st.warning(
+            f"🛑 You've used your **{MAX_AI_CALLS_PER_SESSION} AI generations** for this session. "
+            "Refresh the page to start a new session — your FMS calculator and PDF download still work."
+        )
+        return False
+    st.session_state["ai_calls_used"] = used + 1
+    return True
+
 # CURRENT CYCLE CONFIG — single source of truth.
-# When the next NAVADMIN drops, update only this block.
+# When the next NAVADMIN drops, update ONLY this block. All cycle dates,
+# TIR windows, PMA windows, and prompt facts derive from this dict.
 CURRENT_CYCLE = {
     "number": 271,
     "navadmin": "NAVADMIN 008/26",
@@ -42,20 +179,55 @@ CURRENT_CYCLE = {
         ("E6 Exam Day",         datetime.date(2026, 3, 5)),
         ("E5 Exam Day",         datetime.date(2026, 3, 12)),
     ],
+    # Eligibility windows — used by the AI Chief prompt so it never quotes stale dates.
+    "ted":           datetime.date(2026, 7, 1),    # Terminal Eligibility Date
+    "tir_e5":        datetime.date(2025, 7, 1),    # Min Time-in-Rate for E5
+    "tir_e6":        datetime.date(2023, 7, 1),    # Min Time-in-Rate for E6
+    "pma_window_e5": (datetime.date(2024, 12, 1), datetime.date(2026, 2, 28)),
+    "pma_window_e6": (datetime.date(2023, 3, 1),  datetime.date(2026, 2, 28)),
+    # Approximate when per-rate cut scores / quotas are expected to be released.
+    # Used to drive the "awaiting results" banner so the app doesn't tell sailors
+    # the cycle is "closed" the day after the last exam.
+    "selection_release_estimate": datetime.date(2026, 6, 30),
+    "awaiting_results_note": "Exams are done — quotas and per-rate cut scores haven't dropped yet. Hang tight, results typically post late June.",
     "next_cycle_note": "Cycle 271 has closed. Watch MyNavyHR for the next cycle's NAVADMIN.",
 }
+
+
+def _fmt_cycle_date(d):
+    """Format a date as '5 March 2026' for use in AI prompts and headers."""
+    return d.strftime("%-d %B %Y") if hasattr(datetime.date, "strftime") else str(d)
+
+
+def _exam_date(label_substr):
+    """Pull a deadline date out of CURRENT_CYCLE by label substring. Returns None if absent."""
+    for label, date in CURRENT_CYCLE["deadlines"]:
+        if label_substr.lower() in label.lower():
+            return date
+    return None
 
 st.title("⚓ Score Surge | by Strategic Sailor")
 
 # Cycle status — compute once, drives the header tone and the countdown tiles below.
+# Three phases:
+#   "open"             — at least one official deadline still ahead (PMK-EE / ILDC / exam day).
+#   "awaiting_results" — all exam dates have passed, but selection results haven't dropped yet.
+#   "closed"           — selection results have been released; cycle is fully done.
 today = datetime.date.today()
 upcoming_deadlines = [
     (label, date) for (label, date) in CURRENT_CYCLE["deadlines"] if (date - today).days >= 0
 ]
-cycle_open = bool(upcoming_deadlines)
+selection_release = CURRENT_CYCLE.get("selection_release_estimate")
 
-# Honest header — adapts to whether this cycle is still live.
-if cycle_open:
+if upcoming_deadlines:
+    cycle_phase = "open"
+elif selection_release and today < selection_release:
+    cycle_phase = "awaiting_results"
+else:
+    cycle_phase = "closed"
+
+# Honest header — adapts to which phase the cycle is in.
+if cycle_phase == "open":
     st.markdown(
         f"""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
@@ -63,7 +235,15 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 **Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']} ({CURRENT_CYCLE['navadmin']}).** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
 """
     )
-else:
+elif cycle_phase == "awaiting_results":
+    st.markdown(
+        f"""
+Your Navy advancement engine. Exams are in the books — now we wait on quotas and per-rate cut scores.
+
+**Cycle {CURRENT_CYCLE['number']} ({CURRENT_CYCLE['title']}) — exams complete, selection results pending.** Keep training while you wait — the next cycle starts before the dust settles on this one.
+"""
+    )
+else:  # closed
     st.markdown(
         f"""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and stay sharp between cycles.
@@ -74,18 +254,27 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and sta
 
 # CYCLE STATUS — surfaced at the top so sailors see where they stand immediately.
 st.subheader(f"⏱️ Cycle {CURRENT_CYCLE['number']} Status")
-if cycle_open:
+if cycle_phase == "open":
     cols = st.columns(len(upcoming_deadlines))
     for i, (label, date) in enumerate(upcoming_deadlines):
         days_left = (date - today).days
-        if days_left <= 14:
+        if days_left == 0:
+            status = "🔴 EXAM DAY"
+        elif days_left <= 14:
             status = f"🔴 {days_left} days"
         elif days_left <= 30:
             status = f"🟡 {days_left} days"
         else:
             status = f"🟢 {days_left} days"
         cols[i].metric(label, status)
-else:
+elif cycle_phase == "awaiting_results":
+    days_until_results = (selection_release - today).days
+    st.info(
+        f"📋 **{CURRENT_CYCLE['awaiting_results_note']}** "
+        f"Estimated release: **{_fmt_cycle_date(selection_release)}** (~{days_until_results} days). "
+        "Use this time to keep your edge — review weak areas in Practice Mode and prep for the next cycle."
+    )
+else:  # closed
     st.info(
         f"📋 **{CURRENT_CYCLE['next_cycle_note']}** "
         "In the meantime, keep using the AI Study Guide and Practice Question Mode to stay sharp."
@@ -101,8 +290,6 @@ DEFAULT_VALUES = {
     "education": 0.0,
     "pna": 0.0,
 }
-
-import base64
 
 VISION_PROMPT = (
     "This is a Navy advancement profile sheet. "
@@ -234,10 +421,14 @@ def extract_fields_from_upload(uploaded_file):
         })
     content.append({"type": "text", "text": VISION_PROMPT})
 
+    # Bail out cleanly if the sailor has hit the per-session AI cap.
+    if not check_ai_quota():
+        return {}, all_keys, "rate-limited"
+
     try:
         msg = client.messages.create(
             model="claude-opus-4-5",
-            max_tokens=256,
+            max_tokens=512,  # Bumped from 256 — vision sometimes wraps JSON in extra prose.
             messages=[{"role": "user", "content": content}],
         )
         # Find the first text block in Claude's response (don't assume content[0] is text)
@@ -295,7 +486,10 @@ if uploaded_file is not None:
         with st.spinner("Reading your profile sheet with Claude vision..."):
             claude_fields, missing_fields, read_method = extract_fields_from_upload(uploaded_file)
 
-        if read_method != "error" and claude_fields is not None:
+        if read_method == "rate-limited":
+            # Quota helper already showed the warning. Nudge sailor to fill the form by hand.
+            st.info("Profile sheet not read — please enter your scores manually below.")
+        elif read_method != "error" and claude_fields is not None:
             for field, val in claude_fields.items():
                 if field in DEFAULT_VALUES and val is not None:
                     extracted_data[field] = val
@@ -410,7 +604,39 @@ with st.form("fms_form"):
 
 
 # CALCULATION & RESULTS
+# Snapshot inputs on submit so results persist across reruns (e.g. when sailor
+# clicks an AI button below — that triggers a Streamlit rerun and would otherwise
+# wipe the results because `submitted` flips back to False).
 if submitted:
+    st.session_state["fms_inputs"] = {
+        "sailor_name": sailor_name,
+        "paygrade": paygrade,
+        "exam_score": exam_score,
+        "pma": pma,
+        "sipg_months": sipg_months,
+        "awards": awards,
+        "education": education,
+        "pna": pna,
+        "cut_score": cut_score,
+    }
+
+if "fms_inputs" in st.session_state:
+    # Restore from snapshot so results stay stable even if sailor edits the form
+    # widgets without clicking Calculate again.
+    _fms_snap = st.session_state["fms_inputs"]
+    sailor_name = _fms_snap["sailor_name"]
+    paygrade    = _fms_snap["paygrade"]
+    exam_score  = _fms_snap["exam_score"]
+    pma         = _fms_snap["pma"]
+    sipg_months = _fms_snap["sipg_months"]
+    awards      = _fms_snap["awards"]
+    education   = _fms_snap["education"]
+    pna         = _fms_snap["pna"]
+    cut_score   = _fms_snap["cut_score"]
+
+    if not submitted:
+        st.caption("ℹ️ Showing your last calculation. Edit inputs above and hit **Calculate My FMS** to refresh.")
+
     # Per BUPERSINST 1430.16G FMS Chart:
     #   E5: PMA points = (PMA * 80) - 256, never below 0
     #   E6: RSCA PMA points = (RSCA_PMA * 30) - 60, never below 0
@@ -539,29 +765,58 @@ if submitted:
             ],
         })
 
-    if pna == 0:
-        # PNA accrues at different rates per paygrade per BUPERSINST 1430.16G:
-        #   E5 = 1.5 pts/cycle (max 9 over 6 cycles)
-        #   E6 = 1.0 pt/cycle  (max 9 over 9 cycles)
-        if paygrade == "E6":
-            pna_rate_text = "1 point per cycle (capped at 9)"
-            pna_math_text = "9 cycles in the top 25% maxes you out at 9 points."
-        else:
-            pna_rate_text = "1.5 points per cycle (capped at 9)"
-            pna_math_text = "6 cycles in the top 25% maxes you out at 9 points."
-        guide_items.append({
-            "area": "PNA Points",
-            "priority": "INFO",
-            "current": 0,
-            "target": "Accumulates automatically",
-            "gain": "up to 9",
-            "actions": [
-                f"PNA points are awarded each cycle you finish in the top 25% of your rate (in both SS and PMA) but aren't advanced.",
-                f"For {paygrade} sailors that's {pna_rate_text}.",
-                pna_math_text,
-                "Keep taking and passing the exam every cycle — the points carry forward.",
-            ],
-        })
+    # PNA card always shows so sailors at every PNA level understand how the points work.
+    # Per BUPERSINST 1430.16G: E5 = 1.5 pts/cycle (max 9 over 6 cycles),
+    #                          E6 = 1.0 pt/cycle  (max 9 over 9 cycles).
+    if paygrade == "E6":
+        pna_rate_text = "1 point per cycle (capped at 9)"
+        pna_max_cycles_text = "9 cycles in the top 25% maxes you out at 9 points."
+        per_cycle = 1.0
+    else:
+        pna_rate_text = "1.5 points per cycle (capped at 9)"
+        pna_max_cycles_text = "6 cycles in the top 25% maxes you out at 9 points."
+        per_cycle = 1.5
+
+    pna_remaining = max(0.0, 9.0 - pna)
+    cycles_to_max = "—" if per_cycle == 0 else max(0, -(-int(pna_remaining * 10) // int(per_cycle * 10)))
+
+    if pna >= 9:
+        pna_priority = "LOW"
+        pna_target_text = "Maxed out (9.0)"
+        pna_gain_text = "0 — already capped"
+        pna_actions = [
+            "You're at the 9-point cap. PNA isn't a lever for you anymore — focus exam study, evals, awards, and education.",
+            "If you stay top-25% next cycle you still get the morale boost, just no extra points.",
+        ]
+    elif pna == 0:
+        pna_priority = "INFO"
+        pna_target_text = "Accumulates automatically"
+        pna_gain_text = f"up to {9.0 - pna:.1f}"
+        pna_actions = [
+            "PNA points are awarded each cycle you finish in the top 25% of your rate (in both SS and PMA) but aren't advanced.",
+            f"For {paygrade} sailors that's {pna_rate_text}.",
+            pna_max_cycles_text,
+            "Keep taking and passing the exam every cycle — the points carry forward.",
+        ]
+    else:
+        pna_priority = "INFO"
+        pna_target_text = f"9.0 (max)"
+        pna_gain_text = f"up to {pna_remaining:.1f}"
+        pna_actions = [
+            f"You currently have **{pna} PNA points**. The cap is 9.0, so you can still earn up to **{pna_remaining:.1f} more**.",
+            f"For {paygrade} sailors PNA accrues at {pna_rate_text}.",
+            f"At that rate, **{cycles_to_max} more top-25% cycle(s)** would max you out.",
+            "Keep showing up — finish in the top 25% in both SS and PMA each cycle and they keep adding.",
+        ]
+
+    guide_items.append({
+        "area": "PNA Points",
+        "priority": pna_priority,
+        "current": pna,
+        "target": pna_target_text,
+        "gain": pna_gain_text,
+        "actions": pna_actions,
+    })
 
     if not guide_items:
         st.success("Your scores are strong across the board. Keep it up!")
@@ -666,7 +921,11 @@ with st.form("study_guide_form"):
     col1, col2 = st.columns(2)
     with col1:
         sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
-        sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
+        sg_paygrade = st.selectbox(
+            "Your Paygrade",
+            ["E5", "E6"],
+            help="Score Surge currently supports E5 and E6 advancement. E4 and E7 use different processes.",
+        )
     with col2:
         sg_gap = st.number_input(
             "How many FMS points are you below your rate's last cut score?",
@@ -703,23 +962,35 @@ if sg_submit:
     else:
         topic_instruction = f"Guide type: {sg_type}"
 
+    # All cycle-specific dates derived from CURRENT_CYCLE so the prompt never goes stale.
+    e5_exam   = _exam_date("E5 Exam")
+    e6_exam   = _exam_date("E6 Exam")
+    pmk_due   = _exam_date("PMK-EE")
+    ildc_due  = _exam_date("ILDC")
+    pma_e5_lo, pma_e5_hi = CURRENT_CYCLE["pma_window_e5"]
+    pma_e6_lo, pma_e6_hi = CURRENT_CYCLE["pma_window_e6"]
+
+    cycle_facts = "\n".join([
+        f"- E6 exam date: {_fmt_cycle_date(e6_exam)}" if e6_exam else "",
+        f"- E5 exam date: {_fmt_cycle_date(e5_exam)}" if e5_exam else "",
+        f"- Terminal Eligibility Date: {_fmt_cycle_date(CURRENT_CYCLE['ted'])}",
+        f"- PMK-EE deadline: {_fmt_cycle_date(pmk_due)}" if pmk_due else "",
+        f"- ILDC deadline: {_fmt_cycle_date(ildc_due)} (E6 only)" if ildc_due else "",
+        f"- Min TIR E6: {_fmt_cycle_date(CURRENT_CYCLE['tir_e6'])}",
+        f"- Min TIR E5: {_fmt_cycle_date(CURRENT_CYCLE['tir_e5'])}",
+        f"- PMA window E6: {_fmt_cycle_date(pma_e6_lo)} to {_fmt_cycle_date(pma_e6_hi)}",
+        f"- PMA window E5: {_fmt_cycle_date(pma_e5_lo)} to {_fmt_cycle_date(pma_e5_hi)}",
+        "- EAW is authoritative source, must be finalized in NSIPS",
+        "- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P",
+    ]).strip()
+
     prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
 You know {CURRENT_CYCLE['navadmin']} (Cycle {CURRENT_CYCLE['number']}) inside and out.
 
 CYCLE {CURRENT_CYCLE['number']} FACTS ({CURRENT_CYCLE['navadmin']}):
-- E6 exam date: 5 March 2026
-- E5 exam date: 12 March 2026
-- Terminal Eligibility Date: 1 July 2026
-- PMK-EE deadline: 31 January 2026
-- ILDC deadline: 28 February 2026 (E6 only)
-- Min TIR E6: 1 July 2023
-- Min TIR E5: 1 July 2025
-- PMA window E6: 1 March 2023 to 28 February 2026
-- PMA window E5: 1 December 2024 to 28 February 2026
-- EAW is authoritative source, must be finalized in NSIPS
-- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P
+{cycle_facts}
 
 Generate a personalized Navy advancement study guide for:
 - Rating: {sg_rating}
@@ -739,30 +1010,31 @@ Structure the guide as follows:
 Use plain English. Write like you're talking to the sailor face to face.
 Keep it tight. Every sentence must earn its place."""
 
-    with st.spinner("Chief is reviewing your record..."):
-        try:
-            message = client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=1500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            guide_text = first_text_block(message)
-            if not guide_text:
-                st.error("Chief had nothing to say. Try again in a moment.")
-            else:
-                st.subheader("📋 Your Personalized Study Guide")
-                st.markdown(guide_text)
-                st.download_button(
-                    "📥 Download Study Guide",
-                    data=guide_text,
-                    file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                    mime="text/plain",
-                    use_container_width=True
+    if check_ai_quota():
+        with st.spinner("Chief is reviewing your record..."):
+            try:
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}]
                 )
-        except Exception as e:
-            st.error("Something went wrong: " + str(e))
+                guide_text = first_text_block(message)
+                if not guide_text:
+                    st.error("Chief had nothing to say. Try again in a moment.")
+                else:
+                    st.subheader("📋 Your Personalized Study Guide")
+                    st.markdown(guide_text)
+                    st.download_button(
+                        "📥 Download Study Guide",
+                        data=guide_text,
+                        file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+            except Exception as e:
+                st.error("Something went wrong: " + str(e))
 
-                # ── INTERACTIVE AI TUTOR ──────────────────────────────────────────────────────
+# ── INTERACTIVE AI TUTOR ──────────────────────────────────────────────────────
 st.divider()
 st.subheader("🎓 Interactive AI Tutor")
 st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
@@ -838,16 +1110,43 @@ PS_TOPICS = {
     },
 }
 
-col1, col2 = st.columns(2)
-with col1:
-    tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
-with col2:
-    tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
+# Pick the sailor's rating from the full Navy rate list. PS rates get the
+# hand-curated PS_TOPICS dropdown; everyone else gets freeform topic mode.
+tutor_rating_label = st.selectbox(
+    "Your Rating",
+    NAVY_RATE_LABELS,
+    index=NAVY_RATE_LABELS.index(next(lbl for lbl in NAVY_RATE_LABELS if lbl.startswith("PS —"))),
+    key="tutor_rating_label",
+    help="Pick your rate. PS sailors get a curated topic library. Every other rate uses freeform mode — type any topic from your bibliography and the Chief teaches it.",
+)
+tutor_rating = NAVY_RATE_CODE_FROM_LABEL[tutor_rating_label]
+# Mirror to a stable key the Practice section can read, regardless of label format.
+st.session_state["tutor_rating"] = tutor_rating
 
-if st.button("📖 Start Lesson", use_container_width=True):
-    bib_refs = PS_TOPICS[tutor_topic]["bib"]
-    lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
-You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
+# When the sailor switches rates, drop any old lesson history so the Q&A doesn't
+# carry context from a different rate.
+if st.session_state.get("tutor_history_rating") != tutor_rating:
+    st.session_state["tutor_history"] = []
+    st.session_state.pop("tutor_topic", None)
+    st.session_state.pop("tutor_subtopic", None)
+    st.session_state.pop("tutor_lesson", None)
+    st.session_state["tutor_history_rating"] = tutor_rating
+
+if tutor_rating in TUTOR_CURATED_RATINGS:
+    # ── PS curated topic mode ──
+    col1, col2 = st.columns(2)
+    with col1:
+        tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
+    with col2:
+        tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
+
+    if st.button("📖 Start Lesson", use_container_width=True):
+        bib_refs = PS_TOPICS[tutor_topic]["bib"]
+        # Use the tutor_topic prefix ("E5"/"E6") to tell the Chief which exam this is for.
+        topic_prefix = tutor_topic.split(" ")[0] if " " in tutor_topic else ""
+        exam_paygrade = topic_prefix if topic_prefix in ("E5", "E6") else "E5/E6"
+        lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
+You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {exam_paygrade} NWAE.
 Explain everything like the sailor is smart but has never seen this material before.
 Be direct, clear, and use real Navy examples.
 No wasted words. No fluff.
@@ -866,46 +1165,141 @@ Teach this lesson as follows:
 
 Keep it tight. Make it stick."""
 
-    with st.spinner("Chief is preparing your lesson..."):
-        try:
-            message = client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": lesson_prompt}]
+        if check_ai_quota():
+            with st.spinner("Chief is preparing your lesson..."):
+                try:
+                    message = client.messages.create(
+                        model="claude-opus-4-5",
+                        max_tokens=2000,
+                        messages=[{"role": "user", "content": lesson_prompt}]
+                    )
+                    lesson = first_text_block(message)
+                    if not lesson:
+                        st.error("Chief had nothing to say. Try again in a moment.")
+                    else:
+                        # Persist so lesson stays visible across reruns (Q&A, downloads, etc.).
+                        st.session_state["tutor_lesson"] = lesson
+                        st.session_state["tutor_topic"] = tutor_topic
+                        st.session_state["tutor_subtopic"] = tutor_subtopic
+                        st.session_state["tutor_history"] = [
+                            {"role": "user", "content": lesson_prompt},
+                            {"role": "assistant", "content": lesson},
+                        ]
+                        st.session_state["tutor_history_rating"] = tutor_rating
+                except Exception as e:
+                    st.error("Error: " + str(e))
+
+else:
+    # ── Freeform mode for every non-curated rate ──
+    rate_long_name = dict(NAVY_RATES).get(tutor_rating, tutor_rating)
+    st.caption(
+        f"💡 Type any topic from your **{tutor_rating}** advancement bibliography. "
+        "The Chief will teach it like he taught his sailors. "
+        "Optional: drop in the governing reference (BUPERSINST, OPNAVINST, NAVADMIN, JTR, NTRP, technical manual) "
+        "if you know it — gets you a more accurate lesson."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        free_paygrade = st.selectbox("Your Paygrade", ["E5", "E6"], key="tutor_free_paygrade")
+    with col2:
+        free_topic = st.text_input(
+            "Topic to study",
+            placeholder="e.g. evals, OPSEC, leave processing, refrigeration plant ops",
+            key="tutor_free_topic",
+        )
+    free_subtopic = st.text_input(
+        "Subtopic (optional)",
+        placeholder="e.g. mid-term counseling, classification levels, special pays",
+        key="tutor_free_subtopic",
+    )
+    free_ref = st.text_input(
+        "Governing reference (optional, if you know it)",
+        placeholder="e.g. BUPERSINST 1610.10E, OPNAVINST 5510.1, NTRP 3-13",
+        key="tutor_free_ref",
+    )
+
+    if st.button("📖 Start Lesson", use_container_width=True, key="tutor_free_start"):
+        if not (free_topic or "").strip():
+            st.error("Type a topic to study before starting the lesson.")
+        else:
+            ref_line = (
+                f"GOVERNING REFERENCE: {free_ref.strip()}"
+                if (free_ref or "").strip()
+                else "GOVERNING REFERENCE: Cite whatever official Navy reference (BUPERSINST, OPNAVINST, MILPERSMAN, NAVADMIN, JTR, NTRP, technical manual, or rate-specific manual) is correct for this topic. If you're not sure, say so."
             )
-            lesson = first_text_block(message)
-            if not lesson:
-                st.error("Chief had nothing to say. Try again in a moment.")
-            else:
-                st.subheader(f"📚 Lesson: {tutor_subtopic}")
-                st.markdown(lesson)
+            subtopic_line = f"SUBTOPIC: {free_subtopic.strip()}\n" if (free_subtopic or "").strip() else ""
 
-                if "tutor_history" not in st.session_state:
-                    st.session_state.tutor_history = []
-                st.session_state.tutor_history = [
-                    {"role": "user", "content": lesson_prompt},
-                    {"role": "assistant", "content": lesson}
-                ]
-                st.session_state.tutor_topic = tutor_topic
-                st.session_state.tutor_subtopic = tutor_subtopic
+            lesson_prompt = f"""You are a senior {tutor_rating} ({rate_long_name}) Chief Petty Officer with 20 years of experience.
+You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the {tutor_rating} {free_paygrade} advancement exam.
+Explain everything like the sailor is smart but has never seen this material before.
+Be direct, clear, and use real Navy examples specific to {tutor_rating} sailors.
+No wasted words. No fluff.
 
-                st.download_button(
-                    "📥 Download This Lesson",
-                    data=lesson,
-                    file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-        except Exception as e:
-            st.error("Error: " + str(e))
+TOPIC: {free_topic.strip()}
+{subtopic_line}{ref_line}
 
-# Follow-up Q&A
-if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
+Teach this lesson as follows:
+1. What this topic is in ONE plain-English sentence
+2. Why it matters on the {tutor_rating} {free_paygrade} exam and in real life as a {tutor_rating}
+3. The key rules, procedures, or concepts they MUST know (use bullet points, plain English)
+4. A real-world example of how this plays out in a {tutor_rating} shop or work environment
+5. The most common exam trap sailors fall into on this topic
+6. Three practice questions with answers and explanations
+If the topic doesn't seem relevant to {tutor_rating} advancement, say so honestly and suggest what they probably meant.
+
+Keep it tight. Make it stick."""
+
+            if check_ai_quota():
+                with st.spinner("Chief is preparing your lesson..."):
+                    try:
+                        message = client.messages.create(
+                            model="claude-opus-4-5",
+                            max_tokens=2000,
+                            messages=[{"role": "user", "content": lesson_prompt}]
+                        )
+                        lesson = first_text_block(message)
+                        if not lesson:
+                            st.error("Chief had nothing to say. Try again in a moment.")
+                        else:
+                            # Build a display label for the lesson header + filename.
+                            display_topic = free_topic.strip()
+                            if (free_subtopic or "").strip():
+                                display_topic = f"{display_topic} — {free_subtopic.strip()}"
+                            st.session_state["tutor_lesson"] = lesson
+                            st.session_state["tutor_topic"] = f"{tutor_rating} {free_paygrade}: {free_topic.strip()}"
+                            st.session_state["tutor_subtopic"] = display_topic
+                            st.session_state["tutor_history"] = [
+                                {"role": "user", "content": lesson_prompt},
+                                {"role": "assistant", "content": lesson},
+                            ]
+                            st.session_state["tutor_history_rating"] = tutor_rating
+                    except Exception as e:
+                        st.error("Error: " + str(e))
+
+# ── Lesson display + Q&A — shared by curated and freeform modes ──
+# Reads from session_state so the lesson and Q&A persist across reruns.
+if st.session_state.get("tutor_lesson"):
+    lesson_subtopic = st.session_state.get("tutor_subtopic", "Lesson")
+    st.subheader(f"📚 Lesson: {lesson_subtopic}")
+    st.markdown(st.session_state["tutor_lesson"])
+    st.download_button(
+        "📥 Download This Lesson",
+        data=st.session_state["tutor_lesson"],
+        file_name=f"Lesson_{safe_filename(lesson_subtopic)}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
     st.subheader("💬 Ask the Chief a Question")
-    st.caption("Type any follow-up question about this topic.")
-    sailor_question = st.text_input("Your question", placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
-    if st.button("Ask", use_container_width=True):
-        if sailor_question:
+    st.caption("Type any follow-up question about this topic. The lesson stays visible while you ask.")
+    sailor_question = st.text_input(
+        "Your question",
+        placeholder="e.g. What happens if a sailor misses the travel claim deadline?",
+        key="tutor_qa_input",
+    )
+    if st.button("Ask", use_container_width=True, key="tutor_qa_btn"):
+        if sailor_question and check_ai_quota():
             with st.spinner("Chief is thinking..."):
                 try:
                     history = st.session_state.tutor_history.copy()
@@ -913,38 +1307,57 @@ if "tutor_history" in st.session_state and len(st.session_state.tutor_history) >
                     message = client.messages.create(
                         model="claude-opus-4-5",
                         max_tokens=1000,
-                        messages=history
+                        messages=history,
                     )
                     answer = first_text_block(message)
                     if not answer:
                         st.error("Chief had nothing to say. Try again in a moment.")
                     else:
+                        st.session_state.tutor_history.append({"role": "user", "content": sailor_question})
                         st.session_state.tutor_history.append({"role": "assistant", "content": answer})
-                        st.markdown("**Chief says:**")
-                        st.markdown(answer)
                 except Exception as e:
                     st.error("Error: " + str(e))
+
+    # Render the running Q&A transcript (skip the initial lesson exchange).
+    qa_pairs = st.session_state.get("tutor_history", [])[2:]
+    for i in range(0, len(qa_pairs), 2):
+        if i + 1 < len(qa_pairs):
+            st.markdown(f"**You:** {qa_pairs[i]['content']}")
+            st.markdown(f"**Chief says:** {qa_pairs[i+1]['content']}")
+            st.markdown("---")
 # SCORE HISTORY TRACKER
 if "score_history" not in st.session_state:
     st.session_state.score_history = []
 
 st.divider()
 
-# PRACTICE QUESTION MODE
+# PRACTICE QUESTION MODE — works for every rate. PS uses the curated topic dropdown;
+# every other rate uses freeform topic input.
 st.subheader("🎯 Practice Question Mode")
 st.caption("Answer like the exam is tomorrow. The Chief will grade you and explain every answer.")
 
-with st.form("practice_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
-    with col2:
-        pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-    pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+# Pull rating from session state — set by the Tutor's rate selector above.
+_pq_rating = st.session_state.get("tutor_rating", "PS")
+_pq_rate_long = dict(NAVY_RATES).get(_pq_rating, _pq_rating)
 
-if pq_submit:
-    bib_refs = PS_TOPICS[pq_topic]["bib"]
-    pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+# These get filled by either the curated form or the freeform form so the generation
+# block below stays mode-agnostic.
+pq_submit = False
+pq_topic_label = ""   # human-readable label for the score history
+pq_prompt = ""
+
+if _pq_rating in TUTOR_CURATED_RATINGS:
+    with st.form("practice_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+        with col2:
+            pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
+        pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+    if pq_submit:
+        bib_refs = PS_TOPICS[pq_topic]["bib"]
+        pq_topic_label = pq_topic
+        pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
 - Governing References: {bib_refs}
@@ -957,21 +1370,72 @@ D) [Option]
 ANSWER: [Letter]
 EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
 Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
-
-    with st.spinner("Chief is writing your exam..."):
-        try:
-            message = client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": pq_prompt}]
+else:
+    st.caption(
+        f"💡 Type any topic from your **{_pq_rating}** advancement bibliography. "
+        "The Chief will write practice questions and grade your answers."
+    )
+    with st.form("practice_form_freeform"):
+        col1, col2 = st.columns(2)
+        with col1:
+            pq_free_paygrade = st.selectbox("Your Paygrade", ["E5", "E6"], key="pq_free_paygrade")
+        with col2:
+            pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num_free")
+        pq_free_topic = st.text_input(
+            "Topic",
+            placeholder="e.g. evals, OPSEC, leave processing, refrigeration plant ops",
+            key="pq_free_topic",
+        )
+        pq_free_ref = st.text_input(
+            "Governing reference (optional, if you know it)",
+            placeholder="e.g. BUPERSINST 1610.10E, OPNAVINST 5510.1, NTRP 3-13",
+            key="pq_free_ref",
+        )
+        pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+    if pq_submit:
+        if not (pq_free_topic or "").strip():
+            st.error("Type a topic before generating practice questions.")
+            pq_submit = False
+        else:
+            ref_line = (
+                f"- Governing References: {pq_free_ref.strip()}"
+                if (pq_free_ref or "").strip()
+                else "- Governing References: cite whatever official Navy reference (BUPERSINST, OPNAVINST, MILPERSMAN, NAVADMIN, JTR, NTRP, technical manual, or rate-specific manual) is correct for this topic."
             )
-            questions_text = first_text_block(message)
-            if not questions_text:
-                st.error("Chief had nothing to say. Try again in a moment.")
-            else:
-                st.session_state.practice_questions = questions_text
-        except Exception as e:
-            st.error("Error: " + str(e))
+            pq_topic_label = f"{_pq_rating} {pq_free_paygrade}: {pq_free_topic.strip()}"
+            pq_prompt = f"""You are a senior {_pq_rating} ({_pq_rate_long}) Chief Petty Officer writing a Navy advancement exam practice set for {_pq_rating} {pq_free_paygrade} sailors.
+Generate exactly {pq_num} multiple choice practice questions for:
+- Rating: {_pq_rating}
+- Paygrade: {pq_free_paygrade}
+- Topic: {pq_free_topic.strip()}
+{ref_line}
+Format each question EXACTLY like this:
+Q1: [Question text]
+A) [Option]
+B) [Option]
+C) [Option]
+D) [Option]
+ANSWER: [Letter]
+EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
+Make the questions realistic {_pq_rating} {pq_free_paygrade} exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
+
+if pq_submit and pq_prompt:
+    if check_ai_quota():
+        with st.spinner("Chief is writing your exam..."):
+            try:
+                message = client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": pq_prompt}]
+                )
+                questions_text = first_text_block(message)
+                if not questions_text:
+                    st.error("Chief had nothing to say. Try again in a moment.")
+                else:
+                    st.session_state.practice_questions = questions_text
+                    st.session_state.practice_topic_label = pq_topic_label
+            except Exception as e:
+                st.error("Error: " + str(e))
 
 if "practice_questions" in st.session_state:
     st.subheader("📝 Your Practice Questions")
@@ -979,13 +1443,17 @@ if "practice_questions" in st.session_state:
     st.subheader("✍️ Submit Your Answers")
     sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
     if st.button("Grade My Answers", use_container_width=True):
-        if sailor_answers:
+        if sailor_answers and check_ai_quota():
             with st.spinner("Chief is grading..."):
                 try:
-                    grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
+                    # Use the rate that generated the questions for grader voice + accuracy.
+                    grader_rating = st.session_state.get("tutor_rating", "PS")
+                    grader_rate_long = dict(NAVY_RATES).get(grader_rating, grader_rating)
+                    grade_prompt = f"""You are a {grader_rating} ({grader_rate_long}) Chief grading a sailor's practice exam.
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
-Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff."""
+Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff.
+End your response with a clear final score line in this exact format: "Final Score: X/Y" (where X is correct and Y is total)."""
                     message = client.messages.create(
                         model="claude-opus-4-5",
                         max_tokens=1500,
@@ -998,27 +1466,45 @@ Grade each answer. State correct or incorrect. Explain the right answer. Referen
                     else:
                         st.subheader("📊 Your Grade")
                         st.markdown(grade_result)
-                    import re as re2
-                    score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
+
+                    # Robust score parser — try several formats the Chief might use.
+                    # Patterns: "4 out of 5", "4/5", "4 of 5", "Final Score: 4/5", "Score: 4 of 5"
+                    score_match = None
+                    for pattern in (
+                        r'(?:final\s+score|score)[:\s]+(\d+)\s*(?:out\s+of|/|of)\s*(\d+)',
+                        r'(\d+)\s*(?:out\s+of|of)\s*(\d+)',
+                        r'(\d+)\s*/\s*(\d+)',
+                    ):
+                        score_match = re.search(pattern, grade_result, re.IGNORECASE)
+                        if score_match:
+                            break
+
                     if score_match:
                         scored = int(score_match.group(1))
                         total = int(score_match.group(2))
-                        if "score_history" not in st.session_state:
-                            st.session_state.score_history = []
-                        st.session_state.score_history.append({
-                            "date": datetime.date.today().strftime("%b %d"),
-                            "topic": pq_topic,
-                            "score": scored,
-                            "total": total,
-                            "pct": round((scored/total)*100)
-                        })
-                    st.download_button(
-                        "📥 Download Practice Results",
-                        data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
-                        file_name="PracticeResults.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                        # Sanity check: don't log nonsense like "100/0" or "5/3".
+                        if total > 0 and scored <= total:
+                            if "score_history" not in st.session_state:
+                                st.session_state.score_history = []
+                            # Topic label was set when questions were generated — covers PS + freeform.
+                            history_topic = st.session_state.get("practice_topic_label", "Practice")
+                            st.session_state.score_history.append({
+                                "date": datetime.date.today().strftime("%b %d"),
+                                "topic": history_topic,
+                                "score": scored,
+                                "total": total,
+                                "pct": round((scored/total)*100)
+                            })
+
+                    # Only offer the download if there's actually a graded result.
+                    if grade_result:
+                        st.download_button(
+                            "📥 Download Practice Results",
+                            data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
+                            file_name="PracticeResults.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
                 except Exception as e:
                     st.error("Error: " + str(e))
 
