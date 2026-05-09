@@ -74,8 +74,14 @@ VISION_PROMPT = (
     "sipg_months = Service in Paygrade in months. If the sheet shows years, multiply by 12. "
     "awards = Awards points (decimal). "
     "education = Education points. Should be 0, 2 (associate's degree), or 4 (bachelor's or higher). "
-    "pna = Passed Not Advanced points (decimal, 0 to 9). "
-    "Use null for any value you cannot clearly read. Return ONLY valid JSON, no other text."
+    "pna = PNA points. Look carefully for ANY of these label variations on the sheet: "
+    "'PNA', 'PNA Points', 'PNA Pts', 'Pass Not Advanced', 'Passed Not Advanced', "
+    "'PNA Score', 'P.N.A.', or any cell, column, or row with 'PNA' in the heading. "
+    "It typically appears in the FMS component breakdown section near Awards, Education, and SIPG, "
+    "and is a decimal number between 0.0 and 9.0. "
+    "IMPORTANT: If the sheet shows '0', '0.0', or '0.00' for PNA, return 0 — zero is a valid value, NOT missing. "
+    "Only return null for pna if the field is truly absent or completely unreadable. "
+    "Use null for any other value you cannot clearly read. Return ONLY valid JSON, no other text."
 )
 
 
@@ -319,6 +325,15 @@ with st.form("fms_form"):
             help="Top 25% in SS and PMA earn PNA points each cycle they pass but aren't advanced. Cap is 9.",
         )
 
+    st.markdown("---")
+    cut_score = st.number_input(
+        "Enter your cycle cut score (Optional — from your rate's NAVADMIN)",
+        min_value=0.0, max_value=300.0,
+        value=0.0,
+        step=0.5,
+        help="Your rate's published cut score from a recent advancement NAVADMIN. Leave at 0 to skip — we'll only compare if you enter one.",
+    )
+
     submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
 
 
@@ -349,6 +364,20 @@ if submitted:
         f"Your FMS is **{fms}** out of a possible **{max_fms:.0f}** for {paygrade}. "
         f"Selection cutoffs are published per rate after each cycle — your standing depends on your rate's specific cutoff, not a fixed number."
     )
+
+    # Cut Score Comparison — only if sailor entered a cut score (cut_score > 0).
+    if cut_score > 0:
+        diff = round(fms - cut_score, 2)
+        if diff >= 0:
+            st.success(
+                f"💪 Your FMS of **{fms}** is **{diff} points above** the cut score of **{cut_score}** you entered. "
+                "Strong position — keep pushing."
+            )
+        else:
+            st.warning(
+                f"⚠️ Your FMS of **{fms}** is **{abs(diff)} points below** the cut score of **{cut_score}** you entered. "
+                "Time to close the gap — see the study guide below."
+            )
 
     # Score Breakdown
     st.subheader("📉 Score Breakdown")
