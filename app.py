@@ -46,13 +46,52 @@ CURRENT_CYCLE = {
 }
 
 st.title("⚓ Score Surge | by Strategic Sailor")
-st.markdown(
-    f"""
+
+# Cycle status — compute once, drives the header tone and the countdown tiles below.
+today = datetime.date.today()
+upcoming_deadlines = [
+    (label, date) for (label, date) in CURRENT_CYCLE["deadlines"] if (date - today).days >= 0
+]
+cycle_open = bool(upcoming_deadlines)
+
+# Honest header — adapts to whether this cycle is still live.
+if cycle_open:
+    st.markdown(
+        f"""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
 
-**Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']}.** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
+**Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']} ({CURRENT_CYCLE['navadmin']}).** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
 """
-)
+    )
+else:
+    st.markdown(
+        f"""
+Your Navy advancement engine. Calculate your FMS, build your study plan, and stay sharp between cycles.
+
+**Cycle {CURRENT_CYCLE['number']} ({CURRENT_CYCLE['title']}) has closed.** Use this app to keep training until the next NAVADMIN drops. Selection cutoffs are published per rate after each cycle.
+"""
+    )
+
+# CYCLE STATUS — surfaced at the top so sailors see where they stand immediately.
+st.subheader(f"⏱️ Cycle {CURRENT_CYCLE['number']} Status")
+if cycle_open:
+    cols = st.columns(len(upcoming_deadlines))
+    for i, (label, date) in enumerate(upcoming_deadlines):
+        days_left = (date - today).days
+        if days_left <= 14:
+            status = f"🔴 {days_left} days"
+        elif days_left <= 30:
+            status = f"🟡 {days_left} days"
+        else:
+            status = f"🟢 {days_left} days"
+        cols[i].metric(label, status)
+else:
+    st.info(
+        f"📋 **{CURRENT_CYCLE['next_cycle_note']}** "
+        "In the meantime, keep using the AI Study Guide and Practice Question Mode to stay sharp."
+    )
+
+st.divider()
 
 DEFAULT_VALUES = {
     "exam_score": 0.0,
@@ -619,7 +658,16 @@ with st.form("study_guide_form"):
         sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
         sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
     with col2:
-        sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0, value=0.0, step=0.5)
+        sg_gap = st.number_input(
+            "How many FMS points are you below your rate's last cut score?",
+            min_value=0.0, max_value=30.0, value=0.0, step=0.5,
+            help=(
+                "Enter 0 if you're at or above your rate's cut score. "
+                "Otherwise enter the gap (e.g. cut score 56, your FMS 50 → enter 6). "
+                "Find your rate's cut score in the most recent advancement NAVADMIN on MyNavyHR. "
+                "The Chief uses this to decide how aggressive your study plan should be."
+            ),
+        )
         sg_type = st.selectbox("Guide Type", [
             "Full Rating Guide",
             "Crash Plan (3-5 days)",
@@ -869,33 +917,6 @@ if "tutor_history" in st.session_state and len(st.session_state.tutor_history) >
 # SCORE HISTORY TRACKER
 if "score_history" not in st.session_state:
     st.session_state.score_history = []
-
-# CYCLE COUNTDOWN
-st.subheader(f"⏱️ Cycle {CURRENT_CYCLE['number']} Countdown")
-
-today = datetime.date.today()
-
-# Only show deadlines that haven't already passed.
-upcoming = [(label, date) for (label, date) in CURRENT_CYCLE["deadlines"] if (date - today).days >= 0]
-
-if upcoming:
-    # Show one tile per upcoming deadline, color-coded by urgency.
-    cols = st.columns(len(upcoming))
-    for i, (label, date) in enumerate(upcoming):
-        days_left = (date - today).days
-        if days_left <= 14:
-            status = f"🔴 {days_left} days"
-        elif days_left <= 30:
-            status = f"🟡 {days_left} days"
-        else:
-            status = f"🟢 {days_left} days"
-        cols[i].metric(label, status)
-else:
-    # All this cycle's deadlines are in the past — say so cleanly instead of showing 4 "Passed" tiles.
-    st.info(
-        f"📋 **{CURRENT_CYCLE['next_cycle_note']}** "
-        f"In the meantime, keep using the AI Study Guide and Practice Question Mode to stay sharp."
-    )
 
 st.divider()
 
