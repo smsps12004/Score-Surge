@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import tempfile
 import os
+import datetime
 from fpdf import FPDF
 import anthropic
 
@@ -18,11 +19,13 @@ client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
 st.title("⚓ Score Surge | by Strategic Sailor")
-st.markdown("""
+st.markdown(
+    f"""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
 
-**Cycle 271 — March 2026.** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
-""")
+**Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']}.** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
+"""
+)
 
 # CONSTANTS — FMS formula per BUPERSINST 1430.16G (E4-E6 FMS Chart)
 # E5: FMS = SS + (PMA*80 - 256) + SIPG/5 (cap 2) + Awards (cap 10) + Education (0/2/4) + PNA (cap 9). Max 169.
@@ -30,6 +33,21 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 MAX_FMS = {"E5": 169.0, "E6": 222.0}
 AWARDS_MAX = {"E5": 10.0, "E6": 12.0}
 SIPG_POINTS_MAX = {"E5": 2.0, "E6": 3.0}
+
+# CURRENT CYCLE CONFIG — single source of truth.
+# When the next NAVADMIN drops, update only this block.
+CURRENT_CYCLE = {
+    "number": 271,
+    "navadmin": "NAVADMIN 008/26",
+    "title": "March 2026",
+    "deadlines": [
+        ("PMK-EE Deadline",     datetime.date(2026, 1, 31)),
+        ("ILDC Deadline (E6)",  datetime.date(2026, 2, 28)),
+        ("E6 Exam Day",         datetime.date(2026, 3, 5)),
+        ("E5 Exam Day",         datetime.date(2026, 3, 12)),
+    ],
+    "next_cycle_note": "Cycle 271 has closed. Watch MyNavyHR for the next cycle's NAVADMIN.",
+}
 
 DEFAULT_VALUES = {
     "exam_score": 0.0,
@@ -418,7 +436,7 @@ if submitted:
         pdf.set_font("Arial", "B", 16)
         pdf.cell(0, 10, "Score Surge FMS Report - " + name, ln=True, align="C")
         pdf.set_font("Arial", "", 10)
-        pdf.cell(0, 8, f"Cycle 271 | Paygrade: {paygrade} | Max FMS for {paygrade}: {max_fms:.0f}", ln=True, align="C")
+        pdf.cell(0, 8, f"Cycle {CURRENT_CYCLE['number']} | Paygrade: {paygrade} | Max FMS for {paygrade}: {max_fms:.0f}", ln=True, align="C")
         pdf.ln(6)
         pdf.set_font("Arial", "B", 14)
         pdf.cell(0, 10, f"Final Multiple Score: {fms}   |   {pct_of_max}% of max", ln=True)
@@ -505,9 +523,9 @@ if sg_submit:
     prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
-You know NAVADMIN 008/26 (Cycle 271) inside and out.
+You know {CURRENT_CYCLE['navadmin']} (Cycle {CURRENT_CYCLE['number']}) inside and out.
 
-CYCLE 271 FACTS (NAVADMIN 008/26):
+CYCLE {CURRENT_CYCLE['number']} FACTS ({CURRENT_CYCLE['navadmin']}):
 - E6 exam date: 5 March 2026
 - E5 exam date: 12 March 2026
 - Terminal Eligibility Date: 1 July 2026
@@ -721,30 +739,31 @@ if "score_history" not in st.session_state:
     st.session_state.score_history = []
 
 # CYCLE COUNTDOWN
-import datetime
-
-st.subheader("⏱️ Cycle 271 Countdown")
+st.subheader(f"⏱️ Cycle {CURRENT_CYCLE['number']} Countdown")
 
 today = datetime.date.today()
-deadlines = [
-    ("PMK-EE Deadline", datetime.date(2026, 1, 31)),
-    ("ILDC Deadline (E6)", datetime.date(2026, 2, 28)),
-    ("E6 Exam Day", datetime.date(2026, 3, 5)),
-    ("E5 Exam Day", datetime.date(2026, 3, 12)),
-]
 
-cols = st.columns(4)
-for i, (label, date) in enumerate(deadlines):
-    days_left = (date - today).days
-    if days_left < 0:
-        status = "✅ Passed"
-    elif days_left <= 14:
-        status = f"🔴 {days_left} days"
-    elif days_left <= 30:
-        status = f"🟡 {days_left} days"
-    else:
-        status = f"🟢 {days_left} days"
-    cols[i].metric(label, status)
+# Only show deadlines that haven't already passed.
+upcoming = [(label, date) for (label, date) in CURRENT_CYCLE["deadlines"] if (date - today).days >= 0]
+
+if upcoming:
+    # Show one tile per upcoming deadline, color-coded by urgency.
+    cols = st.columns(len(upcoming))
+    for i, (label, date) in enumerate(upcoming):
+        days_left = (date - today).days
+        if days_left <= 14:
+            status = f"🔴 {days_left} days"
+        elif days_left <= 30:
+            status = f"🟡 {days_left} days"
+        else:
+            status = f"🟢 {days_left} days"
+        cols[i].metric(label, status)
+else:
+    # All this cycle's deadlines are in the past — say so cleanly instead of showing 4 "Passed" tiles.
+    st.info(
+        f"📋 **{CURRENT_CYCLE['next_cycle_note']}** "
+        f"In the meantime, keep using the AI Study Guide and Practice Question Mode to stay sharp."
+    )
 
 st.divider()
 
