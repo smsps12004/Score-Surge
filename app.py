@@ -18,15 +18,6 @@ client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 # PAGE CONFIG
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
-st.title("⚓ Score Surge | by Strategic Sailor")
-st.markdown(
-    f"""
-Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
-
-**Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']}.** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
-"""
-)
-
 # CONSTANTS — FMS formula per BUPERSINST 1430.16G (E4-E6 FMS Chart)
 # E5: FMS = SS + (PMA*80 - 256) + SIPG/5 (cap 2) + Awards (cap 10) + Education (0/2/4) + PNA (cap 9). Max 169.
 # E6: FMS = SS + (RSCA_PMA*30 - 60) + SIPG/5 (cap 3) + Awards (cap 12) + Education (0/2/4) + PNA (cap 9). Max 222.
@@ -48,6 +39,15 @@ CURRENT_CYCLE = {
     ],
     "next_cycle_note": "Cycle 271 has closed. Watch MyNavyHR for the next cycle's NAVADMIN.",
 }
+
+st.title("⚓ Score Surge | by Strategic Sailor")
+st.markdown(
+    f"""
+Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
+
+**Cycle {CURRENT_CYCLE['number']} — {CURRENT_CYCLE['title']}.** Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS — your standing depends on your rate's specific cutoff and quotas.
+"""
+)
 
 DEFAULT_VALUES = {
     "exam_score": 0.0,
