@@ -284,21 +284,21 @@ with st.form("fms_form"):
         exam_score = st.number_input(
             "Exam Standard Score",
             min_value=0.0, max_value=80.0,
-            value=float(extracted_data["exam_score"]),
+            value=min(80.0, max(0.0, float(extracted_data["exam_score"]))),
             step=0.5,
             help="Your raw exam score from the profile sheet.",
         )
         pma = st.number_input(
             pma_label,
             min_value=0.0, max_value=5.0,
-            value=float(extracted_data["pma"]),
+            value=min(5.0, max(0.0, float(extracted_data["pma"]))),
             step=0.01,
             help=pma_help,
         )
         sipg_months = st.number_input(
             "Service in Paygrade (months)",
             min_value=0.0, max_value=240.0,
-            value=float(extracted_data["sipg_months"]),
+            value=min(240.0, max(0.0, float(extracted_data["sipg_months"]))),
             step=1.0,
             help="How many months you've been at your current paygrade. SIPG/5 with a cap of 2 pts (E5) or 3 pts (E6).",
         )
@@ -307,7 +307,7 @@ with st.form("fms_form"):
         awards = st.number_input(
             f"Awards Points (max {awards_max:.0f} for {paygrade})",
             min_value=0.0, max_value=awards_max,
-            value=min(float(extracted_data["awards"]), awards_max),
+            value=min(awards_max, max(0.0, float(extracted_data["awards"]))),
             step=0.5,
         )
         education = st.selectbox(
@@ -320,7 +320,7 @@ with st.form("fms_form"):
         pna = st.number_input(
             "PNA Points",
             min_value=0.0, max_value=9.0,
-            value=float(extracted_data["pna"]),
+            value=min(9.0, max(0.0, float(extracted_data["pna"]))),
             step=0.5,
             help="Top 25% in SS and PMA earn PNA points each cycle they pass but aren't advanced. Cap is 9.",
         )
