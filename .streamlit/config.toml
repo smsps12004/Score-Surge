@@ -1,0 +1,9 @@
+[theme]
+# Wardroom dusk palette — warm Navy theme set in Batch 9.
+# Custom CSS in app.py adds shape (pill buttons, rounded inputs) on top of this base.
+base = "dark"
+primaryColor = "#c9a96e"
+backgroundColor = "#142b50"
+secondaryBackgroundColor = "#1d3a66"
+textColor = "#f0e6d2"
+font = "sans serif"

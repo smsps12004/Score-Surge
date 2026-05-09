@@ -18,6 +18,74 @@ except ImportError:
 # PAGE CONFIG must come before any other Streamlit call.
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
+# WARDROOM DUSK THEME POLISH (Batch 9) — the base palette comes from
+# .streamlit/config.toml; this CSS adds shape and texture the config can't
+# reach: soft pill buttons, rounded form fields, brass-accent headings.
+st.markdown("""
+<style>
+/* Soft pill buttons — brass fill, generous padding, modern hover */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: 100px;
+    padding: 0.55rem 1.5rem;
+    font-weight: 500;
+    background: #c9a96e;
+    color: #142b50;
+    border: 1.5px solid #c9a96e;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+    background: #d6b87a;
+    border-color: #d6b87a;
+    color: #142b50;
+}
+.stButton > button:active, .stDownloadButton > button:active, .stFormSubmitButton > button:active {
+    transform: scale(0.98);
+}
+.stButton > button:focus, .stDownloadButton > button:focus, .stFormSubmitButton > button:focus {
+    box-shadow: 0 0 0 3px rgba(201, 169, 110, 0.25);
+    color: #142b50;
+}
+
+/* Form inputs — rounded corners with subtle brass-tinted border */
+.stTextInput input, .stNumberInput input, .stTextArea textarea {
+    border-radius: 8px;
+    border: 0.5px solid rgba(201, 169, 110, 0.25);
+}
+.stSelectbox div[data-baseweb="select"] > div {
+    border-radius: 8px;
+    border: 0.5px solid rgba(201, 169, 110, 0.25);
+}
+.stFileUploader section {
+    border-radius: 10px;
+    border: 1px dashed rgba(201, 169, 110, 0.4);
+}
+
+/* Title and section headings — brass for hierarchy */
+h1, h2, h3 {
+    color: #c9a96e;
+    font-weight: 500;
+}
+
+/* Status / info / warning / success boxes — brass left-border accent */
+.stAlert {
+    border-radius: 10px;
+    border-left: 3px solid #c9a96e;
+}
+
+/* Metric tiles — soft rounded surface so result numbers sit on a clean card */
+[data-testid="stMetric"] {
+    background: #1d3a66;
+    border-radius: 10px;
+    padding: 1rem;
+}
+
+/* Expander headers — brass accent on hover for the AI Tutor / PNA cards */
+.streamlit-expanderHeader {
+    border-radius: 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # API KEY GUARD — show a friendly message instead of a Python stack trace
 # if the secret is missing or rotated. Without the key the app can't function,
 # so we stop here cleanly.
