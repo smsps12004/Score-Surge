@@ -85,6 +85,39 @@ VISION_PROMPT = (
 )
 
 
+def pdf_safe(s):
+    """
+    fpdf's default Arial font only supports Latin-1.
+    Strip/replace any character outside that range so the PDF never crashes
+    on smart quotes, em-dashes, accented characters, emoji, etc.
+    """
+    if s is None:
+        return ""
+    return str(s).encode("latin-1", errors="replace").decode("latin-1")
+
+
+def safe_filename(s, fallback="sailor"):
+    """
+    Strip anything that isn't safe in a filename (slashes, quotes, control chars, etc.).
+    Keeps letters, numbers, dash, underscore, period. Collapses spaces to underscores.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", (s or "").strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._-")
+    return cleaned or fallback
+
+
+def first_text_block(msg):
+    """
+    Safely pull the first text block out of a Claude response.
+    Don't assume content[0] is text — Claude can return tool_use, thinking, etc.
+    Returns the text string, or "" if no text block is present.
+    """
+    for block in getattr(msg, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
 def parse_claude_json(raw_text):
     """
     Pull a JSON object out of Claude's text response.
@@ -525,17 +558,17 @@ if submitted:
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", "B", 16)
-        pdf.cell(0, 10, "Score Surge FMS Report - " + name, ln=True, align="C")
+        pdf.cell(0, 10, pdf_safe("Score Surge FMS Report - " + name), ln=True, align="C")
         pdf.set_font("Arial", "", 10)
-        pdf.cell(0, 8, f"Cycle {CURRENT_CYCLE['number']} | Paygrade: {paygrade} | Max FMS for {paygrade}: {max_fms:.0f}", ln=True, align="C")
+        pdf.cell(0, 8, pdf_safe(f"Cycle {CURRENT_CYCLE['number']} | Paygrade: {paygrade} | Max FMS for {paygrade}: {max_fms:.0f}"), ln=True, align="C")
         pdf.ln(6)
         pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, f"Final Multiple Score: {fms}   |   {pct_of_max}% of max", ln=True)
+        pdf.cell(0, 10, pdf_safe(f"Final Multiple Score: {fms}   |   {pct_of_max}% of max"), ln=True)
         pdf.set_font("Arial", "", 10)
-        pdf.multi_cell(0, 6, "Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS - your standing depends on your rate's specific cutoff.")
+        pdf.multi_cell(0, 6, pdf_safe("Selection cutoffs are published per rate after each cycle. There is no fixed minimum FMS - your standing depends on your rate's specific cutoff."))
         pdf.ln(2)
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 8, "Score Breakdown:", ln=True)
+        pdf.cell(0, 8, pdf_safe("Score Breakdown:"), ln=True)
         pdf.set_font("Arial", "", 11)
         pma_label_pdf = "RSCA PMA" if paygrade == "E6" else "PMA"
         for label, val in [
@@ -546,29 +579,30 @@ if submitted:
             ("Education Points", education),
             ("PNA Points", pna),
         ]:
-            pdf.cell(0, 7, "  " + label + ": " + str(val), ln=True)
+            pdf.cell(0, 7, pdf_safe("  " + label + ": " + str(val)), ln=True)
         pdf.ln(4)
         if guide_items:
             pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 8, "Improvement Areas:", ln=True)
+            pdf.cell(0, 8, pdf_safe("Improvement Areas:"), ln=True)
             for item in guide_items:
                 pdf.set_font("Arial", "B", 11)
-                pdf.cell(0, 7, "[" + item["priority"] + "] " + item["area"], ln=True)
+                pdf.cell(0, 7, pdf_safe("[" + item["priority"] + "] " + item["area"]), ln=True)
                 pdf.set_font("Arial", "", 10)
                 for action in item["actions"]:
-                    safe = action.encode("latin-1", errors="replace").decode("latin-1")
-                    pdf.multi_cell(180, 6, "   - " + safe)
+                    pdf.multi_cell(180, 6, pdf_safe("   - " + action))
                     pdf.ln(2)
-        out_path = os.path.join(tempfile.gettempdir(), "fms_report.pdf")
-        pdf.output(out_path)
-        return out_path
+        # Unique temp path so concurrent users don't overwrite each other's PDFs.
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp.close()
+        pdf.output(tmp.name)
+        return tmp.name
 
     pdf_path = generate_pdf(sailor_name, paygrade, fms, max_fms, pct_of_max, exam_score, pma, pma_points, sipg_months, sipg_points, awards, education, pna, guide_items)
     with open(pdf_path, "rb") as f:
         st.download_button(
             label="📥 Download PDF Report",
             data=f,
-            file_name="FMS_Report_" + sailor_name.replace(" ", "_") + ".pdf",
+            file_name="FMS_Report_" + safe_filename(sailor_name) + ".pdf",
             mime="application/pdf",
             use_container_width=True,
         )
@@ -654,17 +688,19 @@ Keep it tight. Every sentence must earn its place."""
                 max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}]
             )
-            guide_text = message.content[0].text
-            st.subheader("📋 Your Personalized Study Guide")
-            st.markdown(guide_text)
-
-            st.download_button(
-                "📥 Download Study Guide",
-                data=guide_text,
-                file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+            guide_text = first_text_block(message)
+            if not guide_text:
+                st.error("Chief had nothing to say. Try again in a moment.")
+            else:
+                st.subheader("📋 Your Personalized Study Guide")
+                st.markdown(guide_text)
+                st.download_button(
+                    "📥 Download Study Guide",
+                    data=guide_text,
+                    file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
         except Exception as e:
             st.error("Something went wrong: " + str(e))
 
@@ -779,27 +815,29 @@ Keep it tight. Make it stick."""
                 max_tokens=2000,
                 messages=[{"role": "user", "content": lesson_prompt}]
             )
-            lesson = message.content[0].text
+            lesson = first_text_block(message)
+            if not lesson:
+                st.error("Chief had nothing to say. Try again in a moment.")
+            else:
+                st.subheader(f"📚 Lesson: {tutor_subtopic}")
+                st.markdown(lesson)
 
-            st.subheader(f"📚 Lesson: {tutor_subtopic}")
-            st.markdown(lesson)
+                if "tutor_history" not in st.session_state:
+                    st.session_state.tutor_history = []
+                st.session_state.tutor_history = [
+                    {"role": "user", "content": lesson_prompt},
+                    {"role": "assistant", "content": lesson}
+                ]
+                st.session_state.tutor_topic = tutor_topic
+                st.session_state.tutor_subtopic = tutor_subtopic
 
-            if "tutor_history" not in st.session_state:
-                st.session_state.tutor_history = []
-            st.session_state.tutor_history = [
-                {"role": "user", "content": lesson_prompt},
-                {"role": "assistant", "content": lesson}
-            ]
-            st.session_state.tutor_topic = tutor_topic
-            st.session_state.tutor_subtopic = tutor_subtopic
-
-            st.download_button(
-                "📥 Download This Lesson",
-                data=lesson,
-                file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+                st.download_button(
+                    "📥 Download This Lesson",
+                    data=lesson,
+                    file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
         except Exception as e:
             st.error("Error: " + str(e))
 
@@ -819,10 +857,13 @@ if "tutor_history" in st.session_state and len(st.session_state.tutor_history) >
                         max_tokens=1000,
                         messages=history
                     )
-                    answer = message.content[0].text
-                    st.session_state.tutor_history.append({"role": "assistant", "content": answer})
-                    st.markdown("**Chief says:**")
-                    st.markdown(answer)
+                    answer = first_text_block(message)
+                    if not answer:
+                        st.error("Chief had nothing to say. Try again in a moment.")
+                    else:
+                        st.session_state.tutor_history.append({"role": "assistant", "content": answer})
+                        st.markdown("**Chief says:**")
+                        st.markdown(answer)
                 except Exception as e:
                     st.error("Error: " + str(e))
 # SCORE HISTORY TRACKER
@@ -893,8 +934,11 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
                 max_tokens=2000,
                 messages=[{"role": "user", "content": pq_prompt}]
             )
-            questions_text = message.content[0].text
-            st.session_state.practice_questions = questions_text
+            questions_text = first_text_block(message)
+            if not questions_text:
+                st.error("Chief had nothing to say. Try again in a moment.")
+            else:
+                st.session_state.practice_questions = questions_text
         except Exception as e:
             st.error("Error: " + str(e))
 
@@ -916,9 +960,13 @@ Grade each answer. State correct or incorrect. Explain the right answer. Referen
                         max_tokens=1500,
                         messages=[{"role": "user", "content": grade_prompt}]
                     )
-                    grade_result = message.content[0].text
-                    st.subheader("📊 Your Grade")
-                    st.markdown(grade_result)
+                    grade_result = first_text_block(message)
+                    if not grade_result:
+                        st.error("Chief had nothing to say. Try again in a moment.")
+                        grade_result = ""
+                    else:
+                        st.subheader("📊 Your Grade")
+                        st.markdown(grade_result)
                     import re as re2
                     score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
                     if score_match:
@@ -941,7 +989,9 @@ Grade each answer. State correct or incorrect. Explain the right answer. Referen
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error("Error: " + str(e))# SCORE HISTORY CHART
+                    st.error("Error: " + str(e))
+
+# SCORE HISTORY CHART
 if "score_history" in st.session_state and len(st.session_state.score_history) > 0:
     st.divider()
     st.subheader("📈 Your Score History")
@@ -950,4 +1000,4 @@ if "score_history" in st.session_state and len(st.session_state.score_history) >
     st.line_chart(history_df.set_index("date")["pct"])
     st.dataframe(history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
         "date": "Date", "topic": "Topic", "score": "Score", "total": "Total", "pct": "% Correct"
-    }), use_container_width=True)# PS RATE EXPERT — ASK THE CHIEF
+    }), use_container_width=True)
