@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import json
 import tempfile
 import os
 import datetime
@@ -24,6 +25,10 @@ st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 MAX_FMS = {"E5": 169.0, "E6": 222.0}
 AWARDS_MAX = {"E5": 10.0, "E6": 12.0}
 SIPG_POINTS_MAX = {"E5": 2.0, "E6": 3.0}
+
+# UPLOAD SAFETY — keep token costs predictable and prevent abuse on the public app.
+MAX_UPLOAD_MB = 8       # Profile sheets fit easily under this; Streamlit default is 200 MB.
+MAX_PDF_PAGES = 3       # Profile sheets are 1-2 pages. Cap protects API spend on bad uploads.
 
 # CURRENT CYCLE CONFIG — single source of truth.
 # When the next NAVADMIN drops, update only this block.
@@ -74,13 +79,36 @@ VISION_PROMPT = (
 )
 
 
+def parse_claude_json(raw_text):
+    """
+    Pull a JSON object out of Claude's text response.
+    Tolerates markdown code fences (```json ... ```) and stray prose around the JSON.
+    Raises json.JSONDecodeError if no parseable JSON is found.
+    """
+    text = raw_text.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3].rstrip()
+    # Locate the JSON object inside any surrounding prose
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start:end + 1]
+    return json.loads(text)
+
+
 def extract_fields_from_upload(uploaded_file):
     """
     Extract FMS fields from a profile sheet using Claude vision.
-    PDFs are rendered to images via PyMuPDF. Image files are sent directly.
-    Returns (fields_dict, method_label).
+    PDFs are rendered to images via PyMuPDF (capped at MAX_PDF_PAGES).
+    Returns (fields_dict, missing_fields_list, method_label).
+    The caller is responsible for enforcing file-size limits before calling.
     """
-    import json
+    all_keys = list(DEFAULT_VALUES.keys())
     suffix = os.path.splitext(uploaded_file.name)[1].lower()
     file_bytes = uploaded_file.read()
     images_b64 = []  # list of (b64_data, media_type)
@@ -88,18 +116,26 @@ def extract_fields_from_upload(uploaded_file):
     if suffix == ".pdf":
         if not PDF_AVAILABLE:
             st.error("PyMuPDF not installed. Run: pip install pymupdf — or enter values manually.")
-            return {}, "error"
+            return {}, all_keys, "error"
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
         try:
             doc = fitz.open(tmp_path)
-            for page in doc:
+            total_pages = len(doc)
+            for i, page in enumerate(doc):
+                if i >= MAX_PDF_PAGES:
+                    break
                 pix = page.get_pixmap(dpi=200)
                 images_b64.append((
                     base64.standard_b64encode(pix.tobytes("png")).decode(),
                     "image/png",
                 ))
+            if total_pages > MAX_PDF_PAGES:
+                st.info(
+                    f"📄 PDF has {total_pages} pages — only the first {MAX_PDF_PAGES} were read. "
+                    "Profile sheets typically fit in 1–2 pages."
+                )
         finally:
             os.unlink(tmp_path)
         method = "claude-vision-pdf"
@@ -110,7 +146,7 @@ def extract_fields_from_upload(uploaded_file):
         method = "claude-vision-image"
 
     if not images_b64:
-        return {}, "error"
+        return {}, all_keys, "error"
 
     content = []
     for b64_data, media_type in images_b64:
@@ -124,13 +160,40 @@ def extract_fields_from_upload(uploaded_file):
         msg = client.messages.create(
             model="claude-opus-4-5",
             max_tokens=256,
-            messages=[{"role": "user", "content": content}]
+            messages=[{"role": "user", "content": content}],
         )
-        fields = json.loads(msg.content[0].text.strip())
-        return fields, method
+        # Find the first text block in Claude's response (don't assume content[0] is text)
+        raw_text = ""
+        for block in msg.content:
+            if getattr(block, "type", None) == "text":
+                raw_text = block.text
+                break
+        if not raw_text:
+            st.error("Claude returned no readable text. Try uploading a clearer image.")
+            return {}, all_keys, "error"
+
+        fields = parse_claude_json(raw_text)
+
+        # Track missing fields = those Claude returned as null/missing or couldn't be parsed.
+        clean = {}
+        missing = []
+        for k in all_keys:
+            v = fields.get(k)
+            if v is None:
+                missing.append(k)
+                continue
+            try:
+                clean[k] = float(v)
+            except (TypeError, ValueError):
+                missing.append(k)
+        return clean, missing, method
+
+    except json.JSONDecodeError:
+        st.error("Claude's response wasn't valid JSON. Try uploading a clearer image, or fill the fields in manually.")
+        return {}, all_keys, "error"
     except Exception as e:
-        st.error(f"Claude vision extraction failed: {e}")
-        return {}, "error"
+        st.error(f"Couldn't read the profile sheet: {e}")
+        return {}, all_keys, "error"
 
 
 # OCR UPLOAD SECTION
@@ -144,35 +207,34 @@ uploaded_file = st.file_uploader(
 extracted_data = DEFAULT_VALUES.copy()
 
 if uploaded_file is not None:
-    with st.spinner("Reading your profile sheet with Claude vision..."):
-        claude_fields, read_method = extract_fields_from_upload(uploaded_file)
-
-    if claude_fields:
-        for field in DEFAULT_VALUES:
-            val = claude_fields.get(field)
-            if val is not None:
-                try:
-                    extracted_data[field] = float(val)
-                except (TypeError, ValueError):
-                    pass
-
-        missing_fields = [f for f in DEFAULT_VALUES if extracted_data[f] == DEFAULT_VALUES[f]]
-
-        method_labels = {
-            "claude-vision-pdf":   "✅ Profile sheet read via Claude vision (PDF)",
-            "claude-vision-image": "✅ Profile sheet read via Claude vision (image)",
-        }
-        st.success(
-            method_labels.get(read_method, "✅ Document read successfully") +
-            (" — all fields found!" if not missing_fields else "")
+    file_size_mb = uploaded_file.size / (1024 * 1024)
+    if file_size_mb > MAX_UPLOAD_MB:
+        st.error(
+            f"That file is {file_size_mb:.1f} MB, which is over the {MAX_UPLOAD_MB} MB limit. "
+            "Please upload a smaller image or PDF, or enter your values manually below."
         )
-        if missing_fields:
-            st.warning(
-                "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
-                "Default values used — please fill them in manually."
-            )
     else:
-        st.error("Could not read the document. Try a clearer image or enter values manually.")
+        with st.spinner("Reading your profile sheet with Claude vision..."):
+            claude_fields, missing_fields, read_method = extract_fields_from_upload(uploaded_file)
+
+        if read_method != "error" and claude_fields is not None:
+            for field, val in claude_fields.items():
+                if field in DEFAULT_VALUES and val is not None:
+                    extracted_data[field] = val
+
+            method_labels = {
+                "claude-vision-pdf":   "✅ Profile sheet read via Claude vision (PDF)",
+                "claude-vision-image": "✅ Profile sheet read via Claude vision (image)",
+            }
+            st.success(
+                method_labels.get(read_method, "✅ Document read successfully") +
+                (" — all fields found!" if not missing_fields else "")
+            )
+            if missing_fields:
+                st.warning(
+                    "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
+                    "Default values used — please fill them in manually."
+                )
 
 
 # PAYGRADE SELECTOR — drives which formula applies (E5 vs E6 use different weights)
