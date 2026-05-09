@@ -83,6 +83,50 @@ h1, h2, h3 {
 .streamlit-expanderHeader {
     border-radius: 8px;
 }
+
+/* === BATCH 9.1 HOTFIX === */
+
+/* Headings — higher specificity so brass actually applies through Streamlit's wrappers */
+h1, h2, h3,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3,
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    color: #c9a96e !important;
+    font-weight: 500;
+}
+
+/* Alert text — force readable cream on Streamlit's blue/yellow/red tinted backgrounds */
+.stAlert, [data-testid="stAlert"] {
+    border-radius: 10px !important;
+    border-left: 3px solid #c9a96e !important;
+}
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"] *,
+.stAlert [data-testid="stMarkdownContainer"] *,
+.stAlert p, .stAlert strong, .stAlert span {
+    color: #f0e6d2 !important;
+}
+
+/* File uploader drop zone — pops as a clear "drop here" target */
+[data-testid="stFileUploaderDropzone"] {
+    border-radius: 12px;
+    border: 1.5px dashed #c9a96e;
+    background: rgba(201, 169, 110, 0.05);
+    padding: 1.25rem;
+}
+[data-testid="stFileUploaderDropzone"] button {
+    border-radius: 100px;
+    background: #c9a96e;
+    color: #142b50;
+    border: 1.5px solid #c9a96e;
+    font-weight: 500;
+    padding: 0.4rem 1.2rem;
+}
+[data-testid="stFileUploaderDropzone"] button:hover {
+    background: #d6b87a;
+    border-color: #d6b87a;
+    color: #142b50;
+}
 </style>
 """, unsafe_allow_html=True)
 
