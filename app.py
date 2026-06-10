@@ -320,6 +320,14 @@ def _exam_date(label_substr):
 
 st.title("⚓ Score Surge | by Strategic Sailor")
 
+with st.sidebar:
+    st.markdown("### ⚓ Strategic Sailor")
+    st.link_button(
+        "💬 Join the Community",
+        "https://discord.gg/q3advbdPf",
+        use_container_width=True
+    )
+
 # Cycle status — compute once, drives the header tone and the countdown tiles below.
 # Three phases:
 #   "open"             — at least one official deadline still ahead (PMK-EE / ILDC / exam day).
@@ -661,10 +669,10 @@ with st.form("fms_form"):
     with col1:
         exam_score = st.number_input(
             "Exam Standard Score",
-            min_value=0.0, max_value=80.0,
-            value=min(80.0, max(0.0, float(extracted_data["exam_score"]))),
+            min_value=0.0, max_value=99.0,
+            value=min(99.0, max(0.0, float(extracted_data["exam_score"]))),
             step=0.5,
-            help="Your raw exam score from the profile sheet.",
+            help="Your raw exam score from the profile sheet. Standard scores typically run 40–80; high performers can score higher.",
         )
         pma = st.number_input(
             pma_label,
@@ -680,6 +688,14 @@ with st.form("fms_form"):
             step=1.0,
             help="How many months you've been at your current paygrade. SIPG/5 with a cap of 2 pts (E5) or 3 pts (E6).",
         )
+        # Catch the common months-vs-years mistake. A genuinely-low SIPG (1–11 months)
+        # is real for fresh promotions, but it's the same range a sailor would type
+        # if they confused years with months. Show a friendly heads-up either way.
+        if 0 < sipg_months < 12:
+            st.warning(
+                f"Heads up — that's only **{sipg_months:.0f} month{'s' if sipg_months != 1 else ''}** in paygrade. "
+                "If you meant *years*, multiply by 12 (e.g., 5 years = 60 months)."
+            )
 
     with col2:
         awards = st.number_input(
@@ -930,20 +946,19 @@ if "fms_inputs" in st.session_state:
         "actions": pna_actions,
     })
 
-    if not guide_items:
-        st.success("Your scores are strong across the board. Keep it up!")
-    else:
-        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
-        guide_items.sort(key=lambda x: priority_order.get(x["priority"], 9))
-        priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "🔵"}
+    # PNA card always appends to guide_items (line ~932), so the list is never empty.
+    # Render the prioritized study guide directly — no need for an "all clear" fallback.
+    priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+    guide_items.sort(key=lambda x: priority_order.get(x["priority"], 9))
+    priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "🔵"}
 
-        for item in guide_items:
-            icon = priority_icon.get(item["priority"], "⚪")
-            label = icon + " **" + item["area"] + "** — Current: " + str(item["current"]) + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)"
-            with st.expander(label):
-                st.markdown("**Action Steps:**")
-                for action in item["actions"]:
-                    st.markdown("- " + action)
+    for item in guide_items:
+        icon = priority_icon.get(item["priority"], "⚪")
+        label = icon + " **" + item["area"] + "** — Current: " + str(item["current"]) + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)"
+        with st.expander(label):
+            st.markdown("**Action Steps:**")
+            for action in item["actions"]:
+                st.markdown("- " + action)
 
     # Data Summary
     st.subheader("🧾 Full Score Summary")
