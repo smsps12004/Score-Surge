@@ -1656,6 +1656,70 @@ st.divider()
 st.subheader("🧪 Full Mock Exam")
 st.caption("Simulate the real deal. The Chief writes the exam, you answer, he grades it. Timer starts when questions are generated.")
 
+
+def parse_mock_exam_questions(text):
+    """
+    Parse the Chief's generated exam text into a list of structured question dicts.
+    Each dict has: num (int), text (str), options (dict A-D → str),
+    correct (letter str), explanation (str).
+    Handles multi-line question text and explanation continuations.
+    Returns an empty list if nothing parseable is found.
+    """
+    questions = []
+    # Split on lines that start a new question block (Q1:, Q2:, etc.)
+    blocks = re.split(r'(?=^Q\d+:)', text.strip(), flags=re.MULTILINE)
+    for block in blocks:
+        block = block.strip()
+        if not re.match(r'^Q\d+:', block):
+            continue
+        try:
+            lines = block.split('\n')
+            hdr = re.match(r'^Q(\d+):\s*(.*)', lines[0])
+            if not hdr:
+                continue
+            q_num = int(hdr.group(1))
+            q_text_parts = [hdr.group(2).strip()]
+            options = {}
+            correct = None
+            explanation_parts = []
+            state = 'question'
+
+            for line in lines[1:]:
+                ls = line.strip()
+                if re.match(r'^[A-D]\)', ls):
+                    options[ls[0]] = ls[2:].strip()
+                    state = 'option'
+                elif re.match(r'^ANSWER:\s*[A-Da-d]', ls, re.IGNORECASE):
+                    m = re.match(r'^ANSWER:\s*([A-Da-d])', ls, re.IGNORECASE)
+                    if m:
+                        correct = m.group(1).upper()
+                    state = 'answer'
+                elif re.match(r'^EXPLANATION:', ls, re.IGNORECASE):
+                    explanation_parts.append(
+                        re.sub(r'^EXPLANATION:\s*', '', ls, flags=re.IGNORECASE)
+                    )
+                    state = 'explanation'
+                elif state == 'explanation' and ls:
+                    explanation_parts.append(ls)
+                elif state == 'question' and ls:
+                    q_text_parts.append(ls)
+
+            q_text = ' '.join(q_text_parts).strip()
+            explanation = ' '.join(explanation_parts).strip()
+
+            if correct and len(options) >= 4:
+                questions.append({
+                    "num":         q_num,
+                    "text":        q_text,
+                    "options":     options,
+                    "correct":     correct,
+                    "explanation": explanation,
+                })
+        except Exception:
+            continue
+    return questions
+
+
 col1, col2, col3 = st.columns(3)
 with col1:
     mock_rating_label = st.selectbox(
@@ -1673,6 +1737,8 @@ with col3:
 if st.button("Generate Exam", use_container_width=True, key="mock_gen_btn"):
     if check_ai_quota():
         mock_rate_long = dict(NAVY_RATES).get(mock_rating, mock_rating)
+
+        # AGENT: Examiner — generate all exam questions
         mock_gen_prompt = f"""You are a senior {mock_rating} ({mock_rate_long}) Chief Petty Officer writing a full Navy advancement exam simulation for a {mock_rating} {mock_paygrade} sailor.
 Generate exactly {mock_num_q} multiple choice questions covering a realistic spread of topics from the {mock_rating} {mock_paygrade} advancement bibliography.
 Format each question EXACTLY like this:
@@ -1684,6 +1750,7 @@ D) [Option]
 ANSWER: [Letter]
 EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
 Make the questions realistic {mock_rating} {mock_paygrade} exam difficulty. Include tricky distractors. Cover multiple topic areas. Reference specific regulations. No fluff. No preamble — start directly with Q1."""
+
         with st.spinner(f"Chief is writing your {mock_num_q}-question {mock_rating} {mock_paygrade} exam..."):
             try:
                 msg = client.messages.create(
@@ -1695,23 +1762,56 @@ Make the questions realistic {mock_rating} {mock_paygrade} exam difficulty. Incl
                 if not exam_text:
                     st.error("Chief had nothing to say. Try again.")
                 else:
-                    st.session_state["mock_exam_text"] = exam_text
-                    st.session_state["mock_exam_rating"] = mock_rating
-                    st.session_state["mock_exam_paygrade"] = mock_paygrade
-                    st.session_state["mock_exam_num_q"] = mock_num_q
-                    st.session_state["mock_exam_start_ts"] = time.time()
-                    st.session_state["mock_exam_active"] = True
-                    st.session_state.pop("mock_exam_result", None)
-                    st.session_state.pop("mock_exam_final_time", None)
-                    st.session_state.pop("mock_submitted_answers", None)
-                    st.session_state.pop("mock_exam_score_saved", None)
+                    sentinel_feedback = ""
+                    if check_ai_quota():
+                        # AGENT: Sentinel — verify questions are accurate and well-formed before showing to sailor
+                        sentinel_prompt = f"""You are a Navy advancement exam quality reviewer.
+Review the following {mock_rating} {mock_paygrade} exam questions. Check for:
+1. Factual accuracy (correct regulations, procedures, Navy doctrine)
+2. Each question has exactly 4 options (A-D), one clearly correct answer, and an EXPLANATION
+3. No duplicate or ambiguous answers
+
+If you find significant factual errors, list them briefly (one line each).
+Otherwise respond with exactly: VERIFIED: Questions are accurate and well-formed.
+
+Questions to review:
+{exam_text[:3500]}"""
+                        sentinel_msg = client.messages.create(
+                            model="claude-opus-4-5",
+                            max_tokens=400,
+                            messages=[{"role": "user", "content": sentinel_prompt}],
+                        )
+                        sentinel_feedback = first_text_block(sentinel_msg)
+
+                    parsed_qs = parse_mock_exam_questions(exam_text)
+                    if not parsed_qs:
+                        st.error("Couldn't parse exam questions — please try generating again.")
+                    else:
+                        st.session_state["mock_exam_text"]      = exam_text
+                        st.session_state["mock_exam_questions"] = parsed_qs
+                        st.session_state["mock_exam_sentinel"]  = sentinel_feedback
+                        st.session_state["mock_exam_rating"]    = mock_rating
+                        st.session_state["mock_exam_paygrade"]  = mock_paygrade
+                        st.session_state["mock_exam_num_q"]     = mock_num_q
+                        st.session_state["mock_exam_start_ts"]  = time.time()
+                        st.session_state["mock_exam_active"]    = True
+                        # Clear any previous attempt state
+                        for _clr in ["mock_exam_result", "mock_exam_final_time",
+                                     "mock_submitted_answers", "mock_exam_score_saved",
+                                     "mock_exam_graded", "mock_exam_coach_summary",
+                                     "mock_exam_score", "mock_exam_total", "mock_exam_pct"]:
+                            st.session_state.pop(_clr, None)
+                        # Clear individual radio answer keys
+                        for _q in parsed_qs:
+                            st.session_state.pop(f"mock_q_{_q['num']}", None)
             except Exception as e:
                 st.error("Error: " + str(e))
 
-if "mock_exam_text" in st.session_state:
+if "mock_exam_questions" in st.session_state:
     _me_rating   = st.session_state["mock_exam_rating"]
     _me_paygrade = st.session_state["mock_exam_paygrade"]
     _me_num_q    = st.session_state["mock_exam_num_q"]
+    _me_qs       = st.session_state["mock_exam_questions"]
 
     # Timer — shows elapsed time; updates on each user interaction.
     _timer_ph = st.empty()
@@ -1722,105 +1822,204 @@ if "mock_exam_text" in st.session_state:
     elif "mock_exam_final_time" in st.session_state:
         _timer_ph.metric("⏱️ Final Time", st.session_state["mock_exam_final_time"])
 
+    # Sentinel quality alert — only show when the Sentinel flagged real issues.
+    _sentinel = st.session_state.get("mock_exam_sentinel", "")
+    if _sentinel and "VERIFIED" not in _sentinel.upper() and len(_sentinel) > 30:
+        with st.expander("⚠️ Sentinel Quality Notes", expanded=False):
+            st.caption(_sentinel)
+
     st.subheader(f"📝 {_me_num_q}-Question {_me_rating} {_me_paygrade} Mock Exam")
-    st.markdown(st.session_state["mock_exam_text"])
 
-    if st.session_state.get("mock_exam_active"):
-        st.subheader("✍️ Submit Your Answers")
-        st.caption("Enter all answers at once, one per line or comma-separated (e.g. Q1: B, Q2: A, Q3: C...)")
-        mock_answers = st.text_area(
-            "Your answers",
-            height=200,
-            key="mock_answers_input",
-            placeholder="Q1: A\nQ2: C\nQ3: B\n...",
+    # ── Answer phase — radio buttons, one per question ────────────────────────
+    if st.session_state.get("mock_exam_active") and not st.session_state.get("mock_exam_graded"):
+        st.caption("Select your answer for each question, then hit **Submit Exam** when all are answered.")
+
+        for q in _me_qs:
+            st.markdown(f"**Q{q['num']}.** {q['text']}")
+            options_list = [
+                f"{letter}) {q['options'][letter]}"
+                for letter in "ABCD"
+                if letter in q['options']
+            ]
+            st.radio(
+                label=f"Question {q['num']}",
+                options=options_list,
+                index=None,          # No default — sailor must choose explicitly
+                key=f"mock_q_{q['num']}",
+                label_visibility="collapsed",
+            )
+            st.markdown("---")
+
+        # Tally how many questions have been answered
+        answered_count = sum(
+            1 for q in _me_qs
+            if st.session_state.get(f"mock_q_{q['num']}") is not None
         )
-        if st.button("Submit Exam", use_container_width=True, key="mock_submit_btn"):
-            if not (mock_answers or "").strip():
-                st.error("Enter your answers before submitting.")
-            elif check_ai_quota():
-                _final_elapsed = int(time.time() - st.session_state["mock_exam_start_ts"])
-                _final_m, _final_s = divmod(_final_elapsed, 60)
-                st.session_state["mock_submitted_answers"] = mock_answers
-                st.session_state["mock_exam_final_time"] = f"{_final_m:02d}:{_final_s:02d}"
-                _gr_long = dict(NAVY_RATES).get(_me_rating, _me_rating)
-                mock_grade_prompt = f"""You are a {_me_rating} ({_gr_long}) Chief grading a full {_me_num_q}-question mock Navy advancement exam.
+        all_answered = answered_count == len(_me_qs)
 
-Questions:
-{st.session_state["mock_exam_text"]}
+        if not all_answered:
+            st.caption(f"📋 {answered_count} of {len(_me_qs)} answered — select all answers to enable Submit.")
 
-Sailor's Answers:
-{mock_answers}
-
-Grade each answer: state correct or incorrect, give the right letter, and a 1-2 sentence explanation referencing the governing regulation.
-After all answers provide:
-- Topics the sailor is strong in
-- Topics needing more study
-- One honest line of direct feedback
-
-End your response with this exact format: "Final Score: X/{_me_num_q}" (where X is number correct)."""
-                with st.spinner("Chief is grading your exam..."):
-                    try:
-                        msg = client.messages.create(
-                            model="claude-opus-4-5",
-                            max_tokens=min(1000 + _me_num_q * 100, 8000),
-                            messages=[{"role": "user", "content": mock_grade_prompt}],
-                        )
-                        mock_result = first_text_block(msg)
-                        if not mock_result:
-                            st.error("Chief had nothing to say. Try again.")
-                        else:
-                            st.session_state["mock_exam_result"] = mock_result
-                            st.session_state["mock_exam_active"] = False
-                            st.rerun()
-                    except Exception as e:
-                        st.error("Error: " + str(e))
-
-    if "mock_exam_result" in st.session_state:
-        mock_result = st.session_state["mock_exam_result"]
-        st.subheader("📊 Mock Exam Results")
-        st.markdown(mock_result)
-
-        _mscore_match = None
-        for _pat in (
-            r'(?:final\s+score|score)[:\s]+(\d+)\s*(?:out\s+of|/|of)\s*(\d+)',
-            r'(\d+)\s*(?:out\s+of|of)\s*(\d+)',
-            r'(\d+)\s*/\s*(\d+)',
+        if st.button(
+            "✅ Submit Exam",
+            use_container_width=True,
+            key="mock_submit_btn",
+            disabled=not all_answered,
         ):
-            _mscore_match = re.search(_pat, mock_result, re.IGNORECASE)
-            if _mscore_match:
-                break
+            _final_elapsed = int(time.time() - st.session_state["mock_exam_start_ts"])
+            _final_m, _final_s = divmod(_final_elapsed, 60)
+            st.session_state["mock_exam_final_time"] = f"{_final_m:02d}:{_final_s:02d}"
 
-        if _mscore_match:
-            _ms = int(_mscore_match.group(1))
-            _mt = int(_mscore_match.group(2))
-            if _mt > 0 and _ms <= _mt:
-                _mpct = round((_ms / _mt) * 100)
-                _rc1, _rc2, _rc3 = st.columns(3)
-                _rc1.metric("Score", f"{_ms}/{_mt}")
-                _rc2.metric("Percentage", f"{_mpct}%")
-                if "mock_exam_final_time" in st.session_state:
-                    _rc3.metric("Time", st.session_state["mock_exam_final_time"])
+            # AGENT: Grader — compare each selected answer to the parsed correct answer
+            graded = []
+            for q in _me_qs:
+                raw_sel      = st.session_state.get(f"mock_q_{q['num']}", "") or ""
+                selected     = raw_sel[0] if raw_sel else None   # first char = A/B/C/D
+                selected_txt = q['options'].get(selected, "") if selected else ""
+                is_correct   = (selected == q['correct'])
+                graded.append({
+                    "num":           q['num'],
+                    "text":          q['text'],
+                    "selected":      selected,
+                    "selected_text": selected_txt,
+                    "correct":       q['correct'],
+                    "correct_text":  q['options'].get(q['correct'], ""),
+                    "explanation":   q['explanation'],
+                    "is_correct":    is_correct,
+                })
 
-                if not st.session_state.get("mock_exam_score_saved"):
-                    if "score_history" not in st.session_state:
-                        st.session_state.score_history = []
-                    st.session_state.score_history.append({
-                        "date": datetime.date.today().strftime("%b %d"),
-                        "topic": f"Mock Exam — {_me_rating} {_me_paygrade}",
-                        "score": _ms,
-                        "total": _mt,
-                        "pct": _mpct,
-                    })
-                    st.session_state["mock_exam_score_saved"] = True
+            score = sum(1 for g in graded if g['is_correct'])
+            total = len(graded)
+            pct   = round((score / total) * 100) if total > 0 else 0
+
+            st.session_state["mock_exam_graded"] = graded
+            st.session_state["mock_exam_score"]  = score
+            st.session_state["mock_exam_total"]  = total
+            st.session_state["mock_exam_pct"]    = pct
+            st.session_state["mock_exam_active"] = False
+
+            # AGENT: Coach — identify strong and weak topic areas from graded results
+            missed_qs  = [g for g in graded if not g['is_correct']]
+            correct_qs = [g for g in graded if g['is_correct']]
+            missed_txt  = "\n".join(f"Q{g['num']}: {g['text']}" for g in missed_qs) or "None"
+            correct_txt = "\n".join(f"Q{g['num']}: {g['text']}" for g in correct_qs) or "None"
+
+            coach_summary = ""
+            if check_ai_quota():
+                try:
+                    coach_prompt = f"""You are a senior {_me_rating} Chief reviewing a sailor's {_me_num_q}-question mock exam.
+Rating: {_me_rating} | Paygrade: {_me_paygrade} | Score: {score}/{total} ({pct}%)
+
+Questions answered CORRECTLY:
+{correct_txt}
+
+Questions MISSED:
+{missed_txt}
+
+Provide:
+1. **Strong Topics** — 2-4 specific topic areas this sailor clearly knows (inferred from correct answers)
+2. **Weak Topics** — 2-4 specific topic areas needing more study (inferred from missed answers)
+3. One direct, honest sentence of Chief feedback
+
+Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluff."""
+                    coach_msg = client.messages.create(
+                        model="claude-opus-4-5",
+                        max_tokens=400,
+                        messages=[{"role": "user", "content": coach_prompt}],
+                    )
+                    coach_summary = first_text_block(coach_msg)
+                except Exception:
+                    coach_summary = ""
+            st.session_state["mock_exam_coach_summary"] = coach_summary
+
+            # PROFILE TRACKING — save detailed result to sailor_profile history
+            if "sailor_profile" not in st.session_state:
+                st.session_state["sailor_profile"] = {"history": []}
+            if "history" not in st.session_state["sailor_profile"]:
+                st.session_state["sailor_profile"]["history"] = []
+            st.session_state["sailor_profile"]["history"].append({
+                "date":           datetime.date.today().isoformat(),
+                "rating":         _me_rating,
+                "paygrade":       _me_paygrade,
+                "score":          score,
+                "total":          total,
+                "percentage":     pct,
+                "topics_missed":  [g['text'][:80] for g in missed_qs],
+                "topics_correct": [g['text'][:80] for g in correct_qs],
+            })
+
+            # Also log to score_history for the progress chart
+            if not st.session_state.get("mock_exam_score_saved"):
+                if "score_history" not in st.session_state:
+                    st.session_state.score_history = []
+                st.session_state.score_history.append({
+                    "date":  datetime.date.today().strftime("%b %d"),
+                    "topic": f"Mock Exam — {_me_rating} {_me_paygrade}",
+                    "score": score,
+                    "total": total,
+                    "pct":   pct,
+                })
+                st.session_state["mock_exam_score_saved"] = True
+
+            st.rerun()
+
+    # ── Results phase — shown after Submit ────────────────────────────────────
+    if st.session_state.get("mock_exam_graded"):
+        graded  = st.session_state["mock_exam_graded"]
+        score   = st.session_state["mock_exam_score"]
+        total   = st.session_state["mock_exam_total"]
+        pct     = st.session_state["mock_exam_pct"]
+
+        st.subheader("📊 Mock Exam Results")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _rc1.metric("Score", f"{score}/{total}")
+        _rc2.metric("Percentage", f"{pct}%")
+        if "mock_exam_final_time" in st.session_state:
+            _rc3.metric("⏱️ Time", st.session_state["mock_exam_final_time"])
+
+        st.markdown("---")
+        st.subheader("📋 Question-by-Question Review")
+        for g in graded:
+            icon  = "✅" if g['is_correct'] else "❌"
+            _q_preview = g['text'][:95] + ("…" if len(g['text']) > 95 else "")
+            with st.expander(f"{icon} Q{g['num']}: {_q_preview}"):
+                if g['is_correct']:
+                    st.success(
+                        f"Correct! You answered **{g['selected']}) {g['selected_text']}**"
+                    )
+                else:
+                    st.error(
+                        f"You answered **{g['selected']}) {g['selected_text']}**  \n"
+                        f"Correct answer: **{g['correct']}) {g['correct_text']}**"
+                    )
+                st.markdown(f"**Explanation:** {g['explanation']}")
+
+        # Strong / Weak topic summary from Coach
+        if st.session_state.get("mock_exam_coach_summary"):
+            st.markdown("---")
+            st.subheader("🎯 Strong & Weak Topics")
+            st.markdown(st.session_state["mock_exam_coach_summary"])
+
+        # Build download text
+        _dl = (
+            f"MOCK EXAM — {_me_rating} {_me_paygrade}\n"
+            f"Score: {score}/{total} ({pct}%)\n"
+            f"Time: {st.session_state.get('mock_exam_final_time', 'N/A')}\n\n"
+        )
+        for g in graded:
+            _dl += (
+                f"Q{g['num']}: {g['text']}\n"
+                f"Your Answer: {g['selected']}) {g['selected_text']}\n"
+                f"Correct:     {g['correct']}) {g['correct_text']}\n"
+                f"Status:      {'CORRECT' if g['is_correct'] else 'INCORRECT'}\n"
+                f"Explanation: {g['explanation']}\n\n"
+            )
+        if st.session_state.get("mock_exam_coach_summary"):
+            _dl += f"\nTOPIC SUMMARY:\n{st.session_state['mock_exam_coach_summary']}\n"
 
         st.download_button(
             "📥 Download Exam Results",
-            data=(
-                f"MOCK EXAM ({_me_rating} {_me_paygrade}):\n\n"
-                f"{st.session_state.get('mock_exam_text', '')}\n\n"
-                f"YOUR ANSWERS:\n{st.session_state.get('mock_submitted_answers', '')}\n\n"
-                f"RESULTS:\n{mock_result}"
-            ),
+            data=_dl,
             file_name=f"MockExam_{_me_rating}_{_me_paygrade}.txt",
             mime="text/plain",
             use_container_width=True,
