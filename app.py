@@ -2036,3 +2036,76 @@ if "score_history" in st.session_state and len(st.session_state.score_history) >
     st.dataframe(history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
         "date": "Date", "topic": "Topic", "score": "Score", "total": "Total", "pct": "% Correct"
     }), use_container_width=True)
+
+# ── MY PROFILE ────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("👤 My Profile")
+st.caption("Your personal score history, weak spots, and what to study next.")
+
+_score_hist = st.session_state.get("score_history", [])
+_sailor_prof_hist = st.session_state.get("sailor_profile", {}).get("history", [])
+
+# SECTION A — Exam History
+st.markdown("#### 📋 Exam History")
+if not _score_hist:
+    st.info("No exam history yet — take a Mock Exam or Practice session to get started!")
+else:
+    _hist_rows = []
+    for entry in _score_hist:
+        _scored = entry.get("score", 0)
+        _total  = entry.get("total", 0)
+        _pct    = entry.get("pct", 0)
+        _result = "✅ Pass" if _pct >= 70 else "❌ Needs Work"
+        _hist_rows.append({
+            "Date":   entry.get("date", "—"),
+            "Topic":  entry.get("topic", "—"),
+            "Score":  f"{_scored}/{_total}",
+            "Result": _result,
+        })
+    st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
+# SECTION B — Weak Topics
+st.markdown("#### ⚠️ Recurring Weak Topics")
+_weak_counter = {}
+for entry in _sailor_prof_hist:
+    for topic in entry.get("topics_missed", []):
+        _t = topic.strip()
+        if _t:
+            _weak_counter[_t] = _weak_counter.get(_t, 0) + 1
+
+if not _weak_counter:
+    st.success("No recurring weak topics yet — keep testing!")
+else:
+    _top_weak = sorted(_weak_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+    for _topic, _count in _top_weak:
+        _times = f"{_count} time{'s' if _count > 1 else ''}"
+        st.markdown(f"- **{_topic[:80]}** — missed {_times}")
+
+st.markdown("---")
+
+# SECTION C — Score Trend
+st.markdown("#### 📈 Score Trend")
+if not _score_hist:
+    st.info("Complete a session to see your score trend.")
+else:
+    _trend_df = pd.DataFrame([
+        {"Session": i + 1, "Score %": entry.get("pct", 0)}
+        for i, entry in enumerate(_score_hist)
+    ]).set_index("Session")
+    st.line_chart(_trend_df)
+
+st.markdown("---")
+
+# SECTION D — Study Recommendations
+st.markdown("#### 🎯 Recommended Next Study Topics")
+if not _weak_counter:
+    st.info("No recommendations yet — finish a graded session first.")
+else:
+    _top3 = [t for t, _ in sorted(_weak_counter.items(), key=lambda x: x[1], reverse=True)[:3]]
+    for _rec_topic in _top3:
+        _btn_label = f"📚 Study: {_rec_topic[:60]}"
+        if st.button(_btn_label, key=f"profile_study_{hash(_rec_topic) % 99999}"):
+            st.session_state["tutor_topic"] = _rec_topic
+            st.info(f"Head to the AI Tutor section above to start your lesson on **{_rec_topic[:60]}**!")
