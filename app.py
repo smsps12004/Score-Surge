@@ -1596,6 +1596,7 @@ if "practice_questions" in st.session_state:
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
 Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff.
+For each question, after showing whether the answer is correct or incorrect and explaining the correct answer, add a new line formatted exactly like this: 📖 Source: [Manual name, Chapter X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.
 End your response with a clear final score line in this exact format: "Final Score: X/Y" (where X is correct and Y is total)."""
                     message = client.messages.create(
                         model="claude-opus-4-5",
