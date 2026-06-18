@@ -1749,7 +1749,7 @@ B) [Option]
 C) [Option]
 D) [Option]
 ANSWER: [Letter]
-EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
+EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.]
 Make the questions realistic {mock_rating} {mock_paygrade} exam difficulty. Include tricky distractors. Cover multiple topic areas. Reference specific regulations. No fluff. No preamble — start directly with Q1."""
 
         with st.spinner(f"Chief is writing your {mock_num_q}-question {mock_rating} {mock_paygrade} exam..."):
