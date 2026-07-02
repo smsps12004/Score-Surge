@@ -1508,6 +1508,11 @@ if _pq_rating in TUTOR_CURATED_RATINGS:
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
 - Governing References: {bib_refs}
+Generate a mix of question difficulty levels:
+- Approximately 40% knowledge recall (facts, definitions, policy limits)
+- Approximately 40% application/scenario (a realistic fleet situation where the sailor must apply the rule)
+- Approximately 20% analysis (multiple answers are partially correct; the sailor must choose the BEST one per the governing instruction)
+Distractor rule: every wrong answer choice must be plausible — a real misconception, a commonly confused rule, a near-miss number, or a procedure from a related but different situation. Never use obviously wrong or joke answers.
 Format each question EXACTLY like this:
 Q1: [Question text]
 A) [Option]
@@ -1552,6 +1557,11 @@ Generate exactly {pq_num} multiple choice practice questions for:
 - Paygrade: {pq_free_paygrade}
 - Topic: {pq_free_topic.strip()}
 {ref_line}
+Generate a mix of question difficulty levels:
+- Approximately 40% knowledge recall (facts, definitions, policy limits)
+- Approximately 40% application/scenario (a realistic fleet situation where the sailor must apply the rule)
+- Approximately 20% analysis (multiple answers are partially correct; the sailor must choose the BEST one per the governing instruction)
+Distractor rule: every wrong answer choice must be plausible — a real misconception, a commonly confused rule, a near-miss number, or a procedure from a related but different situation. Never use obviously wrong or joke answers.
 Format each question EXACTLY like this:
 Q1: [Question text]
 A) [Option]
@@ -1597,6 +1607,15 @@ Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
 Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff.
 For each question, after showing whether the answer is correct or incorrect and explaining the correct answer, add a new line formatted exactly like this: 📖 Source: [Manual name, Chapter X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.
+After the explanation of the correct answer and the 📖 Source, add a section formatted exactly like this:
+
+Why the others are wrong:
+
+A) [one short line explaining the misconception]
+C) [one short line]
+D) [one short line]
+
+(List only the incorrect choices, skipping the correct one.)
 End your response with a clear final score line in this exact format: "Final Score: X/Y" (where X is correct and Y is total)."""
                     message = client.messages.create(
                         model="claude-opus-4-5",
@@ -1706,7 +1725,7 @@ def parse_mock_exam_questions(text):
                     q_text_parts.append(ls)
 
             q_text = ' '.join(q_text_parts).strip()
-            explanation = ' '.join(explanation_parts).strip()
+            explanation = '\n'.join(explanation_parts).strip()
 
             if correct and len(options) >= 4:
                 questions.append({
@@ -1742,6 +1761,11 @@ if st.button("Generate Exam", use_container_width=True, key="mock_gen_btn"):
         # AGENT: Examiner — generate all exam questions
         mock_gen_prompt = f"""You are a senior {mock_rating} ({mock_rate_long}) Chief Petty Officer writing a full Navy advancement exam simulation for a {mock_rating} {mock_paygrade} sailor.
 Generate exactly {mock_num_q} multiple choice questions covering a realistic spread of topics from the {mock_rating} {mock_paygrade} advancement bibliography.
+Generate a mix of question difficulty levels:
+- Approximately 40% knowledge recall (facts, definitions, policy limits)
+- Approximately 40% application/scenario (a realistic fleet situation where the sailor must apply the rule)
+- Approximately 20% analysis (multiple answers are partially correct; the sailor must choose the BEST one per the governing instruction)
+Distractor rule: every wrong answer choice must be plausible — a real misconception, a commonly confused rule, a near-miss number, or a procedure from a related but different situation. Never use obviously wrong or joke answers.
 Format each question EXACTLY like this:
 Q1: [Question text]
 A) [Option]
@@ -1749,8 +1773,14 @@ B) [Option]
 C) [Option]
 D) [Option]
 ANSWER: [Letter]
-EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.]
-Make the questions realistic {mock_rating} {mock_paygrade} exam difficulty. Include tricky distractors. Cover multiple topic areas. Reference specific regulations. No fluff. No preamble — start directly with Q1."""
+EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate. Then add a blank line and the following section, listing only the INCORRECT choices (skip the correct one):
+
+Why the others are wrong:
+
+A) [one short line explaining the misconception]
+C) [one short line]
+D) [one short line]]
+Make the questions realistic {mock_rating} {mock_paygrade} exam difficulty. Cover multiple topic areas. Reference specific regulations. No fluff. No preamble — start directly with Q1."""
 
         with st.spinner(f"Chief is writing your {mock_num_q}-question {mock_rating} {mock_paygrade} exam..."):
             try:
@@ -1870,6 +1900,7 @@ if "mock_exam_questions" in st.session_state:
             _final_elapsed = int(time.time() - st.session_state["mock_exam_start_ts"])
             _final_m, _final_s = divmod(_final_elapsed, 60)
             st.session_state["mock_exam_final_time"] = f"{_final_m:02d}:{_final_s:02d}"
+            st.session_state["mock_exam_final_elapsed"] = _final_elapsed
 
             # AGENT: Grader — compare each selected answer to the parsed correct answer
             graded = []
@@ -1972,11 +2003,28 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
         pct     = st.session_state["mock_exam_pct"]
 
         st.subheader("📊 Mock Exam Results")
+
+        if pct >= 80:
+            st.success(f"## 🟢 ON TRACK FOR ADVANCEMENT — {pct}%")
+        elif pct >= 60:
+            st.warning(f"## 🟡 GETTING THERE — {pct}% — Tighten up your weak topics")
+        else:
+            st.error(f"## 🔴 NOT READY YET — {pct}% — Time to hit the books")
+
         _rc1, _rc2, _rc3 = st.columns(3)
         _rc1.metric("Score", f"{score}/{total}")
         _rc2.metric("Percentage", f"{pct}%")
         if "mock_exam_final_time" in st.session_state:
             _rc3.metric("⏱️ Time", st.session_state["mock_exam_final_time"])
+
+        _pace_elapsed = st.session_state.get("mock_exam_final_elapsed", 0)
+        if _pace_elapsed and total:
+            _pace_secs = _pace_elapsed / total
+            _pace_m = int(_pace_secs // 60)
+            _pace_s = int(_pace_secs % 60)
+            _pace_str = f"{_pace_m}:{_pace_s:02d}"
+            _pace_note = "Work on speed." if _pace_secs > 54 else "Good pace."
+            st.info(f"⏱️ Your pace: **{_pace_str}** per question — the real exam allows about 0:54 per question. {_pace_note}")
 
         st.markdown("---")
         st.subheader("📋 Question-by-Question Review")
@@ -1985,13 +2033,24 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
             _q_preview = g['text'][:95] + ("…" if len(g['text']) > 95 else "")
             with st.expander(f"{icon} Q{g['num']}: {_q_preview}"):
                 if g['is_correct']:
-                    st.success(
-                        f"Correct! You answered **{g['selected']}) {g['selected_text']}**"
+                    st.markdown(
+                        f'<div style="background-color:#1a4731;border-left:4px solid #28a745;'
+                        f'padding:0.75rem 1rem;border-radius:8px;color:#d1e7dd;margin-bottom:0.5rem;">'
+                        f'✅ <strong>Correct!</strong> You answered '
+                        f'<strong>{g["selected"]}) {g["selected_text"]}</strong>'
+                        f'</div>',
+                        unsafe_allow_html=True,
                     )
                 else:
-                    st.error(
-                        f"You answered **{g['selected']}) {g['selected_text']}**  \n"
-                        f"Correct answer: **{g['correct']}) {g['correct_text']}**"
+                    st.markdown(
+                        f'<div style="background-color:#4a1c24;border-left:4px solid #dc3545;'
+                        f'padding:0.75rem 1rem;border-radius:8px;color:#f8d7da;margin-bottom:0.5rem;">'
+                        f'❌ <strong>You answered:</strong> '
+                        f'<strong>{g["selected"]}) {g["selected_text"]}</strong><br>'
+                        f'<strong>Correct answer:</strong> '
+                        f'<strong>{g["correct"]}) {g["correct_text"]}</strong>'
+                        f'</div>',
+                        unsafe_allow_html=True,
                     )
                 st.markdown(f"**Explanation:** {g['explanation']}")
 
@@ -2048,7 +2107,7 @@ _sailor_prof_hist = st.session_state.get("sailor_profile", {}).get("history", []
 # SECTION A — Exam History
 st.markdown("#### 📋 Exam History")
 if not _score_hist:
-    st.info("No exam history yet — take a Mock Exam or Practice session to get started!")
+    st.info("No exam history yet — head to the **Mock Exam** section above to take your first exam! 🎯")
 else:
     _hist_rows = []
     for entry in _score_hist:
@@ -2088,7 +2147,7 @@ st.markdown("---")
 # SECTION C — Score Trend
 st.markdown("#### 📈 Score Trend")
 if not _score_hist:
-    st.info("Complete a session to see your score trend.")
+    st.info("No score data yet — complete a **Mock Exam** or **Practice Questions** session above to see your trend! 📈")
 else:
     _trend_df = pd.DataFrame([
         {"Session": i + 1, "Score %": entry.get("pct", 0)}
@@ -2101,7 +2160,7 @@ st.markdown("---")
 # SECTION D — Study Recommendations
 st.markdown("#### 🎯 Recommended Next Study Topics")
 if not _weak_counter:
-    st.info("No recommendations yet — finish a graded session first.")
+    st.info("No recommendations yet — finish a graded **Mock Exam** or **Practice Questions** session above to unlock your personalized study plan! 📚")
 else:
     _top3 = [t for t, _ in sorted(_weak_counter.items(), key=lambda x: x[1], reverse=True)[:3]]
     for _rec_topic in _top3:
