@@ -9,6 +9,7 @@ import datetime
 import time
 from fpdf import FPDF
 import anthropic
+from supabase import create_client as _sb_create_client
 
 try:
     import fitz
@@ -83,6 +84,28 @@ h1, h2, h3 {
 /* Expander headers — brass accent on hover for the AI Tutor / PNA cards */
 .streamlit-expanderHeader {
     border-radius: 8px;
+}
+
+/* Review cards — correct (dark green) and incorrect (dark red) full-card backgrounds.
+   !important beats Streamlit's secondaryBackgroundColor on the expander content. */
+.review-card-correct {
+    background-color: #1a4731 !important;
+    border-left: 4px solid #28a745 !important;
+    padding: 0.75rem 1rem !important;
+    border-radius: 8px !important;
+    color: #d1e7dd !important;
+    margin-bottom: 0.5rem !important;
+}
+.review-card-incorrect {
+    background-color: #4a1c24 !important;
+    border-left: 4px solid #dc3545 !important;
+    padding: 0.75rem 1rem !important;
+    border-radius: 8px !important;
+    color: #f8d7da !important;
+    margin-bottom: 0.5rem !important;
+}
+.review-card-correct *, .review-card-incorrect * {
+    color: inherit !important;
 }
 
 /* === BATCH 9.1 HOTFIX === */
@@ -163,6 +186,48 @@ if not _api_key:
     st.stop()
 
 client = anthropic.Anthropic(api_key=_api_key)
+
+# SUPABASE CLIENT — optional; app runs fine without it (session-only mode)
+try:
+    _sb_url = st.secrets["SUPABASE_URL"]
+    _sb_key = st.secrets["SUPABASE_ANON_KEY"]
+    sb = _sb_create_client(_sb_url, _sb_key)
+except Exception:
+    sb = None
+
+
+def save_profile_to_supabase(sailor_id: str) -> None:
+    """Upsert score_history and sailor_profile to Supabase under sailor_id."""
+    if not sb or not (sailor_id or "").strip():
+        return
+    try:
+        sb.table("sailor_profiles").upsert({
+            "sailor_id":      sailor_id.strip(),
+            "score_history":  st.session_state.get("score_history", []),
+            "sailor_profile": st.session_state.get("sailor_profile", {}),
+            "updated_at":     datetime.datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception:
+        pass  # fail silently — session data is still intact
+
+
+def load_profile_from_supabase(sailor_id: str) -> bool:
+    """Load a sailor's saved profile into session state. Returns True if found."""
+    if not sb or not (sailor_id or "").strip():
+        return False
+    try:
+        result = sb.table("sailor_profiles").select("*").eq("sailor_id", sailor_id.strip()).execute()
+        if result.data:
+            row = result.data[0]
+            if row.get("score_history"):
+                st.session_state["score_history"] = row["score_history"]
+            if row.get("sailor_profile"):
+                st.session_state["sailor_profile"] = row["sailor_profile"]
+            return True
+        return False
+    except Exception:
+        return False
+
 
 # CONSTANTS — FMS formula per BUPERSINST 1430.16G (E4-E6 FMS Chart)
 # E5: FMS = SS + (PMA*80 - 256) + SIPG/5 (cap 2) + Awards (cap 10) + Education (0/2/4) + PNA (cap 9). Max 169.
@@ -1658,6 +1723,7 @@ End your response with a clear final score line in this exact format: "Final Sco
                                 "total": total,
                                 "pct": round((scored/total)*100)
                             })
+                            save_profile_to_supabase(st.session_state.get("sailor_id", ""))
 
                     # Only offer the download if there's actually a graded result.
                     if grade_result:
@@ -1992,6 +2058,7 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
                     "pct":   pct,
                 })
                 st.session_state["mock_exam_score_saved"] = True
+                save_profile_to_supabase(st.session_state.get("sailor_id", ""))
 
             st.rerun()
 
@@ -2023,7 +2090,12 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
             _pace_m = int(_pace_secs // 60)
             _pace_s = int(_pace_secs % 60)
             _pace_str = f"{_pace_m}:{_pace_s:02d}"
-            _pace_note = "Work on speed." if _pace_secs > 54 else "Good pace."
+            if _pace_secs > 54:
+                _pace_note = "Work on speed — the real exam allows ~0:54 per question."
+            elif _pace_secs < 10:
+                _pace_note = "⚠️ You moved too fast — slow down and read each question carefully."
+            else:
+                _pace_note = "Good pace."
             st.info(f"⏱️ Your pace: **{_pace_str}** per question — the real exam allows about 0:54 per question. {_pace_note}")
 
         st.markdown("---")
@@ -2034,8 +2106,7 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
             with st.expander(f"{icon} Q{g['num']}: {_q_preview}"):
                 if g['is_correct']:
                     st.markdown(
-                        f'<div style="background-color:#1a4731;border-left:4px solid #28a745;'
-                        f'padding:0.75rem 1rem;border-radius:8px;color:#d1e7dd;margin-bottom:0.5rem;">'
+                        f'<div class="review-card-correct">'
                         f'✅ <strong>Correct!</strong> You answered '
                         f'<strong>{g["selected"]}) {g["selected_text"]}</strong>'
                         f'</div>',
@@ -2043,8 +2114,7 @@ Be specific to {_me_rating} advancement topics. Keep it under 150 words. No fluf
                     )
                 else:
                     st.markdown(
-                        f'<div style="background-color:#4a1c24;border-left:4px solid #dc3545;'
-                        f'padding:0.75rem 1rem;border-radius:8px;color:#f8d7da;margin-bottom:0.5rem;">'
+                        f'<div class="review-card-incorrect">'
                         f'❌ <strong>You answered:</strong> '
                         f'<strong>{g["selected"]}) {g["selected_text"]}</strong><br>'
                         f'<strong>Correct answer:</strong> '
@@ -2100,6 +2170,39 @@ if "score_history" in st.session_state and len(st.session_state.score_history) >
 st.divider()
 st.subheader("👤 My Profile")
 st.caption("Your personal score history, weak spots, and what to study next.")
+
+
+def _on_sailor_id_change():
+    new_id = st.session_state.get("_sailor_id_widget", "").strip()
+    old_id = st.session_state.get("sailor_id", "")
+    if new_id == old_id:
+        return
+    st.session_state["sailor_id"] = new_id
+    if new_id:
+        found = load_profile_from_supabase(new_id)
+        st.session_state["_profile_load_status"] = ("found" if found else "new", new_id)
+    else:
+        st.session_state.pop("_profile_load_status", None)
+
+
+st.text_input(
+    "Sailor ID",
+    value=st.session_state.get("sailor_id", ""),
+    placeholder="e.g. PS1234 — enter once to save and restore your progress",
+    key="_sailor_id_widget",
+    on_change=_on_sailor_id_change,
+    help="Choose any ID (your rate + last 4 works well). Your exam history, weak topics, and score trends are saved under this ID across sessions.",
+)
+
+_sid_status = st.session_state.pop("_profile_load_status", None)
+if _sid_status:
+    _status_kind, _status_id = _sid_status
+    if _status_kind == "found":
+        st.success(f"✅ Profile loaded for **{_status_id}** — your history is restored.")
+    else:
+        st.info(f"No saved profile found for **{_status_id}** — your progress will be saved here after your first exam.")
+elif not st.session_state.get("sailor_id"):
+    st.caption("💡 Enter a Sailor ID above to save your progress across sessions.")
 
 _score_hist = st.session_state.get("score_history", [])
 _sailor_prof_hist = st.session_state.get("sailor_profile", {}).get("history", [])
