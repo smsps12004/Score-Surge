@@ -3,8 +3,12 @@ import pandas as pd
 import re
 import tempfile
 import os
+import datetime
 from fpdf import FPDF
 import anthropic
+
+# PAGE CONFIG — must be first
+st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
 # Optional imports
 try:
@@ -20,10 +24,200 @@ try:
 except ImportError:
     OCR_PDF_AVAILABLE = False
 
-# PAGE CONFIG
-st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
+# ── SUPABASE SETUP ────────────────────────────────────────────────────────────
+from supabase import create_client, Client
 
-st.title("⚓ Score Surge | by Strategic Sailor")
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ── SESSION STATE INIT ────────────────────────────────────────────────────────
+for key, default in [
+    ("user", None),
+    ("tier", None),
+    ("access_token", None),
+    ("refresh_token", None),
+    ("api_key", ""),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# ── RESTORE SESSION ACROSS RERUNS ─────────────────────────────────────────────
+if st.session_state.access_token and not st.session_state.user:
+    try:
+        res = supabase.auth.set_session(
+            st.session_state.access_token,
+            st.session_state.refresh_token
+        )
+        st.session_state.user = res.user
+    except Exception:
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
+        st.session_state.user = None
+
+# ── TIER HELPERS ──────────────────────────────────────────────────────────────
+TIER_ORDER = ["free", "seaman", "petty_officer", "chief"]
+
+TIER_LABELS = {
+    "free":          "Free",
+    "trial":         "🎖️ Trial (3-day full access)",
+    "seaman":        "⚓ Seaman — $7/mo",
+    "petty_officer": "🎖️ Petty Officer — $12/mo",
+    "chief":         "⭐ Chief — $20/mo",
+}
+
+UPGRADE_INFO = {
+    "seaman":        ("Seaman", "$7/mo",  "AI Study Guide"),
+    "petty_officer": ("Petty Officer", "$12/mo", "AI Study Guide + AI Tutor"),
+    "chief":         ("Chief", "$20/mo",  "Everything — Study Guide, Tutor, Practice Questions"),
+}
+
+def get_user_tier(user_id: str) -> str:
+    try:
+        result = (
+            supabase.table("profiles")
+            .select("tier, trial_start")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        profile = result.data
+        if not profile:
+            return "free"
+        tier = profile["tier"]
+        if tier == "trial":
+            trial_start = datetime.datetime.fromisoformat(
+                profile["trial_start"].replace("Z", "+00:00")
+            )
+            days_elapsed = (datetime.datetime.now(datetime.timezone.utc) - trial_start).days
+            if days_elapsed >= 3:
+                supabase.table("profiles").update({"tier": "free"}).eq("id", user_id).execute()
+                return "free"
+        return tier
+    except Exception:
+        return "free"
+
+
+def can_access(required_tier: str) -> bool:
+    user_tier = st.session_state.tier
+    if user_tier == "trial":
+        return True
+    if user_tier not in TIER_ORDER or required_tier not in TIER_ORDER:
+        return False
+    return TIER_ORDER.index(user_tier) >= TIER_ORDER.index(required_tier)
+
+
+def upgrade_banner(required_tier: str):
+    label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
+    st.warning(
+        f"🔒 **{label} tier required** ({price})\n\n"
+        f"Unlock: {features}\n\n"
+        f"To upgrade, email **shawnmsmith504@gmail.com** with your account email."
+    )
+
+
+# ── AUTH PAGE ─────────────────────────────────────────────────────────────────
+def show_auth_page():
+    st.title("⚓ Score Surge | by Strategic Sailor")
+    st.markdown("Your Navy advancement engine. Calculate your FMS, study smarter, and advance.")
+    st.divider()
+
+    tab_login, tab_signup = st.tabs(["Log In", "Create Account"])
+
+    with tab_login:
+        st.subheader("Welcome back, Sailor.")
+        with st.form("login_form"):
+            login_email = st.text_input("Email")
+            login_password = st.text_input("Password", type="password")
+            login_submit = st.form_submit_button("Log In", use_container_width=True)
+
+        if login_submit:
+            if not login_email or not login_password:
+                st.error("Enter your email and password.")
+            else:
+                try:
+                    res = supabase.auth.sign_in_with_password({
+                        "email": login_email,
+                        "password": login_password,
+                    })
+                    st.session_state.user = res.user
+                    st.session_state.access_token = res.session.access_token
+                    st.session_state.refresh_token = res.session.refresh_token
+                    st.session_state.tier = get_user_tier(res.user.id)
+                    st.rerun()
+                except Exception:
+                    st.error("Login failed — check your email and password.")
+
+    with tab_signup:
+        st.subheader("Start your free 3-day trial.")
+        st.caption("Full access for 3 days. No credit card required.")
+        with st.form("signup_form"):
+            signup_email = st.text_input("Email")
+            signup_password = st.text_input("Password", type="password")
+            signup_password2 = st.text_input("Confirm Password", type="password")
+            signup_submit = st.form_submit_button(
+                "Create Account & Start Free Trial", use_container_width=True
+            )
+
+        if signup_submit:
+            if not signup_email or not signup_password:
+                st.error("Fill in all fields.")
+            elif signup_password != signup_password2:
+                st.error("Passwords don't match.")
+            elif len(signup_password) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                try:
+                    res = supabase.auth.sign_up({
+                        "email": signup_email,
+                        "password": signup_password,
+                    })
+                    if res.user and res.session:
+                        st.session_state.user = res.user
+                        st.session_state.access_token = res.session.access_token
+                        st.session_state.refresh_token = res.session.refresh_token
+                        st.session_state.tier = "trial"
+                        st.rerun()
+                    else:
+                        st.info("Check your email to confirm your account, then log in.")
+                except Exception as e:
+                    st.error("Sign up failed: " + str(e))
+
+
+# ── REQUIRE LOGIN ─────────────────────────────────────────────────────────────
+if not st.session_state.user:
+    show_auth_page()
+    st.stop()
+
+# Load tier if missing
+if not st.session_state.tier:
+    st.session_state.tier = get_user_tier(st.session_state.user.id)
+
+# ── HEADER ────────────────────────────────────────────────────────────────────
+col_title, col_user = st.columns([3, 1])
+with col_title:
+    st.title("⚓ Score Surge | by Strategic Sailor")
+with col_user:
+    st.markdown(f"<br>", unsafe_allow_html=True)
+    tier_label = TIER_LABELS.get(st.session_state.tier, st.session_state.tier)
+    st.caption(f"**{st.session_state.user.email}**\n{tier_label}")
+    if st.button("Log Out", use_container_width=True):
+        supabase.auth.sign_out()
+        for key in ["user", "tier", "access_token", "refresh_token", "api_key"]:
+            st.session_state[key] = None if key != "api_key" else ""
+        st.rerun()
+
+# Trial banner
+if st.session_state.tier == "trial":
+    try:
+        result = supabase.table("profiles").select("trial_start").eq("id", st.session_state.user.id).single().execute()
+        trial_start = datetime.datetime.fromisoformat(result.data["trial_start"].replace("Z", "+00:00"))
+        days_left = 3 - (datetime.datetime.now(datetime.timezone.utc) - trial_start).days
+        days_left = max(0, days_left)
+        st.info(f"🎖️ **Free trial active** — {days_left} day(s) remaining. Enjoy full access!")
+    except Exception:
+        st.info("🎖️ **Free trial active** — enjoy full access!")
+
 st.markdown("""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
 | Cycle | Min FMS to Advance |
@@ -31,10 +225,7 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 | 272   | **44.0**           |
 """)
 
-# API KEY — entered once, used everywhere
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
-
+# ── API KEY ───────────────────────────────────────────────────────────────────
 with st.expander("🔑 Enter Your Claude API Key", expanded=not bool(st.session_state.api_key)):
     entered_key = st.text_input(
         "Claude API Key",
@@ -47,10 +238,10 @@ with st.expander("🔑 Enter Your Claude API Key", expanded=not bool(st.session_
         st.session_state.api_key = entered_key
         st.success("✅ API key saved for this session.")
 
-# CONSTANTS
+# ── CONSTANTS ─────────────────────────────────────────────────────────────────
 MIN_FMS = 44.0
 
-LABEL_PATTERNS = {  
+LABEL_PATTERNS = {
     "exam_score": [
         r"exam\s*standard\s*score",
         r"standard\s*score",
@@ -93,7 +284,7 @@ DEFAULT_VALUES = {
     "pna": 0.5,
 }
 
-# SMART OCR PARSER
+# ── OCR HELPERS ───────────────────────────────────────────────────────────────
 def extract_number_near_label(text, patterns):
     text_lower = text.lower()
     for pattern in patterns:
@@ -125,11 +316,10 @@ def extract_text_from_upload(uploaded_file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
-
     try:
         if uploaded_file.type == "application/pdf":
             if not OCR_PDF_AVAILABLE:
-                st.error("PyMuPDF not installed. Run: python3 -m pip install pymupdf")
+                st.error("PyMuPDF not installed.")
                 return ""
             doc = fitz.open(tmp_path)
             for page in doc:
@@ -142,11 +332,10 @@ def extract_text_from_upload(uploaded_file):
             raw_text = pytesseract.image_to_string(image)
     finally:
         os.unlink(tmp_path)
-
     return raw_text
 
 
-# OCR UPLOAD SECTION
+# ── FREE: PROFILE SHEET UPLOAD ────────────────────────────────────────────────
 st.subheader("📤 Upload Profile Sheet (Optional)")
 uploaded_file = st.file_uploader(
     "Upload your Navy Profile Sheet — image or PDF",
@@ -159,7 +348,6 @@ extracted_data = DEFAULT_VALUES.copy()
 if uploaded_file is not None:
     with st.spinner("Reading your document..."):
         raw_text = extract_text_from_upload(uploaded_file)
-
     if raw_text.strip():
         extracted_data, missing_fields = parse_ocr_text(raw_text)
         if not missing_fields:
@@ -175,58 +363,29 @@ if uploaded_file is not None:
         st.error("Could not extract text. Try a clearer image or enter values manually.")
 
 
-# INPUT FORM
+# ── FREE: FMS CALCULATOR ──────────────────────────────────────────────────────
 st.subheader("📋 Enter or Edit Your Scores")
 
 with st.form("fms_form"):
     sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
-
     col1, col2 = st.columns(2)
-
     with col1:
-        exam_score = st.number_input(
-            "Exam Standard Score",
-            min_value=0.0, max_value=80.0,
-            value=float(extracted_data["exam_score"]),
-            step=0.5,
-        )
-        pma = st.number_input(
-            "PMA (Eval Average)",
-            min_value=0.0, max_value=5.0,
-            value=float(extracted_data["pma"]),
-            step=0.01,
-        )
-        tir = st.number_input(
-            "Time in Rate (Years)",
-            min_value=0.0, max_value=10.0,
-            value=float(extracted_data["tir"]),
-            step=0.5,
-        )
-
+        exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
+                                     value=float(extracted_data["exam_score"]), step=0.5)
+        pma = st.number_input("PMA (Eval Average)", min_value=0.0, max_value=5.0,
+                              value=float(extracted_data["pma"]), step=0.01)
+        tir = st.number_input("Time in Rate (Years)", min_value=0.0, max_value=10.0,
+                              value=float(extracted_data["tir"]), step=0.5)
     with col2:
-        awards = st.number_input(
-            "Awards Points",
-            min_value=0.0, max_value=10.0,
-            value=float(extracted_data["awards"]),
-            step=0.5,
-        )
-        education = st.number_input(
-            "Education Points",
-            min_value=0.0, max_value=2.0,
-            value=float(extracted_data["education"]),
-            step=0.5,
-        )
-        pna = st.number_input(
-            "PNA Points",
-            min_value=0.0, max_value=9.0,
-            value=float(extracted_data["pna"]),
-            step=0.5,
-        )
-
+        awards = st.number_input("Awards Points", min_value=0.0, max_value=10.0,
+                                 value=float(extracted_data["awards"]), step=0.5)
+        education = st.number_input("Education Points", min_value=0.0, max_value=2.0,
+                                    value=float(extracted_data["education"]), step=0.5)
+        pna = st.number_input("PNA Points", min_value=0.0, max_value=9.0,
+                              value=float(extracted_data["pna"]), step=0.5)
     submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
 
 
-# CALCULATION & RESULTS
 if submitted:
     fms = round(exam_score + (pma * 9) + tir + awards + education + pna, 2)
     passed = fms >= MIN_FMS
@@ -243,7 +402,6 @@ if submitted:
     else:
         st.success("You meet the minimum FMS! Focus on maximizing your score for a better rank.")
 
-    # Score Breakdown
     st.subheader("📉 Score Breakdown")
     breakdown = {
         "Exam Score": exam_score,
@@ -253,12 +411,13 @@ if submitted:
         "Education": education,
         "PNA": pna,
     }
-    df_breakdown = pd.DataFrame.from_dict(
-        breakdown, orient="index", columns=["Points"]
-    ).reset_index().rename(columns={"index": "Component"})
+    df_breakdown = (
+        pd.DataFrame.from_dict(breakdown, orient="index", columns=["Points"])
+        .reset_index()
+        .rename(columns={"index": "Component"})
+    )
     st.bar_chart(df_breakdown.set_index("Component"))
 
-    # Personalized Study Guide
     st.subheader("📚 Personalized Study Guide")
     guide_items = []
 
@@ -266,8 +425,7 @@ if submitted:
         guide_items.append({
             "area": "Exam Score",
             "priority": "HIGH" if exam_score < 45 else "MEDIUM",
-            "current": exam_score,
-            "target": 55.0,
+            "current": exam_score, "target": 55.0,
             "gain": round(55 - exam_score, 1),
             "actions": [
                 "Study NRTC materials for your rate daily.",
@@ -296,10 +454,8 @@ if submitted:
 
     if awards < 5:
         guide_items.append({
-            "area": "Awards",
-            "priority": "MEDIUM",
-            "current": awards,
-            "target": "5-10",
+            "area": "Awards", "priority": "MEDIUM",
+            "current": awards, "target": "5-10",
             "gain": round(5 - awards, 1),
             "actions": [
                 "Talk to your LPO or Chief about submitting an award write-up.",
@@ -313,8 +469,7 @@ if submitted:
         guide_items.append({
             "area": "Education",
             "priority": "MEDIUM" if education < 1.0 else "LOW",
-            "current": education,
-            "target": 2.0,
+            "current": education, "target": 2.0,
             "gain": round(2.0 - education, 1),
             "actions": [
                 "Submit your JST — military skills already earn credits.",
@@ -326,11 +481,8 @@ if submitted:
 
     if pna == 0:
         guide_items.append({
-            "area": "PNA Points",
-            "priority": "INFO",
-            "current": 0,
-            "target": "Accumulates automatically",
-            "gain": "up to 9",
+            "area": "PNA Points", "priority": "INFO",
+            "current": 0, "target": "Accumulates automatically", "gain": "up to 9",
             "actions": [
                 "PNA points are awarded each cycle you pass but are not advanced.",
                 "Keep taking and passing the exam every cycle.",
@@ -344,35 +496,26 @@ if submitted:
         priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
         guide_items.sort(key=lambda x: priority_order.get(x["priority"], 9))
         priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "🔵"}
-
         for item in guide_items:
             icon = priority_icon.get(item["priority"], "⚪")
-            label = icon + " **" + item["area"] + "** — Current: " + str(item["current"]) + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)"
+            label = (icon + " **" + item["area"] + "** — Current: " + str(item["current"])
+                     + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)")
             with st.expander(label):
                 st.markdown("**Action Steps:**")
                 for action in item["actions"]:
                     st.markdown("- " + action)
 
-    # Data Summary
     st.subheader("🧾 Full Score Summary")
     st.dataframe(
         pd.DataFrame([{
-            "Sailor": sailor_name,
-            "Exam": exam_score,
-            "PMA": pma,
-            "PMA pts": round(pma * 9, 2),
-            "TIR": tir,
-            "Awards": awards,
-            "Education": education,
-            "PNA": pna,
-            "FMS": fms,
-            "Status": "PASS" if passed else "FAIL",
-            "Gap": gap,
+            "Sailor": sailor_name, "Exam": exam_score, "PMA": pma,
+            "PMA pts": round(pma * 9, 2), "TIR": tir, "Awards": awards,
+            "Education": education, "PNA": pna, "FMS": fms,
+            "Status": "PASS" if passed else "FAIL", "Gap": gap,
         }]),
         use_container_width=True,
     )
 
-    # PDF Report
     st.subheader("📥 Download Report")
 
     def generate_pdf(name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items):
@@ -384,7 +527,8 @@ if submitted:
         pdf.cell(0, 8, "Cycle 272 | Minimum FMS Required: " + str(MIN_FMS), ln=True, align="C")
         pdf.ln(6)
         pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, "Final Multiple Score: " + str(fms) + "   |   Status: " + ("ELIGIBLE" if passed else "NOT YET"), ln=True)
+        pdf.cell(0, 10, "Final Multiple Score: " + str(fms) + "   |   Status: "
+                 + ("ELIGIBLE" if passed else "NOT YET"), ln=True)
         if not passed:
             pdf.set_font("Arial", "", 11)
             pdf.cell(0, 8, "Points needed to advance: " + str(gap), ln=True)
@@ -392,15 +536,12 @@ if submitted:
         pdf.set_font("Arial", "B", 12)
         pdf.cell(0, 8, "Score Breakdown:", ln=True)
         pdf.set_font("Arial", "", 11)
-        for label, val in [
-            ("Exam Standard Score", exam_score),
-            ("PMA (x9)", round(pma * 9, 2)),
-            ("Time in Rate", tir),
-            ("Awards Points", awards),
-            ("Education Points", education),
-            ("PNA Points", pna),
+        for lbl, val in [
+            ("Exam Standard Score", exam_score), ("PMA (x9)", round(pma * 9, 2)),
+            ("Time in Rate", tir), ("Awards Points", awards),
+            ("Education Points", education), ("PNA Points", pna),
         ]:
-            pdf.cell(0, 7, "  " + label + ": " + str(val), ln=True)
+            pdf.cell(0, 7, "  " + lbl + ": " + str(val), ln=True)
         pdf.ln(4)
         if guide_items:
             pdf.set_font("Arial", "B", 12)
@@ -411,7 +552,7 @@ if submitted:
                 pdf.set_font("Arial", "", 10)
                 for action in item["actions"]:
                     safe = action.encode("latin-1", errors="replace").decode("latin-1")
-                    pdf.multi_cell(180, 6, "   - " + safe)                
+                    pdf.multi_cell(180, 6, "   - " + safe)
                     pdf.ln(2)
         out_path = os.path.join(tempfile.gettempdir(), "fms_report.pdf")
         pdf.output(out_path)
@@ -420,55 +561,56 @@ if submitted:
     pdf_path = generate_pdf(sailor_name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items)
     with open(pdf_path, "rb") as f:
         st.download_button(
-            label="📥 Download PDF Report",
-            data=f,
+            label="📥 Download PDF Report", data=f,
             file_name="FMS_Report_" + sailor_name.replace(" ", "_") + ".pdf",
-            mime="application/pdf",
-            use_container_width=True,
+            mime="application/pdf", use_container_width=True,
         )
 
 
-# STUDY GUIDE ENGINE
+# ── SEAMAN TIER: AI STUDY GUIDE ───────────────────────────────────────────────
 st.divider()
 st.subheader("📖 AI Study Guide")
 st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
 
-with st.form("study_guide_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
-        sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
-    with col2:
-        sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0, value=0.0, step=0.5)
-        sg_type = st.selectbox("Guide Type", [
-            "Full Rating Guide",
-            "Crash Plan (3-5 days)",
-            "High Yield Topics Only",
-            "Single Subject Deep Dive",
-            "Practice Questions"
-        ])
-    sg_subject = st.text_input("Subject (only for Single Subject Deep Dive)", placeholder="e.g. Military Awards, UCMJ, Evals")
-    sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
+if not can_access("seaman"):
+    upgrade_banner("seaman")
+else:
+    with st.form("study_guide_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
+            sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
+        with col2:
+            sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0,
+                                     value=0.0, step=0.5)
+            sg_type = st.selectbox("Guide Type", [
+                "Full Rating Guide", "Crash Plan (3-5 days)",
+                "High Yield Topics Only", "Single Subject Deep Dive", "Practice Questions"
+            ])
+        sg_subject = st.text_input("Subject (only for Single Subject Deep Dive)",
+                                   placeholder="e.g. Military Awards, UCMJ, Evals")
+        sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
 
-if sg_submit:
-    if not st.session_state.api_key:
-        st.error("Enter your Claude API key at the top of the page.")
-    else:
-        if sg_gap > 10:
-            strategy = "broad coverage — this sailor needs significant improvement across all areas"
-        elif sg_gap > 5:
-            strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
-        elif sg_gap > 0:
-            strategy = "precision mode — plug specific holes, every point counts"
+    if sg_submit:
+        if not st.session_state.api_key:
+            st.error("Enter your Claude API key at the top of the page.")
         else:
-            strategy = "rank maximization — sailor is eligible but wants to score higher"
+            if sg_gap > 10:
+                strategy = "broad coverage — this sailor needs significant improvement across all areas"
+            elif sg_gap > 5:
+                strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
+            elif sg_gap > 0:
+                strategy = "precision mode — plug specific holes, every point counts"
+            else:
+                strategy = "rank maximization — sailor is eligible but wants to score higher"
 
-        if sg_type == "Single Subject Deep Dive" and sg_subject:
-            topic_instruction = f"Focus exclusively on: {sg_subject}"
-        else:
-            topic_instruction = f"Guide type: {sg_type}"
+            topic_instruction = (
+                f"Focus exclusively on: {sg_subject}"
+                if sg_type == "Single Subject Deep Dive" and sg_subject
+                else f"Guide type: {sg_type}"
+            )
 
-        prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service. 
+            prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
 You know NAVADMIN 168/26 (Cycle 272) inside and out.
@@ -504,29 +646,26 @@ Structure the guide as follows:
 Use plain English. Write like you're talking to the sailor face to face.
 Keep it tight. Every sentence must earn its place."""
 
-        with st.spinner("Chief is reviewing your record..."):
-            try:
-                client = anthropic.Anthropic(api_key=st.session_state.api_key)
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                guide_text = message.content[0].text
-                st.subheader("📋 Your Personalized Study Guide")
-                st.markdown(guide_text)
+            with st.spinner("Chief is reviewing your record..."):
+                try:
+                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
+                    message = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=1500,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    guide_text = message.content[0].text
+                    st.subheader("📋 Your Personalized Study Guide")
+                    st.markdown(guide_text)
+                    st.download_button(
+                        "📥 Download Study Guide", data=guide_text,
+                        file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
+                        mime="text/plain", use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error("Something went wrong: " + str(e))
 
-                st.download_button(
-                    "📥 Download Study Guide",
-                    data=guide_text,
-                    file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error("Something went wrong: " + str(e))
 
-                # ── INTERACTIVE AI TUTOR ──────────────────────────────────────────────────────
+# ── PETTY OFFICER TIER: AI TUTOR ─────────────────────────────────────────────
 st.divider()
 st.subheader("🎓 Interactive AI Tutor")
 st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
@@ -561,7 +700,8 @@ PS_TOPICS = {
         "bib": "OPNAVINST 1160.8B, MILPERSMAN 1160 series"
     },
     "E6 - Reserve Pay, Management & Processing": {
-        "subtopics": ["Electronic Drill Management", "Entitlements", "Gains", "Mobilization & Demobilization", "Separations & Transfers"],
+        "subtopics": ["Electronic Drill Management", "Entitlements", "Gains",
+                      "Mobilization & Demobilization", "Separations & Transfers"],
         "bib": "RESPERS M-1001.5, BUPERSINST 1001.39F"
     },
     "E6 - Separations & Retirement Processing": {
@@ -602,22 +742,24 @@ PS_TOPICS = {
     },
 }
 
-col1, col2 = st.columns(2)
-with col1:
-    tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
-with col2:
-    tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
+if not can_access("petty_officer"):
+    upgrade_banner("petty_officer")
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
+    with col2:
+        tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
 
-if st.button("📖 Start Lesson", use_container_width=True):
-    if not st.session_state.api_key:
-        st.error("Enter your Claude API key at the top of the page.")
-    else:
-        bib_refs = PS_TOPICS[tutor_topic]["bib"]
-        lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
+    if st.button("📖 Start Lesson", use_container_width=True):
+        if not st.session_state.api_key:
+            st.error("Enter your Claude API key at the top of the page.")
+        else:
+            bib_refs = PS_TOPICS[tutor_topic]["bib"]
+            lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
 You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
 Explain everything like the sailor is smart but has never seen this material before.
-Be direct, clear, and use real Navy examples.
-No wasted words. No fluff.
+Be direct, clear, and use real Navy examples. No wasted words. No fluff.
 
 TOPIC: {tutor_topic}
 SUBTOPIC: {tutor_subtopic}
@@ -633,77 +775,62 @@ Teach this lesson as follows:
 
 Keep it tight. Make it stick."""
 
-        with st.spinner("Chief is preparing your lesson..."):
-            try:
-                client = anthropic.Anthropic(api_key=st.session_state.api_key)
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": lesson_prompt}]
-                )
-                lesson = message.content[0].text
-
-                st.subheader(f"📚 Lesson: {tutor_subtopic}")
-                st.markdown(lesson)
-
-                if "tutor_history" not in st.session_state:
-                    st.session_state.tutor_history = []
-                st.session_state.tutor_history = [
-                    {"role": "user", "content": lesson_prompt},
-                    {"role": "assistant", "content": lesson}
-                ]
-                st.session_state.tutor_topic = tutor_topic
-                st.session_state.tutor_subtopic = tutor_subtopic
-                st.session_state.tutor_key_saved = st.session_state.api_key
-
-                st.download_button(
-                    "📥 Download This Lesson",
-                    data=lesson,
-                    file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error("Error: " + str(e))
-
-# Follow-up Q&A
-if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
-    st.subheader("💬 Ask the Chief a Question")
-    st.caption("Type any follow-up question about this topic.")
-    sailor_question = st.text_input("Your question", placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
-    if st.button("Ask", use_container_width=True):
-        if sailor_question:
-            with st.spinner("Chief is thinking..."):
+            with st.spinner("Chief is preparing your lesson..."):
                 try:
-                    client = anthropic.Anthropic(api_key=st.session_state.tutor_key_saved)
-                    history = st.session_state.tutor_history.copy()
-                    history.append({"role": "user", "content": sailor_question})
+                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
                     message = client.messages.create(
-                        model="claude-opus-4-5",
-                        max_tokens=1000,
-                        messages=history
+                        model="claude-opus-4-5", max_tokens=2000,
+                        messages=[{"role": "user", "content": lesson_prompt}]
                     )
-                    answer = message.content[0].text
-                    st.session_state.tutor_history.append({"role": "assistant", "content": answer})
-                    st.markdown("**Chief says:**")
-                    st.markdown(answer)
+                    lesson = message.content[0].text
+                    st.subheader(f"📚 Lesson: {tutor_subtopic}")
+                    st.markdown(lesson)
+                    st.session_state.tutor_history = [
+                        {"role": "user", "content": lesson_prompt},
+                        {"role": "assistant", "content": lesson}
+                    ]
+                    st.session_state.tutor_key_saved = st.session_state.api_key
+                    st.download_button(
+                        "📥 Download This Lesson", data=lesson,
+                        file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
+                        mime="text/plain", use_container_width=True,
+                    )
                 except Exception as e:
                     st.error("Error: " + str(e))
-# SCORE HISTORY TRACKER
-if "score_history" not in st.session_state:
-    st.session_state.score_history = []
 
-# CYCLE COUNTDOWN
-import datetime
+    if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
+        st.subheader("💬 Ask the Chief a Question")
+        st.caption("Type any follow-up question about this topic.")
+        sailor_question = st.text_input("Your question",
+                                        placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
+        if st.button("Ask", use_container_width=True):
+            if sailor_question:
+                with st.spinner("Chief is thinking..."):
+                    try:
+                        client = anthropic.Anthropic(api_key=st.session_state.tutor_key_saved)
+                        history = st.session_state.tutor_history.copy()
+                        history.append({"role": "user", "content": sailor_question})
+                        message = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=1000,
+                            messages=history
+                        )
+                        answer = message.content[0].text
+                        st.session_state.tutor_history.append({"role": "assistant", "content": answer})
+                        st.markdown("**Chief says:**")
+                        st.markdown(answer)
+                    except Exception as e:
+                        st.error("Error: " + str(e))
 
+
+# ── CYCLE COUNTDOWN (FREE) ────────────────────────────────────────────────────
 st.subheader("⏱️ Cycle 272 Countdown")
 
 today = datetime.date.today()
 deadlines = [
-    ("PMK-EE Deadline", datetime.date(2026, 7, 31)),
+    ("PMK-EE Deadline",   datetime.date(2026, 7, 31)),
     ("ILDC Deadline (E6)", datetime.date(2026, 8, 31)),
-    ("E6 Exam Day", datetime.date(2026, 9, 3)),
-    ("E5 Exam Day", datetime.date(2026, 9, 10)),
+    ("E6 Exam Day",        datetime.date(2026, 9, 3)),
+    ("E5 Exam Day",        datetime.date(2026, 9, 10)),
 ]
 
 cols = st.columns(4)
@@ -721,24 +848,31 @@ for i, (label, date) in enumerate(deadlines):
 
 st.divider()
 
-# PRACTICE QUESTION MODE
+
+# ── CHIEF TIER: PRACTICE QUESTIONS ───────────────────────────────────────────
 st.subheader("🎯 Practice Question Mode")
 st.caption("Answer like the exam is tomorrow. The Chief will grade you and explain every answer.")
 
-with st.form("practice_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
-    with col2:
-        pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-    pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+if "score_history" not in st.session_state:
+    st.session_state.score_history = []
 
-if pq_submit:
-    if not st.session_state.api_key:
-        st.error("Enter your Claude API key at the top of the page.")
-    else:
-        bib_refs = PS_TOPICS[pq_topic]["bib"]
-        pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+if not can_access("chief"):
+    upgrade_banner("chief")
+else:
+    with st.form("practice_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+        with col2:
+            pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
+        pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+
+    if pq_submit:
+        if not st.session_state.api_key:
+            st.error("Enter your Claude API key at the top of the page.")
+        else:
+            bib_refs = PS_TOPICS[pq_topic]["bib"]
+            pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
 - Governing References: {bib_refs}
@@ -752,71 +886,69 @@ ANSWER: [Letter]
 EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
 Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
 
-        with st.spinner("Chief is writing your exam..."):
-            try:
-                client = anthropic.Anthropic(api_key=st.session_state.api_key)
-                message = client.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": pq_prompt}]
-                )
-                questions_text = message.content[0].text
-                st.session_state.practice_questions = questions_text
-                st.session_state.pq_key_saved = st.session_state.api_key
-            except Exception as e:
-                st.error("Error: " + str(e))
-
-if "practice_questions" in st.session_state:
-    st.subheader("📝 Your Practice Questions")
-    st.markdown(st.session_state.practice_questions)
-    st.subheader("✍️ Submit Your Answers")
-    sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
-    if st.button("Grade My Answers", use_container_width=True):
-        if sailor_answers:
-            with st.spinner("Chief is grading..."):
+            with st.spinner("Chief is writing your exam..."):
                 try:
-                    client = anthropic.Anthropic(api_key=st.session_state.pq_key_saved)
-                    grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
+                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
+                    message = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=2000,
+                        messages=[{"role": "user", "content": pq_prompt}]
+                    )
+                    st.session_state.practice_questions = message.content[0].text
+                    st.session_state.pq_key_saved = st.session_state.api_key
+                except Exception as e:
+                    st.error("Error: " + str(e))
+
+    if "practice_questions" in st.session_state:
+        st.subheader("📝 Your Practice Questions")
+        st.markdown(st.session_state.practice_questions)
+        st.subheader("✍️ Submit Your Answers")
+        sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
+        if st.button("Grade My Answers", use_container_width=True):
+            if sailor_answers:
+                with st.spinner("Chief is grading..."):
+                    try:
+                        client = anthropic.Anthropic(api_key=st.session_state.pq_key_saved)
+                        grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
-Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation. Give final score. One line of honest feedback. Be direct. No fluff."""
-                    message = client.messages.create(
-                        model="claude-opus-4-5",
-                        max_tokens=1500,
-                        messages=[{"role": "user", "content": grade_prompt}]
-                    )
-                    grade_result = message.content[0].text
-                    st.subheader("📊 Your Grade")
-                    st.markdown(grade_result)
-                    import re as re2
-                    score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
-                    if score_match:
-                        scored = int(score_match.group(1))
-                        total = int(score_match.group(2))
-                        if "score_history" not in st.session_state:
-                            st.session_state.score_history = []
-                        st.session_state.score_history.append({
-                            "date": datetime.date.today().strftime("%b %d"),
-                            "topic": pq_topic,
-                            "score": scored,
-                            "total": total,
-                            "pct": round((scored/total)*100)
-                        })
-                    st.download_button(
-                        "📥 Download Practice Results",
-                        data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
-                        file_name="PracticeResults.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
-                except Exception as e:
-                    st.error("Error: " + str(e))# SCORE HISTORY CHART
-if "score_history" in st.session_state and len(st.session_state.score_history) > 0:
-    st.divider()
-    st.subheader("📈 Your Score History")
-    st.caption("Track your improvement over time.")
-    history_df = pd.DataFrame(st.session_state.score_history)
-    st.line_chart(history_df.set_index("date")["pct"])
-    st.dataframe(history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
-        "date": "Date", "topic": "Topic", "score": "Score", "total": "Total", "pct": "% Correct"
-    }), use_container_width=True)# PS RATE EXPERT — ASK THE CHIEF
+Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation.
+Give final score. One line of honest feedback. Be direct. No fluff."""
+                        message = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=1500,
+                            messages=[{"role": "user", "content": grade_prompt}]
+                        )
+                        grade_result = message.content[0].text
+                        st.subheader("📊 Your Grade")
+                        st.markdown(grade_result)
+                        import re as re2
+                        score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
+                        if score_match:
+                            scored = int(score_match.group(1))
+                            total = int(score_match.group(2))
+                            st.session_state.score_history.append({
+                                "date": datetime.date.today().strftime("%b %d"),
+                                "topic": pq_topic, "score": scored, "total": total,
+                                "pct": round((scored / total) * 100),
+                            })
+                        st.download_button(
+                            "📥 Download Practice Results",
+                            data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
+                            file_name="PracticeResults.txt", mime="text/plain",
+                            use_container_width=True,
+                        )
+                    except Exception as e:
+                        st.error("Error: " + str(e))
+
+    if len(st.session_state.score_history) > 0:
+        st.divider()
+        st.subheader("📈 Your Score History")
+        st.caption("Track your improvement over time.")
+        history_df = pd.DataFrame(st.session_state.score_history)
+        st.line_chart(history_df.set_index("date")["pct"])
+        st.dataframe(
+            history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
+                "date": "Date", "topic": "Topic", "score": "Score",
+                "total": "Total", "pct": "% Correct",
+            }),
+            use_container_width=True,
+        )

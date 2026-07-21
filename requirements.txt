@@ -1,6 +1,8 @@
 streamlit
 anthropic
 pandas
+fpdf
 pymupdf
-fpdf2
+pytesseract
+Pillow
 supabase
