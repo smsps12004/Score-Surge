@@ -960,7 +960,7 @@ B) [Option]
 C) [Option]
 D) [Option]
 ANSWER: [Letter]
-EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it]
+EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.]
 Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
 
             with st.spinner("Chief is writing your exam..."):
@@ -989,7 +989,9 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
 Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation.
-Give final score. One line of honest feedback. Be direct. No fluff."""
+For each question, after the explanation add a new line formatted exactly like this: 📖 Source: [Manual name, Chapter X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.
+One line of honest feedback. Be direct. No fluff.
+End with a line in exactly this format: Final Score: X/Y"""
                         message = client.messages.create(
                             model="claude-opus-4-5", max_tokens=1500,
                             messages=[{"role": "user", "content": grade_prompt}]
@@ -998,7 +1000,8 @@ Give final score. One line of honest feedback. Be direct. No fluff."""
                         st.subheader("📊 Your Grade")
                         st.markdown(grade_result)
                         import re as re2
-                        score_match = re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
+                        score_match = re2.search(r'Final Score:\s*(\d+)/(\d+)', grade_result) or \
+                                      re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
                         if score_match:
                             scored = int(score_match.group(1))
                             total = int(score_match.group(2))
@@ -1029,3 +1032,74 @@ Give final score. One line of honest feedback. Be direct. No fluff."""
             }),
             use_container_width=True,
         )
+
+
+# ── MY PROFILE ────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("👤 My Profile")
+st.caption("Your personal score history, weak spots, and what to study next.")
+
+_score_hist = st.session_state.get("score_history", [])
+
+st.markdown("#### 📋 Exam History")
+if not _score_hist:
+    st.info("No exam history yet — complete a Mock Exam session to get started!")
+else:
+    _hist_rows = []
+    for _entry in _score_hist:
+        _pct = _entry.get("pct", 0)
+        _hist_rows.append({
+            "Date":      _entry.get("date", "—"),
+            "Topic":     _entry.get("topic", "—"),
+            "Score":     f"{_entry.get('score', 0)}/{_entry.get('total', 0)}",
+            "% Correct": _pct,
+            "Result":    "✅ Pass" if _pct >= 70 else "❌ Needs Work",
+        })
+    st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
+st.markdown("#### ⚠️ Recurring Weak Topics")
+_weak_topics = {}
+for _entry in _score_hist:
+    if _entry.get("pct", 100) < 70:
+        _t = _entry.get("topic", "").strip()
+        if _t:
+            _weak_topics[_t] = _weak_topics.get(_t, 0) + 1
+
+if not _weak_topics:
+    if _score_hist:
+        st.success("No recurring weak topics — you're performing well across the board!")
+    else:
+        st.info("Complete a graded session to identify weak topics.")
+else:
+    _top_weak = sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:5]
+    for _topic, _count in _top_weak:
+        st.markdown(f"- **{_topic[:80]}** — scored below 70% {_count} time{'s' if _count > 1 else ''}")
+
+st.markdown("---")
+
+st.markdown("#### 📈 Score Trend")
+if not _score_hist:
+    st.info("Complete a session to see your score trend.")
+else:
+    _trend_df = pd.DataFrame([
+        {"Session": i + 1, "Score %": _entry.get("pct", 0)}
+        for i, _entry in enumerate(_score_hist)
+    ]).set_index("Session")
+    st.line_chart(_trend_df)
+
+st.markdown("---")
+
+st.markdown("#### 🎯 Recommended Next Study Topics")
+if not _weak_topics:
+    st.info("No recommendations yet — finish a graded session first.")
+else:
+    _top3 = [t for t, _ in sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:3]]
+    for _rec_topic in _top3:
+        if st.button(
+            f"📚 Study: {_rec_topic[:60]}",
+            key=f"profile_study_{hash(_rec_topic) % 99999}",
+            use_container_width=True,
+        ):
+            st.info(f"Head to the AI Tutor section above and select **{_rec_topic[:60]}** to start your lesson!")
