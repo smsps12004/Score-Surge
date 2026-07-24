@@ -926,6 +926,33 @@ for i, (label, date) in enumerate(deadlines):
 st.divider()
 
 
+# ── CPO EXAM WATCH (FREE) ─────────────────────────────────────────────────────
+st.subheader("⭐ CPO / E7 Exam Watch — FY27")
+st.caption("The FY27 CPO board exam is typically held in January–February. The official NAVADMIN has not yet been released.")
+
+_cpo_est_date = datetime.date(2027, 2, 1)
+_cpo_days_left = (_cpo_est_date - today).days
+if _cpo_days_left < 0:
+    _cpo_status = "✅ Est. date passed"
+elif _cpo_days_left <= 14:
+    _cpo_status = f"🔴 ~{_cpo_days_left} days"
+elif _cpo_days_left <= 30:
+    _cpo_status = f"🟡 ~{_cpo_days_left} days"
+else:
+    _cpo_status = f"🟢 ~{_cpo_days_left} days"
+
+cpo_col1, cpo_col2 = st.columns(2)
+cpo_col1.metric("CPO Exam (est.)", _cpo_status, delta="Feb 1, 2027 estimated")
+cpo_col2.metric("Official NAVADMIN", "⏳ Not yet released")
+st.info(
+    "📋 **FY27 CPO Board Exam** — Historically announced Oct–Nov and administered Jan–Feb. "
+    "Watch for the official NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil). "
+    "This countdown will be updated once the date is confirmed."
+)
+
+st.divider()
+
+
 # ── CHIEF TIER: FULL MOCK EXAM ────────────────────────────────────────────────
 st.subheader("🎯 Full Mock Exam")
 st.caption("Exam-style questions, graded by the Chief. Real explanations. Chief doesn't grade on a curve.")
