@@ -6,6 +6,8 @@ import os
 import datetime
 from fpdf import FPDF
 import anthropic
+import stripe
+import streamlit.components.v1 as components
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -31,6 +33,9 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
+STRIPE_PUBLISHABLE_KEY = st.secrets.get("STRIPE_PUBLISHABLE_KEY", "")
+
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
 for key, default in [
     ("user", None),
@@ -38,6 +43,7 @@ for key, default in [
     ("access_token", None),
     ("refresh_token", None),
     ("api_key", ""),
+    ("_payment_success", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -67,10 +73,17 @@ TIER_LABELS = {
 }
 
 UPGRADE_INFO = {
-    "seaman":        ("Seaman", "$7/mo",  "AI Study Guide"),
-    "petty_officer": ("Petty Officer", "$12/mo", "AI Study Guide + AI Tutor"),
-    "chief":         ("Chief", "$20/mo",  "Everything — Study Guide, Tutor, Practice Questions"),
+    "seaman":        ("Seaman", "$7/mo",  "AI Study Guide + Practice Questions"),
+    "petty_officer": ("Petty Officer", "$12/mo", "Interactive AI Tutor + everything in Seaman"),
+    "chief":         ("Chief", "$20/mo",  "Full Mock Exam + everything in Petty Officer"),
 }
+
+STRIPE_PRICE_IDS = {
+    "seaman":        "price_1Tw3D5DP0fFhPzMlsszi2ta9",
+    "petty_officer": "price_1Tw3DsDP0fFhPzMlLaeh0Ixs",
+    "chief":         "price_1Tw3EZDP0fFhPzMlc8E3QcY8",
+}
+PRICE_TO_TIER = {v: k for k, v in STRIPE_PRICE_IDS.items()}
 
 def get_user_tier(user_id: str) -> str:
     try:
@@ -107,13 +120,52 @@ def can_access(required_tier: str) -> bool:
     return TIER_ORDER.index(user_tier) >= TIER_ORDER.index(required_tier)
 
 
+def get_app_base_url() -> str:
+    try:
+        return st.context.url.split("?")[0].rstrip("/")
+    except Exception:
+        return st.secrets.get("APP_URL", "http://localhost:8501")
+
+
+def create_checkout_session(tier: str, user_email: str):
+    price_id = STRIPE_PRICE_IDS[tier]
+    base = get_app_base_url()
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            mode="subscription",
+            customer_email=user_email,
+            client_reference_id=tier,
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=f"{base}/?stripe_success=true&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base}/",
+        )
+        return session.url
+    except Exception as e:
+        st.error(f"Could not start checkout: {e}")
+        return None
+
+
 def upgrade_banner(required_tier: str):
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
-    st.warning(
-        f"🔒 **{label} tier required** ({price})\n\n"
-        f"Unlock: {features}\n\n"
-        f"To upgrade, email **shawnmsmith504@gmail.com** with your account email."
-    )
+    st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
+    if st.session_state.get("user"):
+        if st.button(
+            f"⬆️ Upgrade to {label} — {price}",
+            key=f"upgrade_btn_{required_tier}",
+            use_container_width=True,
+        ):
+            url = create_checkout_session(required_tier, st.session_state.user.email)
+            if url:
+                components.html(
+                    f'<script>window.top.location.href="{url}"</script>'
+                    f'<p style="font-family:sans-serif;padding:8px">Redirecting to checkout… '
+                    f'<a href="{url}">Click here if not redirected.</a></p>',
+                    height=60,
+                )
+                st.stop()
+    else:
+        st.info("Log in to upgrade your plan.")
 
 
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
@@ -184,6 +236,26 @@ def show_auth_page():
                     st.error("Sign up failed: " + str(e))
 
 
+# ── STRIPE SUCCESS CALLBACK ────────────────────────────────────────────────────
+_qp = st.query_params
+if _qp.get("stripe_success") == "true" and st.session_state.user:
+    _sid = _qp.get("session_id", "")
+    if _sid:
+        try:
+            _cs = stripe.checkout.Session.retrieve(_sid)
+            if _cs.payment_status in ("paid", "no_payment_required"):
+                _new_tier = _cs.client_reference_id
+                if _new_tier in TIER_ORDER:
+                    supabase.table("profiles").update({"tier": _new_tier}).eq(
+                        "id", st.session_state.user.id
+                    ).execute()
+                    st.session_state.tier = _new_tier
+                    st.session_state._payment_success = True
+        except Exception:
+            pass
+    st.query_params.clear()
+    st.rerun()
+
 # ── REQUIRE LOGIN ─────────────────────────────────────────────────────────────
 if not st.session_state.user:
     show_auth_page()
@@ -206,6 +278,11 @@ with col_user:
         for key in ["user", "tier", "access_token", "refresh_token", "api_key"]:
             st.session_state[key] = None if key != "api_key" else ""
         st.rerun()
+
+if st.session_state.get("_payment_success"):
+    st.session_state._payment_success = False
+    tier_label = TIER_LABELS.get(st.session_state.tier, st.session_state.tier)
+    st.success(f"🎉 Payment successful! You now have **{tier_label}** access. Welcome aboard!")
 
 # Trial banner
 if st.session_state.tier == "trial":
@@ -849,9 +926,9 @@ for i, (label, date) in enumerate(deadlines):
 st.divider()
 
 
-# ── CHIEF TIER: PRACTICE QUESTIONS ───────────────────────────────────────────
-st.subheader("🎯 Practice Question Mode")
-st.caption("Answer like the exam is tomorrow. The Chief will grade you and explain every answer.")
+# ── CHIEF TIER: FULL MOCK EXAM ────────────────────────────────────────────────
+st.subheader("🎯 Full Mock Exam")
+st.caption("Exam-style questions, graded by the Chief. Real explanations. Chief doesn't grade on a curve.")
 
 if "score_history" not in st.session_state:
     st.session_state.score_history = []
@@ -865,7 +942,7 @@ else:
             pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
         with col2:
             pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-        pq_submit = st.form_submit_button("Generate Practice Questions", use_container_width=True)
+        pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
 
     if pq_submit:
         if not st.session_state.api_key:

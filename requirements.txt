@@ -6,3 +6,4 @@ pymupdf
 pytesseract
 Pillow
 supabase
+stripe
