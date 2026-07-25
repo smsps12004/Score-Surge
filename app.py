@@ -7,7 +7,6 @@ import datetime
 from fpdf import FPDF
 import anthropic
 import stripe
-import streamlit.components.v1 as components
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -150,20 +149,13 @@ def upgrade_banner(required_tier: str):
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
     if st.session_state.get("user"):
-        if st.button(
-            f"⬆️ Upgrade to {label} — {price}",
-            key=f"upgrade_btn_{required_tier}",
-            use_container_width=True,
-        ):
-            url = create_checkout_session(required_tier, st.session_state.user.email)
-            if url:
-                components.html(
-                    f'<script>window.top.location.href="{url}"</script>'
-                    f'<p style="font-family:sans-serif;padding:8px">Redirecting to checkout… '
-                    f'<a href="{url}">Click here if not redirected.</a></p>',
-                    height=60,
-                )
-                st.stop()
+        url = create_checkout_session(required_tier, st.session_state.user.email)
+        if url:
+            st.link_button(
+                f"⬆️ Upgrade to {label} — {price}",
+                url=url,
+                use_container_width=True,
+            )
     else:
         st.info("Log in to upgrade your plan.")
 
