@@ -34,6 +34,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
 STRIPE_PUBLISHABLE_KEY = st.secrets.get("STRIPE_PUBLISHABLE_KEY", "")
+ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
 
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
 for key, default in [
@@ -41,7 +42,6 @@ for key, default in [
     ("tier", None),
     ("access_token", None),
     ("refresh_token", None),
-    ("api_key", ""),
     ("_payment_success", False),
 ]:
     if key not in st.session_state:
@@ -267,8 +267,8 @@ with col_user:
     st.caption(f"**{st.session_state.user.email}**\n{tier_label}")
     if st.button("Log Out", use_container_width=True):
         supabase.auth.sign_out()
-        for key in ["user", "tier", "access_token", "refresh_token", "api_key"]:
-            st.session_state[key] = None if key != "api_key" else ""
+        for key in ["user", "tier", "access_token", "refresh_token"]:
+            st.session_state[key] = None
         st.rerun()
 
 if st.session_state.get("_payment_success"):
@@ -293,19 +293,6 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 |-------|--------------------|
 | 272   | **44.0**           |
 """)
-
-# ── API KEY ───────────────────────────────────────────────────────────────────
-with st.expander("🔑 Enter Your Claude API Key", expanded=not bool(st.session_state.api_key)):
-    entered_key = st.text_input(
-        "Claude API Key",
-        type="password",
-        placeholder="sk-ant-...",
-        value=st.session_state.api_key,
-        key="api_key_input",
-    )
-    if entered_key:
-        st.session_state.api_key = entered_key
-        st.success("✅ API key saved for this session.")
 
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
 MIN_FMS = 44.0
@@ -661,9 +648,7 @@ else:
         sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
 
     if sg_submit:
-        if not st.session_state.api_key:
-            st.error("Enter your Claude API key at the top of the page.")
-        else:
+        if True:
             if sg_gap > 10:
                 strategy = "broad coverage — this sailor needs significant improvement across all areas"
             elif sg_gap > 5:
@@ -717,7 +702,7 @@ Keep it tight. Every sentence must earn its place."""
 
             with st.spinner("Chief is reviewing your record..."):
                 try:
-                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
                         model="claude-opus-4-5", max_tokens=1500,
                         messages=[{"role": "user", "content": prompt}]
@@ -821,9 +806,7 @@ else:
         tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
 
     if st.button("📖 Start Lesson", use_container_width=True):
-        if not st.session_state.api_key:
-            st.error("Enter your Claude API key at the top of the page.")
-        else:
+        if True:
             bib_refs = PS_TOPICS[tutor_topic]["bib"]
             lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
 You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
@@ -846,7 +829,7 @@ Keep it tight. Make it stick."""
 
             with st.spinner("Chief is preparing your lesson..."):
                 try:
-                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
                         model="claude-opus-4-5", max_tokens=2000,
                         messages=[{"role": "user", "content": lesson_prompt}]
@@ -858,7 +841,7 @@ Keep it tight. Make it stick."""
                         {"role": "user", "content": lesson_prompt},
                         {"role": "assistant", "content": lesson}
                     ]
-                    st.session_state.tutor_key_saved = st.session_state.api_key
+
                     st.download_button(
                         "📥 Download This Lesson", data=lesson,
                         file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
@@ -876,7 +859,7 @@ Keep it tight. Make it stick."""
             if sailor_question:
                 with st.spinner("Chief is thinking..."):
                     try:
-                        client = anthropic.Anthropic(api_key=st.session_state.tutor_key_saved)
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         history = st.session_state.tutor_history.copy()
                         history.append({"role": "user", "content": sailor_question})
                         message = client.messages.create(
@@ -964,9 +947,7 @@ else:
         pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
 
     if pq_submit:
-        if not st.session_state.api_key:
-            st.error("Enter your Claude API key at the top of the page.")
-        else:
+        if True:
             bib_refs = PS_TOPICS[pq_topic]["bib"]
             pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
@@ -984,13 +965,13 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
 
             with st.spinner("Chief is writing your exam..."):
                 try:
-                    client = anthropic.Anthropic(api_key=st.session_state.api_key)
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
                         model="claude-opus-4-5", max_tokens=2000,
                         messages=[{"role": "user", "content": pq_prompt}]
                     )
                     st.session_state.practice_questions = message.content[0].text
-                    st.session_state.pq_key_saved = st.session_state.api_key
+
                 except Exception as e:
                     st.error("Error: " + str(e))
 
@@ -1003,7 +984,7 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
             if sailor_answers:
                 with st.spinner("Chief is grading..."):
                     try:
-                        client = anthropic.Anthropic(api_key=st.session_state.pq_key_saved)
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
