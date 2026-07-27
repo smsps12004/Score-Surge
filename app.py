@@ -61,24 +61,21 @@ if st.session_state.access_token and not st.session_state.user:
         st.session_state.user = None
 
 # ── TIER HELPERS ──────────────────────────────────────────────────────────────
-TIER_ORDER = ["free", "seaman", "petty_officer", "chief"]
+TIER_ORDER = ["free", "petty_officer", "chief"]
 
 TIER_LABELS = {
-    "free":          "Free",
+    "free":          "⚓ Seaman — Free",
     "trial":         "🎖️ Trial (3-day full access)",
-    "seaman":        "⚓ Seaman — $7/mo",
     "petty_officer": "🎖️ Petty Officer — $12/mo",
     "chief":         "⭐ Chief — $20/mo",
 }
 
 UPGRADE_INFO = {
-    "seaman":        ("Seaman", "$7/mo",  "AI Study Guide + Practice Questions"),
-    "petty_officer": ("Petty Officer", "$12/mo", "Interactive AI Tutor + everything in Seaman"),
-    "chief":         ("Chief", "$20/mo",  "Full Mock Exam + everything in Petty Officer"),
+    "petty_officer": ("Petty Officer", "$12/mo", "AI Study Guide + Interactive AI Tutor"),
+    "chief":         ("Chief", "$20/mo", "Full Mock Exam + Smart Advancement Planner + BBA Strategy Hub"),
 }
 
 STRIPE_PRICE_IDS = {
-    "seaman":        "price_1Tw3D5DP0fFhPzMlsszi2ta9",
     "petty_officer": "price_1Tw3DsDP0fFhPzMlLaeh0Ixs",
     "chief":         "price_1Tw3EZDP0fFhPzMlc8E3QcY8",
 }
@@ -107,6 +104,13 @@ def get_user_tier(user_id: str) -> str:
                 return "free"
         return tier
     except Exception:
+        try:
+            supabase.table("profiles").insert({
+                "id": user_id,
+                "tier": "free"
+            }).execute()
+        except Exception:
+            pass
         return "free"
 
 
@@ -158,6 +162,20 @@ def upgrade_banner(required_tier: str):
             )
     else:
         st.info("Log in to upgrade your plan.")
+
+
+def load_score_history(user_id: str) -> list:
+    try:
+        result = (
+            supabase.table("score_history")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at")
+            .execute()
+        )
+        return result.data or []
+    except Exception:
+        return []
 
 
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
@@ -221,6 +239,14 @@ def show_auth_page():
                         st.session_state.access_token = res.session.access_token
                         st.session_state.refresh_token = res.session.refresh_token
                         st.session_state.tier = "trial"
+                        try:
+                            supabase.table("profiles").upsert({
+                                "id": res.user.id,
+                                "tier": "trial",
+                                "trial_start": datetime.datetime.utcnow().isoformat()
+                            }).execute()
+                        except Exception:
+                            pass
                         st.rerun()
                     else:
                         st.info("Check your email to confirm your account, then log in.")
@@ -257,6 +283,15 @@ if not st.session_state.user:
 if not st.session_state.tier:
     st.session_state.tier = get_user_tier(st.session_state.user.id)
 
+if st.session_state.user and "score_history_loaded" not in st.session_state:
+    raw = load_score_history(st.session_state.user.id)
+    st.session_state.score_history = [
+        {"date": r["date"], "topic": r["topic"],
+         "score": r["score"], "total": r["total"], "pct": r["pct"]}
+        for r in raw
+    ]
+    st.session_state.score_history_loaded = True
+
 # ── HEADER ────────────────────────────────────────────────────────────────────
 col_title, col_user = st.columns([3, 1])
 with col_title:
@@ -264,7 +299,8 @@ with col_title:
 with col_user:
     st.markdown(f"<br>", unsafe_allow_html=True)
     tier_label = TIER_LABELS.get(st.session_state.tier, st.session_state.tier)
-    st.caption(f"**{st.session_state.user.email}**\n{tier_label}")
+    username = st.session_state.user.email.split("@")[0]
+    st.caption(f"**{username}**\n{tier_label}")
     if st.button("Log Out", use_container_width=True):
         supabase.auth.sign_out()
         for key in ["user", "tier", "access_token", "refresh_token"]:
@@ -628,8 +664,8 @@ st.divider()
 st.subheader("📖 AI Study Guide")
 st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
 
-if not can_access("seaman"):
-    upgrade_banner("seaman")
+if not can_access("petty_officer"):
+    upgrade_banner("petty_officer")
 else:
     with st.form("study_guide_form"):
         col1, col2 = st.columns(2)
@@ -899,6 +935,38 @@ for i, (label, date) in enumerate(deadlines):
     cols[i].metric(label, status)
 
 st.divider()
+st.subheader("📋 What is Billet-Based Advancement (BBA)?")
+st.caption("Most E6 sailors are now under BBA. Here's what that means for you.")
+
+with st.expander("Read the plain-English BBA breakdown"):
+    st.markdown("""
+**The old system:** Pass the exam + high enough FMS = you advance.
+
+**The new system (BBA):** Pass the exam + apply for a specific open
+billet + get selected = you advance. Your FMS still matters — it
+tells the Navy how competitive you are for that billet — but hitting
+a cutoff number alone won't do it anymore.
+
+**What this means for you:**
+- Taking and passing the exam is still step one. You can't be
+  considered for a billet without a passing score.
+- Your FMS shows how strong your application looks compared to
+  other sailors applying for the same billet.
+- You apply through the A2P (Advancement-to-Position) process in
+  NSIPS. Open billets are posted and you submit a preference card.
+- If you pass but don't get selected for a billet, you are
+  Pass-Not-Advanced (PNA). You earn PNA points and should apply again
+  next cycle.
+- Being proactive matters — know which billets are open in your
+  rate, where you want to go, and have your record clean and
+  up to date.
+
+**Chief tier members** get access to the BBA Strategy Hub —
+personalized AI guidance on how to navigate A2P, strengthen your
+billet application, and what to do if you passed but weren't selected.
+""")
+
+st.divider()
 
 
 # ── CPO EXAM WATCH (FREE) ─────────────────────────────────────────────────────
@@ -1010,6 +1078,18 @@ End with a line in exactly this format: Final Score: X/Y"""
                                 "topic": pq_topic, "score": scored, "total": total,
                                 "pct": round((scored / total) * 100),
                             })
+                            if st.session_state.user:
+                                try:
+                                    supabase.table("score_history").insert({
+                                        "user_id": st.session_state.user.id,
+                                        "date": datetime.date.today().strftime("%b %d"),
+                                        "topic": pq_topic,
+                                        "score": scored,
+                                        "total": total,
+                                        "pct": round((scored / total) * 100),
+                                    }).execute()
+                                except Exception:
+                                    pass
                         st.download_button(
                             "📥 Download Practice Results",
                             data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
@@ -1032,6 +1112,177 @@ End with a line in exactly this format: Final Score: X/Y"""
             }),
             use_container_width=True,
         )
+
+
+# ── CHIEF TIER: SMART ADVANCEMENT PLANNER ────────────────────────────────────
+st.divider()
+st.subheader("📅 Smart Advancement Planner")
+st.caption("Your personalized day-by-day study roadmap based on your scores, weak areas, and time to exam.")
+
+if not can_access("chief"):
+    upgrade_banner("chief")
+else:
+    with st.form("planner_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            plan_rating = st.selectbox("Your Rating",
+                ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                key="plan_rating")
+            plan_paygrade = st.selectbox("Target Paygrade",
+                ["E5", "E6"], key="plan_paygrade")
+        with col2:
+            plan_fms = st.number_input("Your Current FMS",
+                min_value=0.0, max_value=100.0, value=45.0, step=0.1,
+                key="plan_fms")
+            plan_exam = st.selectbox("Your Exam Date",
+                ["September 3, 2026 (E6)", "September 10, 2026 (E5)"],
+                key="plan_exam")
+        plan_weak = st.text_area(
+            "Weak topics (from your practice history or your own knowledge):",
+            placeholder="e.g. Military Awards, TIR calculations, MILPAY processing",
+            key="plan_weak"
+        )
+        plan_submit = st.form_submit_button(
+            "Build My Personalized Study Plan", use_container_width=True)
+
+    if plan_submit:
+        exam_date = (datetime.date(2026, 9, 3) if "E6" in plan_exam
+                     else datetime.date(2026, 9, 10))
+        days_left = (exam_date - datetime.date.today()).days
+        days_left = max(days_left, 1)
+
+        planner_prompt = f"""You are a senior {plan_rating} Chief Petty Officer
+and advanced exam preparation coach.
+You are direct, efficient, and 100% focused on getting this sailor advanced.
+
+Build a personalized day-by-day Navy advancement study plan for:
+- Rating: {plan_rating}
+- Target Paygrade: {plan_paygrade}
+- Current FMS: {plan_fms}
+- Days until exam: {days_left}
+- Exam date: {plan_exam}
+- Known weak areas: {plan_weak if plan_weak else "Not specified — build a balanced plan"}
+
+Structure the plan as follows:
+1. ONE honest sentence about where this sailor stands right now
+2. Their #1 priority focus area and why
+3. A day-by-day study schedule for ALL {days_left} days remaining
+   (group into weekly blocks if more than 14 days).
+   Each day: specific topic to study, what to do, how long.
+4. The top 3 exam traps to avoid for {plan_rating} {plan_paygrade}
+5. Final advice for exam week (days -7 through exam day)
+
+Be specific. Reference real {plan_rating} study materials where relevant.
+No fluff. Every line earns its place."""
+
+        with st.spinner("Chief is building your study plan..."):
+            try:
+                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                message = client.messages.create(
+                    model="claude-opus-4-5", max_tokens=2500,
+                    messages=[{"role": "user", "content": planner_prompt}]
+                )
+                plan_text = message.content[0].text
+                st.subheader("📅 Your Personalized Study Plan")
+                st.markdown(plan_text)
+                st.download_button(
+                    "📥 Download My Study Plan",
+                    data=plan_text,
+                    file_name=f"StudyPlan_{plan_rating}_{plan_paygrade}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error("Error building plan: " + str(e))
+
+
+# ── CHIEF TIER: BBA STRATEGY HUB ─────────────────────────────────────────────
+st.divider()
+st.subheader("⚓ BBA Strategy Hub")
+st.caption("AI-powered guidance for navigating Billet-Based Advancement. Built for E6s under A2P.")
+
+if not can_access("chief"):
+    upgrade_banner("chief")
+else:
+    st.markdown("""
+Use this to get personalized strategy on:
+- How to make your billet application competitive
+- What to do if you passed but weren't selected
+- How to use your preference card wisely
+- A2P and CA2P timelines and what to expect
+- Anything else about navigating BBA
+""")
+    with st.form("bba_hub_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            bba_rating = st.selectbox("Your Rating",
+                ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                key="bba_rating")
+            bba_fms = st.number_input("Your Current or Expected FMS",
+                min_value=0.0, max_value=100.0, value=50.0, step=0.1,
+                key="bba_fms")
+        with col2:
+            bba_situation = st.selectbox("Your Situation", [
+                "First time going through BBA/A2P",
+                "Passed the exam but not selected for a billet",
+                "Preparing my preference card / billet application",
+                "Trying to understand my competitiveness",
+                "Other / I have a specific question",
+            ], key="bba_situation")
+        bba_question = st.text_area(
+            "Describe your situation or ask your question:",
+            placeholder="e.g. I passed E6 last cycle with an FMS of 52 but didn't get a billet. What should I do differently this cycle?",
+            key="bba_question"
+        )
+        bba_submit = st.form_submit_button(
+            "Get My BBA Strategy", use_container_width=True)
+
+    if bba_submit:
+        bba_prompt = f"""You are a senior Navy Personnel Specialist (PS) Chief
+with 20 years of service and deep expertise in the Billet-Based Advancement
+(BBA) system, A2P, and CA2P processes.
+
+You are advising a {bba_rating} sailor on BBA strategy.
+
+Sailor's profile:
+- Rating: {bba_rating}
+- Current/Expected FMS: {bba_fms}
+- Situation: {bba_situation}
+- Their question/details: {bba_question}
+
+Provide specific, actionable BBA strategy guidance:
+1. Honest assessment of their situation (one sentence)
+2. Exactly what they should do RIGHT NOW (this week)
+3. How to strengthen their billet application profile
+   (record, NEC, quals, eval marks, geography flexibility)
+4. What the A2P/CA2P selection process actually looks at
+5. Specific next steps with a rough timeline
+6. One thing most sailors get wrong about BBA that this sailor
+   should avoid
+
+Be direct. Be specific to {bba_rating} rate where possible.
+Reference NSIPS, MyNavyHR, and relevant milestones where applicable.
+This sailor is counting on you — give them the real talk."""
+
+        with st.spinner("Chief is reviewing your BBA situation..."):
+            try:
+                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                message = client.messages.create(
+                    model="claude-opus-4-5", max_tokens=2000,
+                    messages=[{"role": "user", "content": bba_prompt}]
+                )
+                bba_advice = message.content[0].text
+                st.subheader("⚓ Your BBA Strategy")
+                st.markdown(bba_advice)
+                st.download_button(
+                    "📥 Download BBA Strategy",
+                    data=bba_advice,
+                    file_name=f"BBA_Strategy_{bba_rating}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error("Error: " + str(e))
 
 
 # ── MY PROFILE ────────────────────────────────────────────────────────────────
