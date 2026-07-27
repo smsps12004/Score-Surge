@@ -427,339 +427,7 @@ def extract_text_from_upload(uploaded_file):
     return raw_text
 
 
-# ── FREE: PROFILE SHEET UPLOAD ────────────────────────────────────────────────
-st.subheader("📤 Upload Profile Sheet (Optional)")
-uploaded_file = st.file_uploader(
-    "Upload your Navy Profile Sheet — image or PDF",
-    type=["png", "jpg", "jpeg", "pdf"],
-    help="The app will try to read your scores automatically. You can always edit them below.",
-)
-
-extracted_data = DEFAULT_VALUES.copy()
-
-if uploaded_file is not None:
-    with st.spinner("Reading your document..."):
-        raw_text = extract_text_from_upload(uploaded_file)
-    if raw_text.strip():
-        extracted_data, missing_fields = parse_ocr_text(raw_text)
-        if not missing_fields:
-            st.success("✅ All fields extracted! Review and edit below if needed.")
-        else:
-            st.warning(
-                "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
-                "Default values used — please fill them in manually."
-            )
-        with st.expander("🔍 Show raw OCR text (for debugging)"):
-            st.text(raw_text[:2000])
-    else:
-        st.error("Could not extract text. Try a clearer image or enter values manually.")
-
-
-# ── FREE: FMS CALCULATOR ──────────────────────────────────────────────────────
-st.subheader("📋 Enter or Edit Your Scores")
-
-with st.form("fms_form"):
-    sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
-    col1, col2 = st.columns(2)
-    with col1:
-        exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
-                                     value=float(extracted_data["exam_score"]), step=0.5)
-        pma = st.number_input("PMA (Eval Average)", min_value=0.0, max_value=5.0,
-                              value=float(extracted_data["pma"]), step=0.01)
-        tir = st.number_input("Time in Rate (Years)", min_value=0.0, max_value=10.0,
-                              value=float(extracted_data["tir"]), step=0.5)
-    with col2:
-        awards = st.number_input("Awards Points", min_value=0.0, max_value=10.0,
-                                 value=float(extracted_data["awards"]), step=0.5)
-        education = st.number_input("Education Points", min_value=0.0, max_value=2.0,
-                                    value=float(extracted_data["education"]), step=0.5)
-        pna = st.number_input("PNA Points", min_value=0.0, max_value=9.0,
-                              value=float(extracted_data["pna"]), step=0.5)
-    submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
-
-
-if submitted:
-    fms = round(exam_score + (pma * 9) + tir + awards + education + pna, 2)
-    passed = fms >= MIN_FMS
-    gap = round(MIN_FMS - fms, 2) if not passed else 0.0
-
-    st.subheader("📊 Your Results")
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Final Multiple Score", f"{fms}")
-    col_b.metric("Minimum to Advance", f"{MIN_FMS}")
-    col_c.metric("Status", "✅ Eligible" if passed else "❌ Not Yet")
-
-    if not passed:
-        st.error(f"You need **{gap} more points** to reach the cutoff of {MIN_FMS}.")
-    else:
-        st.success("You meet the minimum FMS! Focus on maximizing your score for a better rank.")
-
-    st.subheader("📉 Score Breakdown")
-    breakdown = {
-        "Exam Score": exam_score,
-        "PMA (x9)": round(pma * 9, 2),
-        "Time in Rate": tir,
-        "Awards": awards,
-        "Education": education,
-        "PNA": pna,
-    }
-    df_breakdown = (
-        pd.DataFrame.from_dict(breakdown, orient="index", columns=["Points"])
-        .reset_index()
-        .rename(columns={"index": "Component"})
-    )
-    st.bar_chart(df_breakdown.set_index("Component"))
-
-    st.subheader("📚 Personalized Study Guide")
-    guide_items = []
-
-    if exam_score < 55:
-        guide_items.append({
-            "area": "Exam Score",
-            "priority": "HIGH" if exam_score < 45 else "MEDIUM",
-            "current": exam_score, "target": 55.0,
-            "gain": round(55 - exam_score, 1),
-            "actions": [
-                "Study NRTC materials for your rate daily.",
-                "Use Bitvore or rate-specific Quizlet decks.",
-                "Take practice exams under timed conditions.",
-                "Focus on tech manual chapters with highest question frequency.",
-                "Form a study group with others in your rate.",
-            ],
-        })
-
-    if pma < 4.4:
-        guide_items.append({
-            "area": "PMA / Eval Performance",
-            "priority": "HIGH" if pma < 4.0 else "MEDIUM",
-            "current": str(pma) + " (worth " + str(round(pma * 9, 2)) + " pts)",
-            "target": "4.4+ (worth " + str(round(4.4 * 9, 2)) + " pts)",
-            "gain": round((4.4 - pma) * 9, 2),
-            "actions": [
-                "Talk to your supervisor about your eval standing.",
-                "Volunteer for additional duties and qualifications.",
-                "Document all accomplishments — do not wait until eval time.",
-                "Pursue a warfare qualification if not already earned.",
-                "Request a mid-term counseling session.",
-            ],
-        })
-
-    if awards < 5:
-        guide_items.append({
-            "area": "Awards", "priority": "MEDIUM",
-            "current": awards, "target": "5-10",
-            "gain": round(5 - awards, 1),
-            "actions": [
-                "Talk to your LPO or Chief about submitting an award write-up.",
-                "Track achievements that qualify for a NAM.",
-                "Ensure all past awards are in your service record.",
-                "Participate in community service events.",
-            ],
-        })
-
-    if education < 2.0:
-        guide_items.append({
-            "area": "Education",
-            "priority": "MEDIUM" if education < 1.0 else "LOW",
-            "current": education, "target": 2.0,
-            "gain": round(2.0 - education, 1),
-            "actions": [
-                "Submit your JST — military skills already earn credits.",
-                "Take a free CLEP exam (Modern States can help you prep free).",
-                "Enroll in Navy College Program courses through NCPACE.",
-                "Contact your ESO for available on-base courses.",
-            ],
-        })
-
-    if pna == 0:
-        guide_items.append({
-            "area": "PNA Points", "priority": "INFO",
-            "current": 0, "target": "Accumulates automatically", "gain": "up to 9",
-            "actions": [
-                "PNA points are awarded each cycle you pass but are not advanced.",
-                "Keep taking and passing the exam every cycle.",
-                "Max is 3 cycles x 3 pts = 9 points.",
-            ],
-        })
-
-    if not guide_items:
-        st.success("Your scores are strong across the board. Keep it up!")
-    else:
-        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
-        guide_items.sort(key=lambda x: priority_order.get(x["priority"], 9))
-        priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "🔵"}
-        for item in guide_items:
-            icon = priority_icon.get(item["priority"], "⚪")
-            label = (icon + " **" + item["area"] + "** — Current: " + str(item["current"])
-                     + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)")
-            with st.expander(label):
-                st.markdown("**Action Steps:**")
-                for action in item["actions"]:
-                    st.markdown("- " + action)
-
-    st.subheader("🧾 Full Score Summary")
-    st.dataframe(
-        pd.DataFrame([{
-            "Sailor": sailor_name, "Exam": exam_score, "PMA": pma,
-            "PMA pts": round(pma * 9, 2), "TIR": tir, "Awards": awards,
-            "Education": education, "PNA": pna, "FMS": fms,
-            "Status": "PASS" if passed else "FAIL", "Gap": gap,
-        }]),
-        use_container_width=True,
-    )
-
-    st.subheader("📥 Download Report")
-
-    def generate_pdf(name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", "B", 16)
-        pdf.cell(0, 10, "Navy FMS Report - " + name, ln=True, align="C")
-        pdf.set_font("Arial", "", 10)
-        pdf.cell(0, 8, "Cycle 272 | Minimum FMS Required: " + str(MIN_FMS), ln=True, align="C")
-        pdf.ln(6)
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, "Final Multiple Score: " + str(fms) + "   |   Status: "
-                 + ("ELIGIBLE" if passed else "NOT YET"), ln=True)
-        if not passed:
-            pdf.set_font("Arial", "", 11)
-            pdf.cell(0, 8, "Points needed to advance: " + str(gap), ln=True)
-        pdf.ln(4)
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 8, "Score Breakdown:", ln=True)
-        pdf.set_font("Arial", "", 11)
-        for lbl, val in [
-            ("Exam Standard Score", exam_score), ("PMA (x9)", round(pma * 9, 2)),
-            ("Time in Rate", tir), ("Awards Points", awards),
-            ("Education Points", education), ("PNA Points", pna),
-        ]:
-            pdf.cell(0, 7, "  " + lbl + ": " + str(val), ln=True)
-        pdf.ln(4)
-        if guide_items:
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 8, "Improvement Areas:", ln=True)
-            for item in guide_items:
-                pdf.set_font("Arial", "B", 11)
-                pdf.cell(0, 7, "[" + item["priority"] + "] " + item["area"], ln=True)
-                pdf.set_font("Arial", "", 10)
-                for action in item["actions"]:
-                    safe = action.encode("latin-1", errors="replace").decode("latin-1")
-                    pdf.multi_cell(180, 6, "   - " + safe)
-                    pdf.ln(2)
-        out_path = os.path.join(tempfile.gettempdir(), "fms_report.pdf")
-        pdf.output(out_path)
-        return out_path
-
-    pdf_path = generate_pdf(sailor_name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items)
-    with open(pdf_path, "rb") as f:
-        st.download_button(
-            label="📥 Download PDF Report", data=f,
-            file_name="FMS_Report_" + sailor_name.replace(" ", "_") + ".pdf",
-            mime="application/pdf", use_container_width=True,
-        )
-
-
-# ── SEAMAN TIER: AI STUDY GUIDE ───────────────────────────────────────────────
-st.divider()
-st.subheader("📖 AI Study Guide")
-st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
-
-if not can_access("petty_officer"):
-    upgrade_banner("petty_officer")
-else:
-    with st.form("study_guide_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
-            sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
-        with col2:
-            sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0,
-                                     value=0.0, step=0.5)
-            sg_type = st.selectbox("Guide Type", [
-                "Full Rating Guide", "Crash Plan (3-5 days)",
-                "High Yield Topics Only", "Single Subject Deep Dive", "Practice Questions"
-            ])
-        sg_subject = st.text_input("Subject (only for Single Subject Deep Dive)",
-                                   placeholder="e.g. Military Awards, UCMJ, Evals")
-        sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
-
-    if sg_submit:
-        if True:
-            if sg_gap > 10:
-                strategy = "broad coverage — this sailor needs significant improvement across all areas"
-            elif sg_gap > 5:
-                strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
-            elif sg_gap > 0:
-                strategy = "precision mode — plug specific holes, every point counts"
-            else:
-                strategy = "rank maximization — sailor is eligible but wants to score higher"
-
-            topic_instruction = (
-                f"Focus exclusively on: {sg_subject}"
-                if sg_type == "Single Subject Deep Dive" and sg_subject
-                else f"Guide type: {sg_type}"
-            )
-
-            prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
-You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
-You are direct, blunt, and efficient. No fluff. No wasted words.
-You know NAVADMIN 168/26 (Cycle 272) inside and out.
-
-CYCLE 272 FACTS (NAVADMIN 168/26):
-- E6 exam date: 3 September 2026
-- E5 exam date: 10 September 2026
-- Terminal Eligibility Date: 1 January 2027
-- PMK-EE deadline: 31 July 2026
-- ILDC deadline: 31 August 2026 (E6 only)
-- Min TIR E6: 1 January 2024
-- Min TIR E5: 1 January 2026
-- PMA window E6: 1 September 2023 to 31 August 2026
-- PMA window E5: 1 June 2025 to 31 August 2026
-- EAW is authoritative source, must be finalized in NSIPS
-- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P
-
-Generate a personalized Navy advancement study guide for:
-- Rating: {sg_rating}
-- Paygrade: {sg_paygrade}
-- FMS Gap: {sg_gap} points
-- Strategy: {strategy}
-- {topic_instruction}
-
-Structure the guide as follows:
-1. ONE sentence of honest assessment of their situation
-2. Top study topics for {sg_rating} advancement exam (with brief explanation of why each matters)
-3. Key concepts they must understand (not memorize — understand)
-4. Common exam traps and mistakes sailors make
-5. Exactly what to do each day for the next 5 days
-6. One closing line — make it motivating but stern
-
-Use plain English. Write like you're talking to the sailor face to face.
-Keep it tight. Every sentence must earn its place."""
-
-            with st.spinner("Chief is reviewing your record..."):
-                try:
-                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                    message = client.messages.create(
-                        model="claude-opus-4-5", max_tokens=1500,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    guide_text = message.content[0].text
-                    st.subheader("📋 Your Personalized Study Guide")
-                    st.markdown(guide_text)
-                    st.download_button(
-                        "📥 Download Study Guide", data=guide_text,
-                        file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                        mime="text/plain", use_container_width=True,
-                    )
-                except Exception as e:
-                    st.error("Something went wrong: " + str(e))
-
-
-# ── PETTY OFFICER TIER: AI TUTOR ─────────────────────────────────────────────
-st.divider()
-st.subheader("🎓 Interactive AI Tutor")
-st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
-
+# ── PS TOPICS ─────────────────────────────────────────────────────────────────
 PS_TOPICS = {
     "E6 - Customer Service Management & Processing": {
         "subtopics": ["Correspondence", "DEERS & RAPIDS Management", "Electronic Service Record", "Leave"],
@@ -832,114 +500,279 @@ PS_TOPICS = {
     },
 }
 
-if not can_access("petty_officer"):
-    upgrade_banner("petty_officer")
-else:
-    col1, col2 = st.columns(2)
-    with col1:
-        tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
-    with col2:
-        tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
+# ── TABS ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "🏠 FMS Calculator",
+    "📋 Advancement Info",
+    "📖 Study Guide",
+    "🎓 AI Tutor",
+    "🎯 Mock Exam",
+    "📅 Advancement Planner",
+    "👤 My Profile",
+])
 
-    if st.button("📖 Start Lesson", use_container_width=True):
-        if True:
-            bib_refs = PS_TOPICS[tutor_topic]["bib"]
-            lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
-You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
-Explain everything like the sailor is smart but has never seen this material before.
-Be direct, clear, and use real Navy examples. No wasted words. No fluff.
+# ── TAB 1: FMS CALCULATOR ─────────────────────────────────────────────────────
+with tab1:
+    st.subheader("📤 Upload Profile Sheet (Optional)")
+    uploaded_file = st.file_uploader(
+        "Upload your Navy Profile Sheet — image or PDF",
+        type=["png", "jpg", "jpeg", "pdf"],
+        help="The app will try to read your scores automatically. You can always edit them below.",
+    )
 
-TOPIC: {tutor_topic}
-SUBTOPIC: {tutor_subtopic}
-GOVERNING REFERENCES: {bib_refs}
+    extracted_data = DEFAULT_VALUES.copy()
 
-Teach this lesson as follows:
-1. What this topic is in ONE plain-English sentence
-2. Why it matters on the exam and in real life
-3. The key rules, procedures, or concepts they MUST know (use bullet points, plain English)
-4. A real-world example of how this works in a PS shop
-5. The most common exam trap on this subtopic
-6. Three practice questions with answers and explanations
+    if uploaded_file is not None:
+        with st.spinner("Reading your document..."):
+            raw_text = extract_text_from_upload(uploaded_file)
+        if raw_text.strip():
+            extracted_data, missing_fields = parse_ocr_text(raw_text)
+            if not missing_fields:
+                st.success("✅ All fields extracted! Review and edit below if needed.")
+            else:
+                st.warning(
+                    "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
+                    "Default values used — please fill them in manually."
+                )
+            with st.expander("🔍 Show raw OCR text (for debugging)"):
+                st.text(raw_text[:2000])
+        else:
+            st.error("Could not extract text. Try a clearer image or enter values manually.")
 
-Keep it tight. Make it stick."""
+    st.subheader("📋 Enter or Edit Your Scores")
 
-            with st.spinner("Chief is preparing your lesson..."):
-                try:
-                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                    message = client.messages.create(
-                        model="claude-opus-4-5", max_tokens=2000,
-                        messages=[{"role": "user", "content": lesson_prompt}]
-                    )
-                    lesson = message.content[0].text
-                    st.subheader(f"📚 Lesson: {tutor_subtopic}")
-                    st.markdown(lesson)
-                    st.session_state.tutor_history = [
-                        {"role": "user", "content": lesson_prompt},
-                        {"role": "assistant", "content": lesson}
-                    ]
+    with st.form("fms_form"):
+        sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
+        col1, col2 = st.columns(2)
+        with col1:
+            exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
+                                         value=float(extracted_data["exam_score"]), step=0.5)
+            pma = st.number_input("PMA (Eval Average)", min_value=0.0, max_value=5.0,
+                                  value=float(extracted_data["pma"]), step=0.01)
+            tir = st.number_input("Time in Rate (Years)", min_value=0.0, max_value=10.0,
+                                  value=float(extracted_data["tir"]), step=0.5)
+        with col2:
+            awards = st.number_input("Awards Points", min_value=0.0, max_value=10.0,
+                                     value=float(extracted_data["awards"]), step=0.5)
+            education = st.number_input("Education Points", min_value=0.0, max_value=2.0,
+                                        value=float(extracted_data["education"]), step=0.5)
+            pna = st.number_input("PNA Points", min_value=0.0, max_value=9.0,
+                                  value=float(extracted_data["pna"]), step=0.5)
+        submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
 
-                    st.download_button(
-                        "📥 Download This Lesson", data=lesson,
-                        file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                        mime="text/plain", use_container_width=True,
-                    )
-                except Exception as e:
-                    st.error("Error: " + str(e))
+    if submitted:
+        fms = round(exam_score + (pma * 9) + tir + awards + education + pna, 2)
+        passed = fms >= MIN_FMS
+        gap = round(MIN_FMS - fms, 2) if not passed else 0.0
 
-    if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
-        st.subheader("💬 Ask the Chief a Question")
-        st.caption("Type any follow-up question about this topic.")
-        sailor_question = st.text_input("Your question",
-                                        placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
-        if st.button("Ask", use_container_width=True):
-            if sailor_question:
-                with st.spinner("Chief is thinking..."):
-                    try:
-                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                        history = st.session_state.tutor_history.copy()
-                        history.append({"role": "user", "content": sailor_question})
-                        message = client.messages.create(
-                            model="claude-opus-4-5", max_tokens=1000,
-                            messages=history
-                        )
-                        answer = message.content[0].text
-                        st.session_state.tutor_history.append({"role": "assistant", "content": answer})
-                        st.markdown("**Chief says:**")
-                        st.markdown(answer)
-                    except Exception as e:
-                        st.error("Error: " + str(e))
+        st.subheader("📊 Your Results")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Final Multiple Score", f"{fms}")
+        col_b.metric("Minimum to Advance", f"{MIN_FMS}")
+        col_c.metric("Status", "✅ Eligible" if passed else "❌ Not Yet")
+
+        if not passed:
+            st.error(f"You need **{gap} more points** to reach the cutoff of {MIN_FMS}.")
+        else:
+            st.success("You meet the minimum FMS! Focus on maximizing your score for a better rank.")
+
+        st.subheader("📉 Score Breakdown")
+        breakdown = {
+            "Exam Score": exam_score,
+            "PMA (x9)": round(pma * 9, 2),
+            "Time in Rate": tir,
+            "Awards": awards,
+            "Education": education,
+            "PNA": pna,
+        }
+        df_breakdown = (
+            pd.DataFrame.from_dict(breakdown, orient="index", columns=["Points"])
+            .reset_index()
+            .rename(columns={"index": "Component"})
+        )
+        st.bar_chart(df_breakdown.set_index("Component"))
+
+        st.subheader("📚 Personalized Study Guide")
+        guide_items = []
+
+        if exam_score < 55:
+            guide_items.append({
+                "area": "Exam Score",
+                "priority": "HIGH" if exam_score < 45 else "MEDIUM",
+                "current": exam_score, "target": 55.0,
+                "gain": round(55 - exam_score, 1),
+                "actions": [
+                    "Study NRTC materials for your rate daily.",
+                    "Use Bitvore or rate-specific Quizlet decks.",
+                    "Take practice exams under timed conditions.",
+                    "Focus on tech manual chapters with highest question frequency.",
+                    "Form a study group with others in your rate.",
+                ],
+            })
+
+        if pma < 4.4:
+            guide_items.append({
+                "area": "PMA / Eval Performance",
+                "priority": "HIGH" if pma < 4.0 else "MEDIUM",
+                "current": str(pma) + " (worth " + str(round(pma * 9, 2)) + " pts)",
+                "target": "4.4+ (worth " + str(round(4.4 * 9, 2)) + " pts)",
+                "gain": round((4.4 - pma) * 9, 2),
+                "actions": [
+                    "Talk to your supervisor about your eval standing.",
+                    "Volunteer for additional duties and qualifications.",
+                    "Document all accomplishments — do not wait until eval time.",
+                    "Pursue a warfare qualification if not already earned.",
+                    "Request a mid-term counseling session.",
+                ],
+            })
+
+        if awards < 5:
+            guide_items.append({
+                "area": "Awards", "priority": "MEDIUM",
+                "current": awards, "target": "5-10",
+                "gain": round(5 - awards, 1),
+                "actions": [
+                    "Talk to your LPO or Chief about submitting an award write-up.",
+                    "Track achievements that qualify for a NAM.",
+                    "Ensure all past awards are in your service record.",
+                    "Participate in community service events.",
+                ],
+            })
+
+        if education < 2.0:
+            guide_items.append({
+                "area": "Education",
+                "priority": "MEDIUM" if education < 1.0 else "LOW",
+                "current": education, "target": 2.0,
+                "gain": round(2.0 - education, 1),
+                "actions": [
+                    "Submit your JST — military skills already earn credits.",
+                    "Take a free CLEP exam (Modern States can help you prep free).",
+                    "Enroll in Navy College Program courses through NCPACE.",
+                    "Contact your ESO for available on-base courses.",
+                ],
+            })
+
+        if pna == 0:
+            guide_items.append({
+                "area": "PNA Points", "priority": "INFO",
+                "current": 0, "target": "Accumulates automatically", "gain": "up to 9",
+                "actions": [
+                    "PNA points are awarded each cycle you pass but are not advanced.",
+                    "Keep taking and passing the exam every cycle.",
+                    "Max is 3 cycles x 3 pts = 9 points.",
+                ],
+            })
+
+        if not guide_items:
+            st.success("Your scores are strong across the board. Keep it up!")
+        else:
+            priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+            guide_items.sort(key=lambda x: priority_order.get(x["priority"], 9))
+            priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "🔵"}
+            for item in guide_items:
+                icon = priority_icon.get(item["priority"], "⚪")
+                label = (icon + " **" + item["area"] + "** — Current: " + str(item["current"])
+                         + " -> Target: " + str(item["target"]) + " (+" + str(item["gain"]) + " pts possible)")
+                with st.expander(label):
+                    st.markdown("**Action Steps:**")
+                    for action in item["actions"]:
+                        st.markdown("- " + action)
+
+        st.subheader("🧾 Full Score Summary")
+        st.dataframe(
+            pd.DataFrame([{
+                "Sailor": sailor_name, "Exam": exam_score, "PMA": pma,
+                "PMA pts": round(pma * 9, 2), "TIR": tir, "Awards": awards,
+                "Education": education, "PNA": pna, "FMS": fms,
+                "Status": "PASS" if passed else "FAIL", "Gap": gap,
+            }]),
+            use_container_width=True,
+        )
+
+        st.subheader("📥 Download Report")
+
+        def generate_pdf(name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(0, 10, "Navy FMS Report - " + name, ln=True, align="C")
+            pdf.set_font("Arial", "", 10)
+            pdf.cell(0, 8, "Cycle 272 | Minimum FMS Required: " + str(MIN_FMS), ln=True, align="C")
+            pdf.ln(6)
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(0, 10, "Final Multiple Score: " + str(fms) + "   |   Status: "
+                     + ("ELIGIBLE" if passed else "NOT YET"), ln=True)
+            if not passed:
+                pdf.set_font("Arial", "", 11)
+                pdf.cell(0, 8, "Points needed to advance: " + str(gap), ln=True)
+            pdf.ln(4)
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 8, "Score Breakdown:", ln=True)
+            pdf.set_font("Arial", "", 11)
+            for lbl, val in [
+                ("Exam Standard Score", exam_score), ("PMA (x9)", round(pma * 9, 2)),
+                ("Time in Rate", tir), ("Awards Points", awards),
+                ("Education Points", education), ("PNA Points", pna),
+            ]:
+                pdf.cell(0, 7, "  " + lbl + ": " + str(val), ln=True)
+            pdf.ln(4)
+            if guide_items:
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 8, "Improvement Areas:", ln=True)
+                for item in guide_items:
+                    pdf.set_font("Arial", "B", 11)
+                    pdf.cell(0, 7, "[" + item["priority"] + "] " + item["area"], ln=True)
+                    pdf.set_font("Arial", "", 10)
+                    for action in item["actions"]:
+                        safe = action.encode("latin-1", errors="replace").decode("latin-1")
+                        pdf.multi_cell(180, 6, "   - " + safe)
+                        pdf.ln(2)
+            out_path = os.path.join(tempfile.gettempdir(), "fms_report.pdf")
+            pdf.output(out_path)
+            return out_path
+
+        pdf_path = generate_pdf(sailor_name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items)
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                label="📥 Download PDF Report", data=f,
+                file_name="FMS_Report_" + sailor_name.replace(" ", "_") + ".pdf",
+                mime="application/pdf", use_container_width=True,
+            )
 
 
-# ── CYCLE COUNTDOWN (FREE) ────────────────────────────────────────────────────
-st.subheader("⏱️ Cycle 272 Countdown")
+# ── TAB 2: ADVANCEMENT INFO ───────────────────────────────────────────────────
+with tab2:
+    st.subheader("⏱️ Cycle 272 Countdown")
 
-today = datetime.date.today()
-deadlines = [
-    ("PMK-EE Deadline",   datetime.date(2026, 7, 31)),
-    ("ILDC Deadline (E6)", datetime.date(2026, 8, 31)),
-    ("E6 Exam Day",        datetime.date(2026, 9, 3)),
-    ("E5 Exam Day",        datetime.date(2026, 9, 10)),
-]
+    today = datetime.date.today()
+    deadlines = [
+        ("PMK-EE Deadline",    datetime.date(2026, 7, 31)),
+        ("ILDC Deadline (E6)", datetime.date(2026, 8, 31)),
+        ("E6 Exam Day",        datetime.date(2026, 9, 3)),
+        ("E5 Exam Day",        datetime.date(2026, 9, 10)),
+    ]
 
-cols = st.columns(4)
-for i, (label, date) in enumerate(deadlines):
-    days_left = (date - today).days
-    if days_left < 0:
-        status = "✅ Passed"
-    elif days_left <= 14:
-        status = f"🔴 {days_left} days"
-    elif days_left <= 30:
-        status = f"🟡 {days_left} days"
-    else:
-        status = f"🟢 {days_left} days"
-    cols[i].metric(label, status)
+    cols = st.columns(4)
+    for i, (label, date) in enumerate(deadlines):
+        days_left = (date - today).days
+        if days_left < 0:
+            status = "✅ Passed"
+        elif days_left <= 14:
+            status = f"🔴 {days_left} days"
+        elif days_left <= 30:
+            status = f"🟡 {days_left} days"
+        else:
+            status = f"🟢 {days_left} days"
+        cols[i].metric(label, status)
 
-st.divider()
-st.subheader("📋 What is Billet-Based Advancement (BBA)?")
-st.caption("Most E6 sailors are now under BBA. Here's what that means for you.")
+    st.divider()
 
-with st.expander("Read the plain-English BBA breakdown"):
-    st.markdown("""
+    st.subheader("📋 What is Billet-Based Advancement (BBA)?")
+    st.caption("Most E6 sailors are now under BBA. Here's what that means for you.")
+
+    with st.expander("Read the plain-English BBA breakdown"):
+        st.markdown("""
 **The old system:** Pass the exam + high enough FMS = you advance.
 
 **The new system (BBA):** Pass the exam + apply for a specific open
@@ -966,58 +799,234 @@ personalized AI guidance on how to navigate A2P, strengthen your
 billet application, and what to do if you passed but weren't selected.
 """)
 
-st.divider()
+    st.divider()
+
+    st.subheader("⭐ CPO / E7 Exam Watch — FY27")
+    st.caption("The FY27 CPO board exam is typically held in January–February. The official NAVADMIN has not yet been released.")
+
+    _cpo_est_date = datetime.date(2027, 2, 1)
+    _cpo_days_left = (_cpo_est_date - today).days
+    if _cpo_days_left < 0:
+        _cpo_status = "✅ Est. date passed"
+    elif _cpo_days_left <= 14:
+        _cpo_status = f"🔴 ~{_cpo_days_left} days"
+    elif _cpo_days_left <= 30:
+        _cpo_status = f"🟡 ~{_cpo_days_left} days"
+    else:
+        _cpo_status = f"🟢 ~{_cpo_days_left} days"
+
+    cpo_col1, cpo_col2 = st.columns(2)
+    cpo_col1.metric("CPO Exam (est.)", _cpo_status, delta="Feb 1, 2027 estimated")
+    cpo_col2.metric("Official NAVADMIN", "⏳ Not yet released")
+    st.info(
+        "📋 **FY27 CPO Board Exam** — Historically announced Oct–Nov and administered Jan–Feb. "
+        "Watch for the official NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil). "
+        "This countdown will be updated once the date is confirmed."
+    )
 
 
-# ── CPO EXAM WATCH (FREE) ─────────────────────────────────────────────────────
-st.subheader("⭐ CPO / E7 Exam Watch — FY27")
-st.caption("The FY27 CPO board exam is typically held in January–February. The official NAVADMIN has not yet been released.")
+# ── TAB 3: AI STUDY GUIDE ─────────────────────────────────────────────────────
+with tab3:
+    st.subheader("📖 AI Study Guide")
+    st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
 
-_cpo_est_date = datetime.date(2027, 2, 1)
-_cpo_days_left = (_cpo_est_date - today).days
-if _cpo_days_left < 0:
-    _cpo_status = "✅ Est. date passed"
-elif _cpo_days_left <= 14:
-    _cpo_status = f"🔴 ~{_cpo_days_left} days"
-elif _cpo_days_left <= 30:
-    _cpo_status = f"🟡 ~{_cpo_days_left} days"
-else:
-    _cpo_status = f"🟢 ~{_cpo_days_left} days"
+    if not can_access("petty_officer"):
+        upgrade_banner("petty_officer")
+    else:
+        with st.form("study_guide_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
+                sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
+            with col2:
+                sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0,
+                                         value=0.0, step=0.5)
+                sg_type = st.selectbox("Guide Type", [
+                    "Full Rating Guide", "Crash Plan (3-5 days)",
+                    "High Yield Topics Only", "Single Subject Deep Dive", "Practice Questions"
+                ])
+            sg_subject = st.text_input("Subject (only for Single Subject Deep Dive)",
+                                       placeholder="e.g. Military Awards, UCMJ, Evals")
+            sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
 
-cpo_col1, cpo_col2 = st.columns(2)
-cpo_col1.metric("CPO Exam (est.)", _cpo_status, delta="Feb 1, 2027 estimated")
-cpo_col2.metric("Official NAVADMIN", "⏳ Not yet released")
-st.info(
-    "📋 **FY27 CPO Board Exam** — Historically announced Oct–Nov and administered Jan–Feb. "
-    "Watch for the official NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil). "
-    "This countdown will be updated once the date is confirmed."
-)
+        if sg_submit:
+            if True:
+                if sg_gap > 10:
+                    strategy = "broad coverage — this sailor needs significant improvement across all areas"
+                elif sg_gap > 5:
+                    strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
+                elif sg_gap > 0:
+                    strategy = "precision mode — plug specific holes, every point counts"
+                else:
+                    strategy = "rank maximization — sailor is eligible but wants to score higher"
 
-st.divider()
+                topic_instruction = (
+                    f"Focus exclusively on: {sg_subject}"
+                    if sg_type == "Single Subject Deep Dive" and sg_subject
+                    else f"Guide type: {sg_type}"
+                )
+
+                prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
+You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
+You are direct, blunt, and efficient. No fluff. No wasted words.
+You know NAVADMIN 168/26 (Cycle 272) inside and out.
+
+CYCLE 272 FACTS (NAVADMIN 168/26):
+- E6 exam date: 3 September 2026
+- E5 exam date: 10 September 2026
+- Terminal Eligibility Date: 1 January 2027
+- PMK-EE deadline: 31 July 2026
+- ILDC deadline: 31 August 2026 (E6 only)
+- Min TIR E6: 1 January 2024
+- Min TIR E5: 1 January 2026
+- PMA window E6: 1 September 2023 to 31 August 2026
+- PMA window E5: 1 June 2025 to 31 August 2026
+- EAW is authoritative source, must be finalized in NSIPS
+- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P
+
+Generate a personalized Navy advancement study guide for:
+- Rating: {sg_rating}
+- Paygrade: {sg_paygrade}
+- FMS Gap: {sg_gap} points
+- Strategy: {strategy}
+- {topic_instruction}
+
+Structure the guide as follows:
+1. ONE sentence of honest assessment of their situation
+2. Top study topics for {sg_rating} advancement exam (with brief explanation of why each matters)
+3. Key concepts they must understand (not memorize — understand)
+4. Common exam traps and mistakes sailors make
+5. Exactly what to do each day for the next 5 days
+6. One closing line — make it motivating but stern
+
+Use plain English. Write like you're talking to the sailor face to face.
+Keep it tight. Every sentence must earn its place."""
+
+                with st.spinner("Chief is reviewing your record..."):
+                    try:
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                        message = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=1500,
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        guide_text = message.content[0].text
+                        st.subheader("📋 Your Personalized Study Guide")
+                        st.markdown(guide_text)
+                        st.download_button(
+                            "📥 Download Study Guide", data=guide_text,
+                            file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
+                            mime="text/plain", use_container_width=True,
+                        )
+                    except Exception as e:
+                        st.error("Something went wrong: " + str(e))
 
 
-# ── CHIEF TIER: FULL MOCK EXAM ────────────────────────────────────────────────
-st.subheader("🎯 Full Mock Exam")
-st.caption("Exam-style questions, graded by the Chief. Real explanations. Chief doesn't grade on a curve.")
+# ── TAB 4: AI TUTOR ───────────────────────────────────────────────────────────
+with tab4:
+    st.subheader("🎓 Interactive AI Tutor")
+    st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
 
-if "score_history" not in st.session_state:
-    st.session_state.score_history = []
-
-if not can_access("chief"):
-    upgrade_banner("chief")
-else:
-    with st.form("practice_form"):
+    if not can_access("petty_officer"):
+        upgrade_banner("petty_officer")
+    else:
         col1, col2 = st.columns(2)
         with col1:
-            pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+            tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
         with col2:
-            pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-        pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
+            tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
 
-    if pq_submit:
-        if True:
-            bib_refs = PS_TOPICS[pq_topic]["bib"]
-            pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+        if st.button("📖 Start Lesson", use_container_width=True):
+            if True:
+                bib_refs = PS_TOPICS[tutor_topic]["bib"]
+                lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
+You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
+Explain everything like the sailor is smart but has never seen this material before.
+Be direct, clear, and use real Navy examples. No wasted words. No fluff.
+
+TOPIC: {tutor_topic}
+SUBTOPIC: {tutor_subtopic}
+GOVERNING REFERENCES: {bib_refs}
+
+Teach this lesson as follows:
+1. What this topic is in ONE plain-English sentence
+2. Why it matters on the exam and in real life
+3. The key rules, procedures, or concepts they MUST know (use bullet points, plain English)
+4. A real-world example of how this works in a PS shop
+5. The most common exam trap on this subtopic
+6. Three practice questions with answers and explanations
+
+Keep it tight. Make it stick."""
+
+                with st.spinner("Chief is preparing your lesson..."):
+                    try:
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                        message = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=2000,
+                            messages=[{"role": "user", "content": lesson_prompt}]
+                        )
+                        lesson = message.content[0].text
+                        st.subheader(f"📚 Lesson: {tutor_subtopic}")
+                        st.markdown(lesson)
+                        st.session_state.tutor_history = [
+                            {"role": "user", "content": lesson_prompt},
+                            {"role": "assistant", "content": lesson}
+                        ]
+
+                        st.download_button(
+                            "📥 Download This Lesson", data=lesson,
+                            file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
+                            mime="text/plain", use_container_width=True,
+                        )
+                    except Exception as e:
+                        st.error("Error: " + str(e))
+
+        if "tutor_history" in st.session_state and len(st.session_state.tutor_history) > 0:
+            st.subheader("💬 Ask the Chief a Question")
+            st.caption("Type any follow-up question about this topic.")
+            sailor_question = st.text_input("Your question",
+                                            placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
+            if st.button("Ask", use_container_width=True):
+                if sailor_question:
+                    with st.spinner("Chief is thinking..."):
+                        try:
+                            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                            history = st.session_state.tutor_history.copy()
+                            history.append({"role": "user", "content": sailor_question})
+                            message = client.messages.create(
+                                model="claude-opus-4-5", max_tokens=1000,
+                                messages=history
+                            )
+                            answer = message.content[0].text
+                            st.session_state.tutor_history.append({"role": "assistant", "content": answer})
+                            st.markdown("**Chief says:**")
+                            st.markdown(answer)
+                        except Exception as e:
+                            st.error("Error: " + str(e))
+
+
+# ── TAB 5: MOCK EXAM ──────────────────────────────────────────────────────────
+with tab5:
+    st.subheader("🎯 Full Mock Exam")
+    st.caption("Exam-style questions, graded by the Chief. Real explanations. Chief doesn't grade on a curve.")
+
+    if "score_history" not in st.session_state:
+        st.session_state.score_history = []
+
+    if not can_access("chief"):
+        upgrade_banner("chief")
+    else:
+        with st.form("practice_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+            with col2:
+                pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
+            pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
+
+        if pq_submit:
+            if True:
+                bib_refs = PS_TOPICS[pq_topic]["bib"]
+                pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
 - Governing References: {bib_refs}
@@ -1031,127 +1040,127 @@ ANSWER: [Letter]
 EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.]
 Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
 
-            with st.spinner("Chief is writing your exam..."):
-                try:
-                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                    message = client.messages.create(
-                        model="claude-opus-4-5", max_tokens=2000,
-                        messages=[{"role": "user", "content": pq_prompt}]
-                    )
-                    st.session_state.practice_questions = message.content[0].text
-
-                except Exception as e:
-                    st.error("Error: " + str(e))
-
-    if "practice_questions" in st.session_state:
-        st.subheader("📝 Your Practice Questions")
-        st.markdown(st.session_state.practice_questions)
-        st.subheader("✍️ Submit Your Answers")
-        sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
-        if st.button("Grade My Answers", use_container_width=True):
-            if sailor_answers:
-                with st.spinner("Chief is grading..."):
+                with st.spinner("Chief is writing your exam..."):
                     try:
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                        grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
+                        message = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=2000,
+                            messages=[{"role": "user", "content": pq_prompt}]
+                        )
+                        st.session_state.practice_questions = message.content[0].text
+
+                    except Exception as e:
+                        st.error("Error: " + str(e))
+
+        if "practice_questions" in st.session_state:
+            st.subheader("📝 Your Practice Questions")
+            st.markdown(st.session_state.practice_questions)
+            st.subheader("✍️ Submit Your Answers")
+            sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
+            if st.button("Grade My Answers", use_container_width=True):
+                if sailor_answers:
+                    with st.spinner("Chief is grading..."):
+                        try:
+                            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                            grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
 Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation.
 For each question, after the explanation add a new line formatted exactly like this: 📖 Source: [Manual name, Chapter X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.
 One line of honest feedback. Be direct. No fluff.
 End with a line in exactly this format: Final Score: X/Y"""
-                        message = client.messages.create(
-                            model="claude-opus-4-5", max_tokens=1500,
-                            messages=[{"role": "user", "content": grade_prompt}]
-                        )
-                        grade_result = message.content[0].text
-                        st.subheader("📊 Your Grade")
-                        st.markdown(grade_result)
-                        import re as re2
-                        score_match = re2.search(r'Final Score:\s*(\d+)/(\d+)', grade_result) or \
-                                      re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
-                        if score_match:
-                            scored = int(score_match.group(1))
-                            total = int(score_match.group(2))
-                            st.session_state.score_history.append({
-                                "date": datetime.date.today().strftime("%b %d"),
-                                "topic": pq_topic, "score": scored, "total": total,
-                                "pct": round((scored / total) * 100),
-                            })
-                            if st.session_state.user:
-                                try:
-                                    supabase.table("score_history").insert({
-                                        "user_id": st.session_state.user.id,
-                                        "date": datetime.date.today().strftime("%b %d"),
-                                        "topic": pq_topic,
-                                        "score": scored,
-                                        "total": total,
-                                        "pct": round((scored / total) * 100),
-                                    }).execute()
-                                except Exception:
-                                    pass
-                        st.download_button(
-                            "📥 Download Practice Results",
-                            data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
-                            file_name="PracticeResults.txt", mime="text/plain",
-                            use_container_width=True,
-                        )
-                    except Exception as e:
-                        st.error("Error: " + str(e))
+                            message = client.messages.create(
+                                model="claude-opus-4-5", max_tokens=1500,
+                                messages=[{"role": "user", "content": grade_prompt}]
+                            )
+                            grade_result = message.content[0].text
+                            st.subheader("📊 Your Grade")
+                            st.markdown(grade_result)
+                            import re as re2
+                            score_match = re2.search(r'Final Score:\s*(\d+)/(\d+)', grade_result) or \
+                                          re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
+                            if score_match:
+                                scored = int(score_match.group(1))
+                                total = int(score_match.group(2))
+                                st.session_state.score_history.append({
+                                    "date": datetime.date.today().strftime("%b %d"),
+                                    "topic": pq_topic, "score": scored, "total": total,
+                                    "pct": round((scored / total) * 100),
+                                })
+                                if st.session_state.user:
+                                    try:
+                                        supabase.table("score_history").insert({
+                                            "user_id": st.session_state.user.id,
+                                            "date": datetime.date.today().strftime("%b %d"),
+                                            "topic": pq_topic,
+                                            "score": scored,
+                                            "total": total,
+                                            "pct": round((scored / total) * 100),
+                                        }).execute()
+                                    except Exception:
+                                        pass
+                            st.download_button(
+                                "📥 Download Practice Results",
+                                data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
+                                file_name="PracticeResults.txt", mime="text/plain",
+                                use_container_width=True,
+                            )
+                        except Exception as e:
+                            st.error("Error: " + str(e))
 
-    if len(st.session_state.score_history) > 0:
-        st.divider()
-        st.subheader("📈 Your Score History")
-        st.caption("Track your improvement over time.")
-        history_df = pd.DataFrame(st.session_state.score_history)
-        st.line_chart(history_df.set_index("date")["pct"])
-        st.dataframe(
-            history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
-                "date": "Date", "topic": "Topic", "score": "Score",
-                "total": "Total", "pct": "% Correct",
-            }),
-            use_container_width=True,
-        )
+        if len(st.session_state.score_history) > 0:
+            st.divider()
+            st.subheader("📈 Your Score History")
+            st.caption("Track your improvement over time.")
+            history_df = pd.DataFrame(st.session_state.score_history)
+            st.line_chart(history_df.set_index("date")["pct"])
+            st.dataframe(
+                history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
+                    "date": "Date", "topic": "Topic", "score": "Score",
+                    "total": "Total", "pct": "% Correct",
+                }),
+                use_container_width=True,
+            )
 
 
-# ── CHIEF TIER: SMART ADVANCEMENT PLANNER ────────────────────────────────────
-st.divider()
-st.subheader("📅 Smart Advancement Planner")
-st.caption("Your personalized day-by-day study roadmap based on your scores, weak areas, and time to exam.")
+# ── TAB 6: ADVANCEMENT PLANNER ────────────────────────────────────────────────
+with tab6:
+    st.subheader("📅 Smart Advancement Planner")
+    st.caption("Your personalized day-by-day study roadmap based on your scores, weak areas, and time to exam.")
 
-if not can_access("chief"):
-    upgrade_banner("chief")
-else:
-    with st.form("planner_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            plan_rating = st.selectbox("Your Rating",
-                ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
-                key="plan_rating")
-            plan_paygrade = st.selectbox("Target Paygrade",
-                ["E5", "E6"], key="plan_paygrade")
-        with col2:
-            plan_fms = st.number_input("Your Current FMS",
-                min_value=0.0, max_value=100.0, value=45.0, step=0.1,
-                key="plan_fms")
-            plan_exam = st.selectbox("Your Exam Date",
-                ["September 3, 2026 (E6)", "September 10, 2026 (E5)"],
-                key="plan_exam")
-        plan_weak = st.text_area(
-            "Weak topics (from your practice history or your own knowledge):",
-            placeholder="e.g. Military Awards, TIR calculations, MILPAY processing",
-            key="plan_weak"
-        )
-        plan_submit = st.form_submit_button(
-            "Build My Personalized Study Plan", use_container_width=True)
+    if not can_access("chief"):
+        upgrade_banner("chief")
+    else:
+        with st.form("planner_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                plan_rating = st.selectbox("Your Rating",
+                    ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                    key="plan_rating")
+                plan_paygrade = st.selectbox("Target Paygrade",
+                    ["E5", "E6"], key="plan_paygrade")
+            with col2:
+                plan_fms = st.number_input("Your Current FMS",
+                    min_value=0.0, max_value=100.0, value=45.0, step=0.1,
+                    key="plan_fms")
+                plan_exam = st.selectbox("Your Exam Date",
+                    ["September 3, 2026 (E6)", "September 10, 2026 (E5)"],
+                    key="plan_exam")
+            plan_weak = st.text_area(
+                "Weak topics (from your practice history or your own knowledge):",
+                placeholder="e.g. Military Awards, TIR calculations, MILPAY processing",
+                key="plan_weak"
+            )
+            plan_submit = st.form_submit_button(
+                "Build My Personalized Study Plan", use_container_width=True)
 
-    if plan_submit:
-        exam_date = (datetime.date(2026, 9, 3) if "E6" in plan_exam
-                     else datetime.date(2026, 9, 10))
-        days_left = (exam_date - datetime.date.today()).days
-        days_left = max(days_left, 1)
+        if plan_submit:
+            exam_date = (datetime.date(2026, 9, 3) if "E6" in plan_exam
+                         else datetime.date(2026, 9, 10))
+            days_left = (exam_date - datetime.date.today()).days
+            days_left = max(days_left, 1)
 
-        planner_prompt = f"""You are a senior {plan_rating} Chief Petty Officer
+            planner_prompt = f"""You are a senior {plan_rating} Chief Petty Officer
 and advanced exam preparation coach.
 You are direct, efficient, and 100% focused on getting this sailor advanced.
 
@@ -1175,36 +1184,35 @@ Structure the plan as follows:
 Be specific. Reference real {plan_rating} study materials where relevant.
 No fluff. Every line earns its place."""
 
-        with st.spinner("Chief is building your study plan..."):
-            try:
-                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                message = client.messages.create(
-                    model="claude-opus-4-5", max_tokens=2500,
-                    messages=[{"role": "user", "content": planner_prompt}]
-                )
-                plan_text = message.content[0].text
-                st.subheader("📅 Your Personalized Study Plan")
-                st.markdown(plan_text)
-                st.download_button(
-                    "📥 Download My Study Plan",
-                    data=plan_text,
-                    file_name=f"StudyPlan_{plan_rating}_{plan_paygrade}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            except Exception as e:
-                st.error("Error building plan: " + str(e))
+            with st.spinner("Chief is building your study plan..."):
+                try:
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                    message = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=2500,
+                        messages=[{"role": "user", "content": planner_prompt}]
+                    )
+                    plan_text = message.content[0].text
+                    st.subheader("📅 Your Personalized Study Plan")
+                    st.markdown(plan_text)
+                    st.download_button(
+                        "📥 Download My Study Plan",
+                        data=plan_text,
+                        file_name=f"StudyPlan_{plan_rating}_{plan_paygrade}.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error("Error building plan: " + str(e))
 
+    st.divider()
 
-# ── CHIEF TIER: BBA STRATEGY HUB ─────────────────────────────────────────────
-st.divider()
-st.subheader("⚓ BBA Strategy Hub")
-st.caption("AI-powered guidance for navigating Billet-Based Advancement. Built for E6s under A2P.")
+    st.subheader("⚓ BBA Strategy Hub")
+    st.caption("AI-powered guidance for navigating Billet-Based Advancement. Built for E6s under A2P.")
 
-if not can_access("chief"):
-    upgrade_banner("chief")
-else:
-    st.markdown("""
+    if not can_access("chief"):
+        upgrade_banner("chief")
+    else:
+        st.markdown("""
 Use this to get personalized strategy on:
 - How to make your billet application competitive
 - What to do if you passed but weren't selected
@@ -1212,33 +1220,33 @@ Use this to get personalized strategy on:
 - A2P and CA2P timelines and what to expect
 - Anything else about navigating BBA
 """)
-    with st.form("bba_hub_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            bba_rating = st.selectbox("Your Rating",
-                ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
-                key="bba_rating")
-            bba_fms = st.number_input("Your Current or Expected FMS",
-                min_value=0.0, max_value=100.0, value=50.0, step=0.1,
-                key="bba_fms")
-        with col2:
-            bba_situation = st.selectbox("Your Situation", [
-                "First time going through BBA/A2P",
-                "Passed the exam but not selected for a billet",
-                "Preparing my preference card / billet application",
-                "Trying to understand my competitiveness",
-                "Other / I have a specific question",
-            ], key="bba_situation")
-        bba_question = st.text_area(
-            "Describe your situation or ask your question:",
-            placeholder="e.g. I passed E6 last cycle with an FMS of 52 but didn't get a billet. What should I do differently this cycle?",
-            key="bba_question"
-        )
-        bba_submit = st.form_submit_button(
-            "Get My BBA Strategy", use_container_width=True)
+        with st.form("bba_hub_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                bba_rating = st.selectbox("Your Rating",
+                    ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                    key="bba_rating")
+                bba_fms = st.number_input("Your Current or Expected FMS",
+                    min_value=0.0, max_value=100.0, value=50.0, step=0.1,
+                    key="bba_fms")
+            with col2:
+                bba_situation = st.selectbox("Your Situation", [
+                    "First time going through BBA/A2P",
+                    "Passed the exam but not selected for a billet",
+                    "Preparing my preference card / billet application",
+                    "Trying to understand my competitiveness",
+                    "Other / I have a specific question",
+                ], key="bba_situation")
+            bba_question = st.text_area(
+                "Describe your situation or ask your question:",
+                placeholder="e.g. I passed E6 last cycle with an FMS of 52 but didn't get a billet. What should I do differently this cycle?",
+                key="bba_question"
+            )
+            bba_submit = st.form_submit_button(
+                "Get My BBA Strategy", use_container_width=True)
 
-    if bba_submit:
-        bba_prompt = f"""You are a senior Navy Personnel Specialist (PS) Chief
+        if bba_submit:
+            bba_prompt = f"""You are a senior Navy Personnel Specialist (PS) Chief
 with 20 years of service and deep expertise in the Billet-Based Advancement
 (BBA) system, A2P, and CA2P processes.
 
@@ -1264,93 +1272,93 @@ Be direct. Be specific to {bba_rating} rate where possible.
 Reference NSIPS, MyNavyHR, and relevant milestones where applicable.
 This sailor is counting on you — give them the real talk."""
 
-        with st.spinner("Chief is reviewing your BBA situation..."):
-            try:
-                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                message = client.messages.create(
-                    model="claude-opus-4-5", max_tokens=2000,
-                    messages=[{"role": "user", "content": bba_prompt}]
-                )
-                bba_advice = message.content[0].text
-                st.subheader("⚓ Your BBA Strategy")
-                st.markdown(bba_advice)
-                st.download_button(
-                    "📥 Download BBA Strategy",
-                    data=bba_advice,
-                    file_name=f"BBA_Strategy_{bba_rating}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            except Exception as e:
-                st.error("Error: " + str(e))
+            with st.spinner("Chief is reviewing your BBA situation..."):
+                try:
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                    message = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=2000,
+                        messages=[{"role": "user", "content": bba_prompt}]
+                    )
+                    bba_advice = message.content[0].text
+                    st.subheader("⚓ Your BBA Strategy")
+                    st.markdown(bba_advice)
+                    st.download_button(
+                        "📥 Download BBA Strategy",
+                        data=bba_advice,
+                        file_name=f"BBA_Strategy_{bba_rating}.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error("Error: " + str(e))
 
 
-# ── MY PROFILE ────────────────────────────────────────────────────────────────
-st.divider()
-st.subheader("👤 My Profile")
-st.caption("Your personal score history, weak spots, and what to study next.")
+# ── TAB 7: MY PROFILE ─────────────────────────────────────────────────────────
+with tab7:
+    st.subheader("👤 My Profile")
+    st.caption("Your personal score history, weak spots, and what to study next.")
 
-_score_hist = st.session_state.get("score_history", [])
+    _score_hist = st.session_state.get("score_history", [])
 
-st.markdown("#### 📋 Exam History")
-if not _score_hist:
-    st.info("No exam history yet — complete a Mock Exam session to get started!")
-else:
-    _hist_rows = []
-    for _entry in _score_hist:
-        _pct = _entry.get("pct", 0)
-        _hist_rows.append({
-            "Date":      _entry.get("date", "—"),
-            "Topic":     _entry.get("topic", "—"),
-            "Score":     f"{_entry.get('score', 0)}/{_entry.get('total', 0)}",
-            "% Correct": _pct,
-            "Result":    "✅ Pass" if _pct >= 70 else "❌ Needs Work",
-        })
-    st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
-
-st.markdown("---")
-
-st.markdown("#### ⚠️ Recurring Weak Topics")
-_weak_topics = {}
-for _entry in _score_hist:
-    if _entry.get("pct", 100) < 70:
-        _t = _entry.get("topic", "").strip()
-        if _t:
-            _weak_topics[_t] = _weak_topics.get(_t, 0) + 1
-
-if not _weak_topics:
-    if _score_hist:
-        st.success("No recurring weak topics — you're performing well across the board!")
+    st.markdown("#### 📋 Exam History")
+    if not _score_hist:
+        st.info("No exam history yet — complete a Mock Exam session to get started!")
     else:
-        st.info("Complete a graded session to identify weak topics.")
-else:
-    _top_weak = sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:5]
-    for _topic, _count in _top_weak:
-        st.markdown(f"- **{_topic[:80]}** — scored below 70% {_count} time{'s' if _count > 1 else ''}")
+        _hist_rows = []
+        for _entry in _score_hist:
+            _pct = _entry.get("pct", 0)
+            _hist_rows.append({
+                "Date":      _entry.get("date", "—"),
+                "Topic":     _entry.get("topic", "—"),
+                "Score":     f"{_entry.get('score', 0)}/{_entry.get('total', 0)}",
+                "% Correct": _pct,
+                "Result":    "✅ Pass" if _pct >= 70 else "❌ Needs Work",
+            })
+        st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
 
-st.markdown("---")
+    st.markdown("---")
 
-st.markdown("#### 📈 Score Trend")
-if not _score_hist:
-    st.info("Complete a session to see your score trend.")
-else:
-    _trend_df = pd.DataFrame([
-        {"Session": i + 1, "Score %": _entry.get("pct", 0)}
-        for i, _entry in enumerate(_score_hist)
-    ]).set_index("Session")
-    st.line_chart(_trend_df)
+    st.markdown("#### ⚠️ Recurring Weak Topics")
+    _weak_topics = {}
+    for _entry in _score_hist:
+        if _entry.get("pct", 100) < 70:
+            _t = _entry.get("topic", "").strip()
+            if _t:
+                _weak_topics[_t] = _weak_topics.get(_t, 0) + 1
 
-st.markdown("---")
+    if not _weak_topics:
+        if _score_hist:
+            st.success("No recurring weak topics — you're performing well across the board!")
+        else:
+            st.info("Complete a graded session to identify weak topics.")
+    else:
+        _top_weak = sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:5]
+        for _topic, _count in _top_weak:
+            st.markdown(f"- **{_topic[:80]}** — scored below 70% {_count} time{'s' if _count > 1 else ''}")
 
-st.markdown("#### 🎯 Recommended Next Study Topics")
-if not _weak_topics:
-    st.info("No recommendations yet — finish a graded session first.")
-else:
-    _top3 = [t for t, _ in sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:3]]
-    for _rec_topic in _top3:
-        if st.button(
-            f"📚 Study: {_rec_topic[:60]}",
-            key=f"profile_study_{hash(_rec_topic) % 99999}",
-            use_container_width=True,
-        ):
-            st.info(f"Head to the AI Tutor section above and select **{_rec_topic[:60]}** to start your lesson!")
+    st.markdown("---")
+
+    st.markdown("#### 📈 Score Trend")
+    if not _score_hist:
+        st.info("Complete a session to see your score trend.")
+    else:
+        _trend_df = pd.DataFrame([
+            {"Session": i + 1, "Score %": _entry.get("pct", 0)}
+            for i, _entry in enumerate(_score_hist)
+        ]).set_index("Session")
+        st.line_chart(_trend_df)
+
+    st.markdown("---")
+
+    st.markdown("#### 🎯 Recommended Next Study Topics")
+    if not _weak_topics:
+        st.info("No recommendations yet — finish a graded session first.")
+    else:
+        _top3 = [t for t, _ in sorted(_weak_topics.items(), key=lambda x: x[1], reverse=True)[:3]]
+        for _rec_topic in _top3:
+            if st.button(
+                f"📚 Study: {_rec_topic[:60]}",
+                key=f"profile_study_{hash(_rec_topic) % 99999}",
+                use_container_width=True,
+            ):
+                st.info(f"Head to the AI Tutor tab and select **{_rec_topic[:60]}** to start your lesson!")
