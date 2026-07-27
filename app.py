@@ -66,20 +66,31 @@ TIER_ORDER = ["free", "petty_officer", "chief"]
 TIER_LABELS = {
     "free":          "⚓ Seaman — Free",
     "trial":         "🎖️ Trial (3-day full access)",
-    "petty_officer": "🎖️ Petty Officer — $12/mo",
-    "chief":         "⭐ Chief — $20/mo",
+    "petty_officer": "🎖️ Petty Officer — $12.99/mo",
+    "chief":         "⭐ Chief — $19.99/mo",
 }
 
 UPGRADE_INFO = {
-    "petty_officer": ("Petty Officer", "$12/mo", "AI Study Guide + Interactive AI Tutor"),
-    "chief":         ("Chief", "$20/mo", "Full Mock Exam + Smart Advancement Planner + BBA Strategy Hub"),
+    "petty_officer": ("Petty Officer", "$12.99/mo", "AI Study Guide + Interactive AI Tutor"),
+    "chief":         ("Chief", "$19.99/mo", "Full Mock Exam + Smart Advancement Planner + BBA Strategy Hub"),
 }
 
+# Prices new checkouts use. Stripe prices are immutable, so a price change means
+# creating a new price and pointing here at it.
 STRIPE_PRICE_IDS = {
-    "petty_officer": "price_1Tw3DsDP0fFhPzMlLaeh0Ixs",
-    "chief":         "price_1Tw3EZDP0fFhPzMlc8E3QcY8",
+    "petty_officer": "price_1TxgMkDP0fFhPzMl2MEk9OZk",   # $12.99/mo, created 26 Jul 2026
+    "chief":         "price_1TxgLnDP0fFhPzMlRxZuLWpU",   # $19.99/mo, created 26 Jul 2026
 }
+
+# Retired prices. Nobody can check out at these any more, but sailors who
+# subscribed before the change keep them, so they must still map to a tier.
+LEGACY_PRICE_IDS = {
+    "price_1Tw3DsDP0fFhPzMlLaeh0Ixs": "petty_officer",   # $12.00/mo
+    "price_1Tw3EZDP0fFhPzMlc8E3QcY8": "chief",           # $20.00/mo
+}
+
 PRICE_TO_TIER = {v: k for k, v in STRIPE_PRICE_IDS.items()}
+PRICE_TO_TIER.update(LEGACY_PRICE_IDS)
 
 def get_user_tier(user_id: str) -> str:
     try:
@@ -325,13 +336,67 @@ if st.session_state.tier == "trial":
 
 st.markdown("""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
-| Cycle | Min FMS to Advance |
-|-------|--------------------|
-| 272   | **44.0**           |
 """)
 
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
-MIN_FMS = 44.0
+# Official FMS computation per the MyNavyHR "E4 Through E7 Final Multiple Score"
+# chart (Cycle 104/243 forward), NAVADMIN 312/18, and BUPERSINST 1430.16G.
+#
+#   PMA points   E4/E5: (PMA x 80) - 256, max 64
+#                E6:    (RSCA PMA x 30) - 60, max 114
+#                E7:    (RSCA PMA x 30) - 54, max 120
+#   SIPG points  Service in paygrade (years) / 5, max 2 (E4/E5) or 3 (E6)
+#   Education    2 pts AA/AS, 4 pts BA/BS or above
+#   E7 is board-selected: exam + PMA only, no awards/PNA/SIPG/education.
+#
+# Input ranges are NOT the same across paygrades:
+#   E4/E5 PMA is the average of eval promotion-recommendation values, which can
+#   only be 4.00 / 3.80 / 3.60 / 3.40 / 2.00 -- so PMA tops out at 4.00, and
+#   4.00 x 80 - 256 = 64, exactly the cap. A PMA of 3.20 or below scores zero.
+#   E6/E7 RSCA PMA is that eval value PLUS up to 1.80 RSCA bonus points, so it
+#   tops out at 5.80, and 5.80 x 30 - 60 = 114 / 5.80 x 30 - 54 = 120.
+FMS_RULES = {
+    "E4": {"pma_mult": 80, "pma_sub": 256, "pma_max": 64.0, "pma_input_max": 4.00,
+           "pma_name": "PMA", "tir_div": 5.0, "tir_max": 2.0, "awards_max": 10.0,
+           "edu_max": 4.0, "pna_max": 9.0, "fms_max": 169.0},
+    "E5": {"pma_mult": 80, "pma_sub": 256, "pma_max": 64.0, "pma_input_max": 4.00,
+           "pma_name": "PMA", "tir_div": 5.0, "tir_max": 2.0, "awards_max": 10.0,
+           "edu_max": 4.0, "pna_max": 9.0, "fms_max": 169.0},
+    "E6": {"pma_mult": 30, "pma_sub": 60, "pma_max": 114.0, "pma_input_max": 5.80,
+           "pma_name": "RSCA PMA", "tir_div": 5.0, "tir_max": 3.0, "awards_max": 12.0,
+           "edu_max": 4.0, "pna_max": 9.0, "fms_max": 222.0},
+    "E7": {"pma_mult": 30, "pma_sub": 54, "pma_max": 120.0, "pma_input_max": 5.80,
+           "pma_name": "RSCA PMA", "tir_div": 5.0, "tir_max": 0.0, "awards_max": 0.0,
+           "edu_max": 0.0, "pna_max": 0.0, "fms_max": 200.0},
+}
+EXAM_MAX = 80.0
+
+
+def pma_points(paygrade: str, pma_value: float) -> float:
+    """Convert a raw PMA / RSCA PMA into FMS points for the given paygrade."""
+    r = FMS_RULES[paygrade]
+    raw = (pma_value * r["pma_mult"]) - r["pma_sub"]
+    return round(min(max(raw, 0.0), r["pma_max"]), 2)
+
+
+def tir_points(paygrade: str, years_in_paygrade: float) -> float:
+    """Service in paygrade (years) / 5, capped by paygrade."""
+    r = FMS_RULES[paygrade]
+    return round(min(years_in_paygrade / r["tir_div"], r["tir_max"]), 2)
+
+
+def compute_fms(paygrade, exam_score, pma, years_in_rate, awards, education, pna):
+    """Return (total_fms, ordered breakdown dict) using the official chart."""
+    r = FMS_RULES[paygrade]
+    parts = {
+        "Exam Standard Score": round(min(exam_score, EXAM_MAX), 2),
+        "PMA Points":          pma_points(paygrade, pma),
+        "Time in Rate":        tir_points(paygrade, years_in_rate),
+        "Awards":              round(min(awards, r["awards_max"]), 2),
+        "Education":           round(min(education, r["edu_max"]), 2),
+        "PNA Points":          round(min(pna, r["pna_max"]), 2),
+    }
+    return round(sum(parts.values()), 2), parts
 
 LABEL_PATTERNS = {
     "exam_score": [
@@ -369,11 +434,11 @@ LABEL_PATTERNS = {
 
 DEFAULT_VALUES = {
     "exam_score": 42.0,
-    "pma": 4.2,
+    "pma": 3.8,
     "tir": 3.0,
     "awards": 2.0,
-    "education": 1.0,
-    "pna": 0.5,
+    "education": 0.0,
+    "pna": 0.0,
 }
 
 # ── OCR HELPERS ───────────────────────────────────────────────────────────────
@@ -541,50 +606,90 @@ with tab1:
 
     st.subheader("📋 Enter or Edit Your Scores")
 
+    # Outside the form on purpose: changing paygrade must immediately re-scale the
+    # PMA field and hide the fields that paygrade does not use.
+    paygrade = st.selectbox(
+        "Paygrade You Are Competing For", ["E4", "E5", "E6", "E7"], index=1,
+        help="The PMA formula and every point cap change by paygrade.",
+    )
+    rules = FMS_RULES[paygrade]
+    pma_cap = rules["pma_input_max"]
+    pma_label = rules["pma_name"]
+    is_e7 = paygrade == "E7"
+
     with st.form("fms_form"):
         sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
         col1, col2 = st.columns(2)
         with col1:
             exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
                                          value=float(extracted_data["exam_score"]), step=0.5)
-            pma = st.number_input("PMA (Eval Average)", min_value=0.0, max_value=5.0,
-                                  value=float(extracted_data["pma"]), step=0.01)
-            tir = st.number_input("Time in Rate (Years)", min_value=0.0, max_value=10.0,
-                                  value=float(extracted_data["tir"]), step=0.5)
+            pma = st.number_input(
+                f"{pma_label} (max {pma_cap:.2f})",
+                min_value=0.0, max_value=pma_cap,
+                value=min(float(extracted_data["pma"]), pma_cap), step=0.01,
+                help=("Average of your eval promotion recommendation values (4.00, 3.80, "
+                      "3.60, 3.40 or 2.00). Tops out at 4.00."
+                      if pma_cap == 4.00 else
+                      "Eval value plus RSCA bonus points, from your profile sheet. "
+                      "Tops out at 5.80."),
+            )
+            tir = st.number_input(
+                "Service in Paygrade (Years)", min_value=0.0, max_value=30.0,
+                value=float(extracted_data["tir"]), step=0.5,
+                disabled=is_e7,
+                help="Years in your current paygrade. Points = years / 5, capped at "
+                     f"{rules['tir_max']:.0f}." if not is_e7 else "Not used for E7.",
+            )
         with col2:
-            awards = st.number_input("Awards Points", min_value=0.0, max_value=10.0,
-                                     value=float(extracted_data["awards"]), step=0.5)
-            education = st.number_input("Education Points", min_value=0.0, max_value=2.0,
-                                        value=float(extracted_data["education"]), step=0.5)
-            pna = st.number_input("PNA Points", min_value=0.0, max_value=9.0,
-                                  value=float(extracted_data["pna"]), step=0.5)
+            awards = st.number_input(
+                f"Awards Points (max {rules['awards_max']:.0f})",
+                min_value=0.0, max_value=max(rules["awards_max"], 0.5),
+                value=min(float(extracted_data["awards"]), rules["awards_max"]), step=0.5,
+                disabled=is_e7,
+            )
+            education = st.selectbox(
+                "Highest Education",
+                ["None (0 pts)", "Associate's — AA/AS (2 pts)", "Bachelor's or above (4 pts)"],
+                index=(2 if float(extracted_data["education"]) >= 3
+                       else 1 if float(extracted_data["education"]) >= 2 else 0),
+                disabled=is_e7,
+            )
+            pna = st.number_input(
+                "PNA Points (max 9)", min_value=0.0, max_value=9.0,
+                value=float(extracted_data["pna"]), step=0.5,
+                disabled=is_e7,
+                help="Top 25% of candidates earn these. Last 3 exam cycles only.",
+            )
+        if is_e7:
+            st.caption(
+                "E7 FMS is exam standard score + RSCA PMA only. Awards, PNA, service in "
+                "paygrade and education do not add points, so those fields are greyed out."
+            )
         submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
 
     if submitted:
-        fms = round(exam_score + (pma * 9) + tir + awards + education + pna, 2)
-        passed = fms >= MIN_FMS
-        gap = round(MIN_FMS - fms, 2) if not passed else 0.0
+        education = {"None (0 pts)": 0.0,
+                     "Associate's — AA/AS (2 pts)": 2.0,
+                     "Bachelor's or above (4 pts)": 4.0}[education]
+
+        fms, breakdown = compute_fms(paygrade, exam_score, pma, tir, awards, education, pna)
+        fms_max = FMS_RULES[paygrade]["fms_max"]
+        pct = round((fms / fms_max) * 100, 1)
 
         st.subheader("📊 Your Results")
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Final Multiple Score", f"{fms}")
-        col_b.metric("Minimum to Advance", f"{MIN_FMS}")
-        col_c.metric("Status", "✅ Eligible" if passed else "❌ Not Yet")
+        col_b.metric(f"Max Possible ({paygrade})", f"{fms_max}")
+        col_c.metric("Percent of Max", f"{pct}%")
 
-        if not passed:
-            st.error(f"You need **{gap} more points** to reach the cutoff of {MIN_FMS}.")
-        else:
-            st.success("You meet the minimum FMS! Focus on maximizing your score for a better rank.")
+        st.info(
+            "There is no single passing FMS. Advancement cutoffs are set separately for "
+            "**every rating, every cycle**, based on how many billets are available and how "
+            "everyone else in your rate scored. Use your FMS to see where your points are "
+            "leaking, and check the published quota results for your rating's actual cutoff."
+        )
 
         st.subheader("📉 Score Breakdown")
-        breakdown = {
-            "Exam Score": exam_score,
-            "PMA (x9)": round(pma * 9, 2),
-            "Time in Rate": tir,
-            "Awards": awards,
-            "Education": education,
-            "PNA": pna,
-        }
         df_breakdown = (
             pd.DataFrame.from_dict(breakdown, orient="index", columns=["Points"])
             .reset_index()
@@ -610,13 +715,16 @@ with tab1:
                 ],
             })
 
-        if pma < 4.4:
+        _pma_target = 4.00 if pma_cap == 4.00 else 5.00
+        if pma < _pma_target:
+            _now_pts = pma_points(paygrade, pma)
+            _tgt_pts = pma_points(paygrade, _pma_target)
             guide_items.append({
-                "area": "PMA / Eval Performance",
-                "priority": "HIGH" if pma < 4.0 else "MEDIUM",
-                "current": str(pma) + " (worth " + str(round(pma * 9, 2)) + " pts)",
-                "target": "4.4+ (worth " + str(round(4.4 * 9, 2)) + " pts)",
-                "gain": round((4.4 - pma) * 9, 2),
+                "area": pma_label + " / Eval Performance",
+                "priority": "HIGH" if (_tgt_pts - _now_pts) >= 15 else "MEDIUM",
+                "current": str(pma) + " (worth " + str(_now_pts) + " pts)",
+                "target": str(_pma_target) + " (worth " + str(_tgt_pts) + " pts)",
+                "gain": round(_tgt_pts - _now_pts, 2),
                 "actions": [
                     "Talk to your supervisor about your eval standing.",
                     "Volunteer for additional duties and qualifications.",
@@ -626,10 +734,10 @@ with tab1:
                 ],
             })
 
-        if awards < 5:
+        if awards < 5 and not is_e7:
             guide_items.append({
                 "area": "Awards", "priority": "MEDIUM",
-                "current": awards, "target": "5-10",
+                "current": awards, "target": f"5-{rules['awards_max']:.0f}",
                 "gain": round(5 - awards, 1),
                 "actions": [
                     "Talk to your LPO or Chief about submitting an award write-up.",
@@ -639,12 +747,12 @@ with tab1:
                 ],
             })
 
-        if education < 2.0:
+        if education < 4.0 and not is_e7:
             guide_items.append({
                 "area": "Education",
-                "priority": "MEDIUM" if education < 1.0 else "LOW",
-                "current": education, "target": 2.0,
-                "gain": round(2.0 - education, 1),
+                "priority": "MEDIUM" if education < 2.0 else "LOW",
+                "current": str(education) + " pts", "target": "4 pts (BA/BS or above)",
+                "gain": round(4.0 - education, 1),
                 "actions": [
                     "Submit your JST — military skills already earn credits.",
                     "Take a free CLEP exam (Modern States can help you prep free).",
@@ -653,7 +761,7 @@ with tab1:
                 ],
             })
 
-        if pna == 0:
+        if pna == 0 and not is_e7:
             guide_items.append({
                 "area": "PNA Points", "priority": "INFO",
                 "current": 0, "target": "Accumulates automatically", "gain": "up to 9",
@@ -682,40 +790,46 @@ with tab1:
         st.subheader("🧾 Full Score Summary")
         st.dataframe(
             pd.DataFrame([{
-                "Sailor": sailor_name, "Exam": exam_score, "PMA": pma,
-                "PMA pts": round(pma * 9, 2), "TIR": tir, "Awards": awards,
-                "Education": education, "PNA": pna, "FMS": fms,
-                "Status": "PASS" if passed else "FAIL", "Gap": gap,
+                "Sailor": sailor_name, "Paygrade": paygrade,
+                "Exam": breakdown["Exam Standard Score"], "PMA": pma,
+                "PMA pts": breakdown["PMA Points"],
+                "SIPG yrs": tir, "SIPG pts": breakdown["Time in Rate"],
+                "Awards": breakdown["Awards"], "Education": breakdown["Education"],
+                "PNA": breakdown["PNA Points"],
+                "FMS": fms, "Max": fms_max, "% of Max": pct,
             }]),
             use_container_width=True,
         )
 
         st.subheader("📥 Download Report")
 
-        def generate_pdf(name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items):
+        def generate_pdf(name, paygrade, fms, fms_max, pct, breakdown, pma, tir, guide_items):
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Arial", "B", 16)
             pdf.cell(0, 10, "Navy FMS Report - " + name, ln=True, align="C")
             pdf.set_font("Arial", "", 10)
-            pdf.cell(0, 8, "Cycle 272 | Minimum FMS Required: " + str(MIN_FMS), ln=True, align="C")
+            pdf.cell(0, 8, "Competing for " + paygrade
+                     + " | Max possible FMS: " + str(fms_max), ln=True, align="C")
             pdf.ln(6)
             pdf.set_font("Arial", "B", 14)
-            pdf.cell(0, 10, "Final Multiple Score: " + str(fms) + "   |   Status: "
-                     + ("ELIGIBLE" if passed else "NOT YET"), ln=True)
-            if not passed:
-                pdf.set_font("Arial", "", 11)
-                pdf.cell(0, 8, "Points needed to advance: " + str(gap), ln=True)
+            pdf.cell(0, 10, "Final Multiple Score: " + str(fms)
+                     + "   (" + str(pct) + "% of max)", ln=True)
+            pdf.set_font("Arial", "", 9)
+            pdf.multi_cell(180, 5,
+                           "Advancement cutoffs are set per rating, per cycle. There is no single "
+                           "passing FMS. Check the published quota results for your rating.")
             pdf.ln(4)
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 8, "Score Breakdown:", ln=True)
             pdf.set_font("Arial", "", 11)
-            for lbl, val in [
-                ("Exam Standard Score", exam_score), ("PMA (x9)", round(pma * 9, 2)),
-                ("Time in Rate", tir), ("Awards Points", awards),
-                ("Education Points", education), ("PNA Points", pna),
-            ]:
-                pdf.cell(0, 7, "  " + lbl + ": " + str(val), ln=True)
+            for lbl, val in breakdown.items():
+                extra = ""
+                if lbl == "PMA Points":
+                    extra = "   (from PMA " + str(pma) + ")"
+                elif lbl == "Time in Rate":
+                    extra = "   (from " + str(tir) + " yrs in paygrade)"
+                pdf.cell(0, 7, "  " + lbl + ": " + str(val) + extra, ln=True)
             pdf.ln(4)
             if guide_items:
                 pdf.set_font("Arial", "B", 12)
@@ -732,7 +846,7 @@ with tab1:
             pdf.output(out_path)
             return out_path
 
-        pdf_path = generate_pdf(sailor_name, fms, passed, gap, exam_score, pma, tir, awards, education, pna, guide_items)
+        pdf_path = generate_pdf(sailor_name, paygrade, fms, fms_max, pct, breakdown, pma, tir, guide_items)
         with open(pdf_path, "rb") as f:
             st.download_button(
                 label="📥 Download PDF Report", data=f,

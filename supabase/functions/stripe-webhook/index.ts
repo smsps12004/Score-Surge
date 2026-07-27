@@ -1,10 +1,19 @@
 import Stripe from "npm:stripe@17";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// Must stay in sync with STRIPE_PRICE_IDS + LEGACY_PRICE_IDS in app.py.
 const PRICE_TO_TIER: Record<string, string> = {
-  price_1Tw3D5DP0fFhPzMlsszi2ta9: "seaman",
-  price_1Tw3DsDP0fFhPzMlLaeh0Ixs: "petty_officer",
-  price_1Tw3EZDP0fFhPzMlc8E3QcY8: "chief",
+  // Current prices.
+  price_1TxgMkDP0fFhPzMl2MEk9OZk: "petty_officer", // $12.99/mo
+  price_1TxgLnDP0fFhPzMlRxZuLWpU: "chief",         // $19.99/mo
+
+  // Retired prices. Kept so sailors who subscribed before the July 2026 price
+  // change still resolve to the right tier on renewal events.
+  price_1Tw3DsDP0fFhPzMlLaeh0Ixs: "petty_officer", // $12.00/mo
+  price_1Tw3EZDP0fFhPzMlc8E3QcY8: "chief",         // $20.00/mo
+
+  // The archived $7.00/mo Seaman price is deliberately absent: that tier no
+  // longer exists, its product is archived, and it has zero subscriptions.
 };
 
 const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY")!);
