@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import json
 import tempfile
 import os
 import datetime
@@ -565,6 +566,98 @@ PS_TOPICS = {
     },
 }
 
+# ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────
+RATINGS = ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"]
+PAYGRADES = ["E5", "E6", "E7"]  # No E4 NWAE — advancement to E4 is not exam-based.
+
+
+def _split_ps_topics():
+    """Reshape PS_TOPICS from {'E6 - Topic': {...}} into {'E6': {'Topic': {...}}}."""
+    out = {}
+    for key, val in PS_TOPICS.items():
+        pg, _, name = key.partition(" - ")
+        if not name:
+            pg, name = "E6", key
+        out.setdefault(pg.strip(), {})[name.strip()] = val
+    return out
+
+
+PS_TOPICS_BY_PAYGRADE = _split_ps_topics()
+
+# Last-resort topics if the API call fails. Keeps the tab usable instead of dead.
+GENERIC_TOPICS = {
+    "Advancement & Evaluations": {
+        "subtopics": ["Advancement Process", "Eval Cycle", "Career Milestones"],
+        "bib": "BUPERSINST 1430.16G, BUPERSINST 1610.10F",
+    },
+    "Administration & Correspondence": {
+        "subtopics": ["Naval Correspondence", "Records Management", "Reports"],
+        "bib": "SECNAV M-5216.5, SECNAV M-5210.1",
+    },
+    "Safety & Damage Control": {
+        "subtopics": ["ORM", "Firefighting", "Watchstanding"],
+        "bib": "OPNAVINST 3500.39D, NSTM 555",
+    },
+    "Leadership & Military Requirements": {
+        "subtopics": ["Chain of Command", "UCMJ Basics", "Sailor Development"],
+        "bib": "NAVEDTRA 14325, JAGINST 5800.7G",
+    },
+}
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def get_rate_topics(rating: str, paygrade: str) -> dict:
+    """Curated topics for PS. AI-generated + cached for every other rate.
+
+    Cached for 24h per (rating, paygrade), so each combo costs at most one API
+    call per day per running app instance.
+    """
+    if rating == "PS" and paygrade in PS_TOPICS_BY_PAYGRADE:
+        return PS_TOPICS_BY_PAYGRADE[paygrade]
+
+    prompt = f"""List the major exam topic areas on the Navy-wide advancement exam (NWAE)
+for a {rating} advancing to {paygrade}, based on the official NWAE bibliography for that rate.
+
+Return ONLY valid JSON. No markdown fences, no commentary. Exact shape:
+{{
+  "Topic Name": {{
+    "subtopics": ["Subtopic 1", "Subtopic 2", "Subtopic 3"],
+    "bib": "Governing instructions and manuals, comma separated"
+  }}
+}}
+
+Rules:
+- 8 to 14 topics.
+- 2 to 5 subtopics each.
+- "bib" must cite real Navy instructions/manuals (e.g. NAVEDTRA, OPNAVINST,
+  MILPERSMAN, NAVSUP, SECNAVINST) that actually govern that topic for {rating}.
+- Topic names must NOT contain the paygrade."""
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        data = json.loads(raw)
+
+        clean = {}
+        for name, val in data.items():
+            subs = val.get("subtopics") or []
+            if isinstance(subs, list) and subs:
+                clean[str(name)] = {
+                    "subtopics": [str(s) for s in subs],
+                    "bib": str(val.get("bib", "")) or "Consult your rate's NWAE bibliography",
+                }
+        return clean if clean else GENERIC_TOPICS
+    except Exception:
+        return GENERIC_TOPICS
+
+
 # ── TABS ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🏠 FMS Calculator",
@@ -609,7 +702,7 @@ with tab1:
     # Outside the form on purpose: changing paygrade must immediately re-scale the
     # PMA field and hide the fields that paygrade does not use.
     paygrade = st.selectbox(
-        "Paygrade You Are Competing For", ["E4", "E5", "E6", "E7"], index=1,
+        "Paygrade You Are Competing For", ["E5", "E6", "E7"], index=0,
         help="The PMA formula and every point cap change by paygrade.",
     )
     rules = FMS_RULES[paygrade]
@@ -951,7 +1044,7 @@ with tab3:
             col1, col2 = st.columns(2)
             with col1:
                 sg_rating = st.selectbox("Your Rating", ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"])
-                sg_paygrade = st.selectbox("Your Paygrade", ["E4", "E5", "E6", "E7"])
+                sg_paygrade = st.selectbox("Your Paygrade", ["E5", "E6", "E7"])
             with col2:
                 sg_gap = st.number_input("Your FMS Gap (0 if eligible)", min_value=0.0, max_value=30.0,
                                          value=0.0, step=0.5)
@@ -1045,15 +1138,34 @@ with tab4:
     else:
         col1, col2 = st.columns(2)
         with col1:
-            tutor_topic = st.selectbox("Select a Topic to Study", list(PS_TOPICS.keys()))
+            tutor_rating = st.selectbox("Your Rating", RATINGS, key="tutor_rating")
         with col2:
-            tutor_subtopic = st.selectbox("Select a Subtopic", PS_TOPICS[tutor_topic]["subtopics"])
+            tutor_paygrade = st.selectbox("Your Paygrade", PAYGRADES,
+                                          index=PAYGRADES.index("E5"), key="tutor_paygrade")
+
+        with st.spinner(f"Loading {tutor_rating} {tutor_paygrade} topics..."):
+            tutor_topics = get_rate_topics(tutor_rating, tutor_paygrade)
+
+        if not (tutor_rating == "PS" and tutor_paygrade in PS_TOPICS_BY_PAYGRADE):
+            st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
+                       "Verify against your official bib before test day.")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            tutor_topic = st.selectbox("Select a Topic to Study", list(tutor_topics.keys()),
+                                       key="tutor_topic")
+        with col4:
+            tutor_subtopic = st.selectbox("Select a Subtopic",
+                                          tutor_topics[tutor_topic]["subtopics"],
+                                          key="tutor_subtopic")
 
         if st.button("📖 Start Lesson", use_container_width=True):
             if True:
-                bib_refs = PS_TOPICS[tutor_topic]["bib"]
-                lesson_prompt = f"""You are a senior PS Chief Petty Officer with 20 years of experience.
-You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the PS {tutor_topic[:2]} NWAE.
+                if tutor_topic not in tutor_topics:
+                    tutor_topic = list(tutor_topics.keys())[0]
+                bib_refs = tutor_topics[tutor_topic]["bib"]
+                lesson_prompt = f"""You are a senior {tutor_rating} Chief Petty Officer with 20 years of experience.
+You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the {tutor_rating} {tutor_paygrade} NWAE.
 Explain everything like the sailor is smart but has never seen this material before.
 Be direct, clear, and use real Navy examples. No wasted words. No fluff.
 
@@ -1065,7 +1177,7 @@ Teach this lesson as follows:
 1. What this topic is in ONE plain-English sentence
 2. Why it matters on the exam and in real life
 3. The key rules, procedures, or concepts they MUST know (use bullet points, plain English)
-4. A real-world example of how this works in a PS shop
+4. A real-world example of how this works in a {tutor_rating} shop or workcenter
 5. The most common exam trap on this subtopic
 6. Three practice questions with answers and explanations
 
@@ -1129,20 +1241,37 @@ with tab5:
     if not can_access("chief"):
         upgrade_banner("chief")
     else:
+        colA, colB = st.columns(2)
+        with colA:
+            pq_rating = st.selectbox("Your Rating", RATINGS, key="pq_rating")
+        with colB:
+            pq_paygrade = st.selectbox("Your Paygrade", PAYGRADES,
+                                       index=PAYGRADES.index("E5"), key="pq_paygrade")
+
+        with st.spinner(f"Loading {pq_rating} {pq_paygrade} topics..."):
+            pq_topics = get_rate_topics(pq_rating, pq_paygrade)
+
+        if not (pq_rating == "PS" and pq_paygrade in PS_TOPICS_BY_PAYGRADE):
+            st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
+                       "Verify against your official bib before test day.")
+
         with st.form("practice_form"):
             col1, col2 = st.columns(2)
             with col1:
-                pq_topic = st.selectbox("Topic", list(PS_TOPICS.keys()), key="pq_topic")
+                pq_topic = st.selectbox("Topic", list(pq_topics.keys()), key="pq_topic")
             with col2:
                 pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
             pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
 
         if pq_submit:
             if True:
-                bib_refs = PS_TOPICS[pq_topic]["bib"]
-                pq_prompt = f"""You are a senior PS Chief Petty Officer writing a Navy advancement exam practice set.
+                if pq_topic not in pq_topics:
+                    pq_topic = list(pq_topics.keys())[0]
+                bib_refs = pq_topics[pq_topic]["bib"]
+                pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
 Generate exactly {pq_num} multiple choice practice questions for:
 - Topic: {pq_topic}
+- Rating / Paygrade: {pq_rating} advancing to {pq_paygrade}
 - Governing References: {bib_refs}
 Format each question EXACTLY like this:
 Q1: [Question text]
@@ -1176,7 +1305,7 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
                     with st.spinner("Chief is grading..."):
                         try:
                             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                            grade_prompt = f"""You are a PS Chief grading a sailor's practice exam.
+                            grade_prompt = f"""You are a {pq_rating} Chief grading a sailor's practice exam.
 Questions: {st.session_state.practice_questions}
 Sailor's answers: {sailor_answers}
 Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation.
