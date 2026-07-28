@@ -524,6 +524,30 @@ def parse_ocr_text(raw_text):
     return results, missing
 
 
+def extract_paygrade(raw_text):
+    """Read the paygrade the sailor is competing for off the profile sheet.
+
+    Matters more than it looks: the PMA formula, every point cap and the FMS
+    maximum all change by paygrade. Scoring an E6 sheet with E5 rules produces a
+    confident, wrong number.
+    """
+    if not raw_text:
+        return None
+    t = " ".join(raw_text.split()).lower()
+    # Most explicit wording first, so a stray "E5" elsewhere on the sheet loses.
+    for pattern in (
+        r"paygrade\s*(?:you\s*are\s*)?competing\s*for\s*[:\-]?\s*(e[4-7])",
+        r"competing\s*for\s*(?:paygrade\s*)?[:\-]?\s*(e[4-7])",
+        r"advancement\s*to\s*(?:paygrade\s*)?[:\-]?\s*(e[4-7])",
+        r"candidate\s*for\s*[:\-]?\s*(e[4-7])",
+        r"paygrade\s*[:\-]\s*(e[4-7])",
+    ):
+        m = re.search(pattern, t)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
 def safe_value(raw, lo, hi, fallback):
     """Clamp a parsed value into a number_input's bounds.
 
@@ -750,12 +774,22 @@ with tab1:
     )
 
     extracted_data = DEFAULT_VALUES.copy()
+    detected_paygrade = None
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
             raw_text = extract_text_from_upload(uploaded_file)
         if raw_text.strip():
             extracted_data, missing_fields = parse_ocr_text(raw_text)
+            detected_paygrade = extract_paygrade(raw_text)
+
+            # Apply the sheet's paygrade once per uploaded file. Keyed on the file
+            # itself so a later manual change to the dropdown is not overwritten on
+            # every rerun — the sailor always gets the last word.
+            file_id = f"{uploaded_file.name}:{uploaded_file.size}"
+            if detected_paygrade in PAYGRADES and st.session_state.get("_pg_src") != file_id:
+                st.session_state["fms_paygrade"] = detected_paygrade
+                st.session_state["_pg_src"] = file_id
 
             FIELD_LABELS = {
                 "exam_score": "Exam Standard Score",
@@ -775,6 +809,24 @@ with tab1:
                     + ", ".join(FIELD_LABELS[f] for f in missing_fields) + "** — these are "
                     "showing typical placeholder values, NOT your numbers. Enter them by hand "
                     "below or your FMS will be wrong."
+                )
+
+            if detected_paygrade in PAYGRADES:
+                st.info(
+                    f"📌 Detected **{detected_paygrade}** on your sheet — the paygrade below is "
+                    f"set to match. The PMA formula and every point cap change by paygrade, so "
+                    f"this has to be right. Change it if it's wrong."
+                )
+            elif detected_paygrade:
+                st.warning(
+                    f"Your sheet says **{detected_paygrade}**, which no longer has an "
+                    "advancement exam. Pick your paygrade manually below."
+                )
+            else:
+                st.warning(
+                    "Could not tell which paygrade you're competing for. **Check the paygrade "
+                    "dropdown below before trusting your FMS** — the formula and point caps are "
+                    "different for E5, E6 and E7."
                 )
 
             st.caption(
@@ -797,9 +849,12 @@ with tab1:
 
     # Outside the form on purpose: changing paygrade must immediately re-scale the
     # PMA field and hide the fields that paygrade does not use.
+    if "fms_paygrade" not in st.session_state:
+        st.session_state["fms_paygrade"] = "E5"
     paygrade = st.selectbox(
-        "Paygrade You Are Competing For", ["E5", "E6", "E7"], index=0,
-        help="The PMA formula and every point cap change by paygrade.",
+        "Paygrade You Are Competing For", PAYGRADES, key="fms_paygrade",
+        help="The PMA formula and every point cap change by paygrade. Set automatically "
+             "when your profile sheet states it — you can always override it here.",
     )
     rules = FMS_RULES[paygrade]
     pma_cap = rules["pma_input_max"]
