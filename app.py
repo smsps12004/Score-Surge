@@ -413,6 +413,10 @@ LABEL_PATTERNS = {
         r"eval\s*average",
     ],
     "tir": [
+        # Official profile sheets label this row "Service in Paygrade" (SIPG).
+        # It is the same figure the FMS chart calls Time in Rate.
+        r"service\s*in\s*pay\s*grade",
+        r"\bsipg\b",
         r"time\s*in\s*rate",
         r"\btir\b",
         r"time-in-rate",
@@ -442,30 +446,97 @@ DEFAULT_VALUES = {
     "pna": 0.0,
 }
 
+# Widest plausible range for each field across every paygrade. A number scraped
+# from the sheet that falls outside its field's range is not that field's value —
+# it is a cycle number, a date, a question count or a column header. Filtering on
+# these ranges is what stops "PNA POINTS EARNED IN CYCLES 268 / 270 / 271" from
+# handing 268 to a widget whose maximum is 9.
+FIELD_RANGES = {
+    "exam_score": (0.0, 80.0),
+    "pma":        (0.0, 5.80),
+    "tir":        (0.0, 30.0),
+    "awards":     (0.0, 12.0),
+    "education":  (0.0, 4.0),
+    "pna":        (0.0, 9.0),
+}
+
+
+# For each field, a regex matching every OTHER field's labels. Used to stop the
+# search before the next row begins, so a field whose value is genuinely missing
+# does not quietly borrow the number belonging to the row underneath it.
+_OTHER_LABELS = {
+    field: re.compile("|".join(p for f, ps in LABEL_PATTERNS.items() if f != field for p in ps))
+    for field in LABEL_PATTERNS
+}
+
+
 # ── OCR HELPERS ───────────────────────────────────────────────────────────────
-def extract_number_near_label(text, patterns):
+def extract_number_near_label(text, patterns, valid_range=None, field=None, window=110):
+    """Find a label, then the most plausible number belonging to it.
+
+    Three guards, because profile sheets are dense with numbers that are not scores:
+      1. Stop at the next FMS label, so we never read the next row's value.
+      2. Ignore anything outside the field's valid range (cycle numbers, question counts).
+      3. Prefer a decimal (3.50) over a bare integer (01 from a date) — every real
+         FMS figure on a profile sheet is printed to two decimal places.
+    """
     text_lower = text.lower()
+    stop_re = _OTHER_LABELS.get(field)
     for pattern in patterns:
         match = re.search(pattern, text_lower)
-        if match:
-            after = text[match.end(): match.end() + 80]
-            num_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", after)
-            if num_match:
-                return float(num_match.group(1))
+        if not match:
+            continue
+        start = match.end()
+        segment = text[start: start + window]
+        if stop_re:
+            nxt = stop_re.search(text_lower[start: start + window])
+            if nxt:
+                segment = segment[: nxt.start()]
+
+        decimals, integers = [], []
+        for num_match in re.finditer(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", segment):
+            token = num_match.group(1)
+            value = float(token)
+            if valid_range is not None:
+                lo, hi = valid_range
+                if not (lo <= value <= hi):
+                    continue
+            (decimals if "." in token else integers).append(value)
+        if decimals:
+            return decimals[0]
+        if integers:
+            return integers[0]
     return None
 
 
 def parse_ocr_text(raw_text):
+    """Return (values, missing_fields). Every value is guaranteed in-range."""
     results = {}
     missing = []
     for field, patterns in LABEL_PATTERNS.items():
-        value = extract_number_near_label(raw_text, patterns)
+        rng = FIELD_RANGES.get(field)
+        value = extract_number_near_label(raw_text, patterns, valid_range=rng, field=field)
         if value is not None:
             results[field] = value
         else:
             results[field] = DEFAULT_VALUES[field]
             missing.append(field)
     return results, missing
+
+
+def safe_value(raw, lo, hi, fallback):
+    """Clamp a parsed value into a number_input's bounds.
+
+    Streamlit raises if `value` sits outside min_value/max_value, so nothing
+    reaches a widget unclamped — belt and braces on top of FIELD_RANGES.
+    """
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if val != val:  # NaN — comparisons silently pass and Streamlit then chokes
+        return fallback
+    return min(max(val, lo), hi)
 
 
 def extract_text_from_upload(uploaded_file):
@@ -685,14 +756,39 @@ with tab1:
             raw_text = extract_text_from_upload(uploaded_file)
         if raw_text.strip():
             extracted_data, missing_fields = parse_ocr_text(raw_text)
+
+            FIELD_LABELS = {
+                "exam_score": "Exam Standard Score",
+                "pma": "PMA / RSCA PMA",
+                "tir": "Service in Paygrade (SIPG)",
+                "awards": "Awards Points",
+                "education": "Education Points",
+                "pna": "PNA Points",
+            }
+            found = [FIELD_LABELS[f] for f in extracted_data if f not in missing_fields]
+
             if not missing_fields:
-                st.success("✅ All fields extracted! Review and edit below if needed.")
+                st.success("✅ Read all six fields from your profile sheet.")
             else:
                 st.warning(
-                    "Could not auto-detect: **" + ", ".join(missing_fields) + "**. "
-                    "Default values used — please fill them in manually."
+                    "⚠️ Read " + str(len(found)) + " of 6 fields. **Could not find: "
+                    + ", ".join(FIELD_LABELS[f] for f in missing_fields) + "** — these are "
+                    "showing typical placeholder values, NOT your numbers. Enter them by hand "
+                    "below or your FMS will be wrong."
                 )
-            with st.expander("🔍 Show raw OCR text (for debugging)"):
+
+            st.caption(
+                "Always check these against your sheet before trusting the FMS. Your profile "
+                "sheet lists **Service in Paygrade (SIPG)** — that is the same figure the FMS "
+                "chart calls Time in Rate, and it is what goes in the SIPG field below."
+            )
+
+            with st.expander("🔍 What was read from your sheet"):
+                for f, lbl in FIELD_LABELS.items():
+                    mark = "❌ not found — placeholder" if f in missing_fields else "✅ read"
+                    st.write(f"**{lbl}:** {extracted_data[f]}  ·  {mark}")
+                st.divider()
+                st.caption("Raw text extracted from your document:")
                 st.text(raw_text[:2000])
         else:
             st.error("Could not extract text. Try a clearer image or enter values manually.")
@@ -715,11 +811,13 @@ with tab1:
         col1, col2 = st.columns(2)
         with col1:
             exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
-                                         value=float(extracted_data["exam_score"]), step=0.5)
+                                         value=safe_value(extracted_data["exam_score"], 0.0, 80.0,
+                                                          DEFAULT_VALUES["exam_score"]), step=0.5)
             pma = st.number_input(
                 f"{pma_label} (max {pma_cap:.2f})",
                 min_value=0.0, max_value=pma_cap,
-                value=min(float(extracted_data["pma"]), pma_cap), step=0.01,
+                value=safe_value(extracted_data["pma"], 0.0, pma_cap,
+                                 min(DEFAULT_VALUES["pma"], pma_cap)), step=0.01,
                 help=("Average of your eval promotion recommendation values (4.00, 3.80, "
                       "3.60, 3.40 or 2.00). Tops out at 4.00."
                       if pma_cap == 4.00 else
@@ -727,17 +825,19 @@ with tab1:
                       "Tops out at 5.80."),
             )
             tir = st.number_input(
-                "Service in Paygrade (Years)", min_value=0.0, max_value=30.0,
-                value=float(extracted_data["tir"]), step=0.5,
+                "Service in Paygrade / Time in Rate (Years)", min_value=0.0, max_value=30.0,
+                value=safe_value(extracted_data["tir"], 0.0, 30.0, DEFAULT_VALUES["tir"]), step=0.5,
                 disabled=is_e7,
-                help="Years in your current paygrade. Points = years / 5, capped at "
+                help="Your profile sheet calls this Service in Paygrade (SIPG); the FMS chart "
+                     "calls it Time in Rate. Same number. Points = years / 5, capped at "
                      f"{rules['tir_max']:.0f}." if not is_e7 else "Not used for E7.",
             )
         with col2:
             awards = st.number_input(
                 f"Awards Points (max {rules['awards_max']:.0f})",
                 min_value=0.0, max_value=max(rules["awards_max"], 0.5),
-                value=min(float(extracted_data["awards"]), rules["awards_max"]), step=0.5,
+                value=safe_value(extracted_data["awards"], 0.0,
+                                 max(rules["awards_max"], 0.5), 0.0), step=0.5,
                 disabled=is_e7,
             )
             education = st.selectbox(
@@ -749,7 +849,7 @@ with tab1:
             )
             pna = st.number_input(
                 "PNA Points (max 9)", min_value=0.0, max_value=9.0,
-                value=float(extracted_data["pna"]), step=0.5,
+                value=safe_value(extracted_data["pna"], 0.0, 9.0, DEFAULT_VALUES["pna"]), step=0.5,
                 disabled=is_e7,
                 help="Top 25% of candidates earn these. Last 3 exam cycles only.",
             )
