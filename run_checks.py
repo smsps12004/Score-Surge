@@ -13,12 +13,14 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
   5. Paygrade detection across those wordings, and that it stays quiet on prose
   6. Over-cap detection, so a wrong paygrade is visible rather than clamped away
   7. Wording conflicts, which cover the PMA band the caps cannot see
-  8. That no scraped value can escape a widget's min/max and crash the page
+  8. That a finished exam cycle is never quoted as if it were current
+  9. That no scraped value can escape a widget's min/max and crash the page
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
 """
 
+import datetime
 import os
 import re
 import sys
@@ -31,7 +33,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 89
+EXPECTED_TOTAL = 101
 
 
 def skip(reason):
@@ -55,7 +57,8 @@ def load_logic():
         a = src.index(start_marker)
         return src[a: src.index(end_marker, a)]
 
-    ns = {"re": re}
+    ns = {"re": re, "datetime": datetime}
+    exec(slab("CYCLE = {", "# ── CONSTANTS"), ns)
     exec(slab("FMS_RULES = {", "EXAM_MAX = 80.0"), ns)
     ns["EXAM_MAX"] = 80.0
     exec(slab("def pma_points", "LABEL_PATTERNS"), ns)
@@ -272,8 +275,53 @@ def main():
     check("both signals at once are both reported",
           len(conflicts(e6_text, "E5", True)), 2)
 
-    # ── 8. Nothing out of range can reach a widget ───────────────────────────
-    print("\n8. CRASH GUARDS (values that used to break the page)")
+    # ── 8. The app must not keep quoting a finished cycle ────────────────────
+    # The countdown had no concept of a cycle ending: after the last exam day it
+    # would have shown four "✅ Passed" tiles under a live-countdown heading, and
+    # "Official NAVADMIN — Not yet released" forever. Worse, the same dates were
+    # typed into an AI prompt, so the tutor would have gone on quoting Cycle 272
+    # dates to a sailor studying for the next cycle — confidently, with nothing on
+    # screen looking wrong.
+    print("\n8. STALE CYCLE DATES")
+    expired = L["cycle_expired"]
+    facts = L["cycle_facts_block"]
+    authority = L["cycle_authority_line"]
+    CYC = L["CYCLE"]
+
+    day_before = CYC["exam_e5"] - datetime.timedelta(days=1)
+    day_after = CYC["exam_e5"] + datetime.timedelta(days=1)
+
+    check("cycle is live the day before the last exam", expired(day_before), False)
+    check("cycle is live ON the last exam day", expired(CYC["exam_e5"]), False)
+    check("cycle is over the day after", expired(day_after), True)
+
+    check("live prompt states the cycle dates",
+          "E6 exam date" in facts(day_before), True)
+    check("live prompt names the NAVADMIN",
+          CYC["navadmin"] in authority(day_before), True)
+
+    # The important half. A model repeats what it is handed.
+    stale = facts(day_after)
+    check("expired prompt states NO exam date", "E6 exam date" in stale, False)
+    check("expired prompt gives no year at all",
+          any(str(y) in stale for y in (2024, 2025, 2026, 2027)), False)
+    check("expired prompt says it does not know",
+          "do NOT know" in stale or "not loaded" in stale, True)
+    check("expired prompt forbids quoting an old date",
+          "NEVER state a date from a past cycle" in stale, True)
+    check("expired authority line drops the NAVADMIN claim",
+          CYC["navadmin"] in authority(day_after), False)
+
+    # Every date the app states must come from CYCLE, so one edit moves them all.
+    src = open(APP, encoding="utf-8").read()
+    body = src[src.index("# ── CONSTANTS"):]
+    check("no hardcoded date literal survives outside the CYCLE block",
+          "datetime.date(20" in body, False)
+    check("no hardcoded cycle number survives outside the CYCLE block",
+          str(CYC["number"]) in body, False)
+
+    # ── 9. Nothing out of range can reach a widget ───────────────────────────
+    print("\n9. CRASH GUARDS (values that used to break the page)")
     for raw, lo, hi in [(272.0, 0.0, 9.0), (-5.0, 0.0, 80.0), (9999.0, 0.0, 30.0),
                         (None, 0.0, 9.0), ("junk", 0.0, 80.0), (float("nan"), 0.0, 5.8)]:
         out = safe(raw, lo, hi, lo)

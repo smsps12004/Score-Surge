@@ -364,6 +364,96 @@ st.markdown("""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
 """)
 
+# ── EXAM CYCLE ────────────────────────────────────────────────────────────────
+# Every date this app states about the current cycle lives here.
+#
+# These used to be typed out in four separate places: the countdown metrics, the
+# CPO estimate, the planner's exam-date picker, and the body of an AI prompt. The
+# prompt copy was the dangerous one — the model repeats what it is given, so once
+# the cycle passed the tutor kept confidently quoting Cycle 272 dates to a sailor
+# studying for the next cycle. Nothing on screen would have looked wrong.
+#
+# When the next NAVADMIN drops, edit this block and nothing else.
+CYCLE = {
+    "number": 272,
+    "navadmin": "NAVADMIN 168/26",
+    "pmkee":         datetime.date(2026, 7, 31),
+    "ildc_e6":       datetime.date(2026, 8, 31),
+    "exam_e6":       datetime.date(2026, 9, 3),
+    "exam_e5":       datetime.date(2026, 9, 10),
+    "ted":           datetime.date(2027, 1, 1),
+    "min_tir_e6":    datetime.date(2024, 1, 1),
+    "min_tir_e5":    datetime.date(2026, 1, 1),
+    "pma_window_e6": "1 September 2023 to 31 August 2026",
+    "pma_window_e5": "1 June 2025 to 31 August 2026",
+}
+
+# FY27 CPO board exam. `announced` flips to True with a real date once the
+# NAVADMIN is published; until then the app calls it an estimate and says so.
+CPO_EXAM = {"fy": 27, "est_date": datetime.date(2027, 2, 1), "announced": False}
+
+
+def _fmt_date(d):
+    """'3 September 2026'. Written out rather than strftime('%-d %B %Y'), which is
+    not portable off Linux."""
+    return f"{d.day} {d:%B %Y}"
+
+
+def cycle_expired(today=None):
+    """True once the last exam day of this cycle has passed.
+
+    The countdown had no idea a cycle could end. After 10 September 2026 it would
+    have drawn four "✅ Passed" tiles under a heading still reading "Cycle 272
+    Countdown", and "Official NAVADMIN — Not yet released" would have sat there
+    forever. An app that looks abandoned is one a paying sailor stops trusting.
+    """
+    return (today or datetime.date.today()) > CYCLE["exam_e5"]
+
+
+def cycle_authority_line(today=None):
+    """What the AI prompts may claim to know about cycle dates."""
+    if cycle_expired(today):
+        return ("You do NOT have the current exam cycle's NAVADMIN. You do not know "
+                "this cycle's exam dates or deadlines.")
+    return f"You know {CYCLE['navadmin']} (Cycle {CYCLE['number']}) inside and out."
+
+
+def cycle_facts_block(today=None):
+    """The cycle dates as the AI prompts state them.
+
+    Once the cycle is over these are not merely stale, they are wrong for the
+    sailor asking now. Rather than hand the model dates it will repeat with
+    confidence, tell it plainly that it does not have them.
+
+    `today` is injectable so the expired path can be checked without waiting for
+    September.
+    """
+    if cycle_expired(today):
+        return (
+            f"EXAM CYCLE DATES:\n"
+            f"- Cycle {CYCLE['number']} is complete and the next cycle's NAVADMIN is "
+            f"not loaded into this app.\n"
+            f"- You do NOT know the current exam dates, deadlines or TIR cutoffs.\n"
+            f"- If asked for a date, say you do not have the current cycle's dates and "
+            f"send the sailor to MyNavyHR. NEVER state a date from a past cycle as if "
+            f"it were current."
+        )
+    return "\n".join([
+        f"CYCLE {CYCLE['number']} FACTS ({CYCLE['navadmin']}):",
+        f"- E6 exam date: {_fmt_date(CYCLE['exam_e6'])}",
+        f"- E5 exam date: {_fmt_date(CYCLE['exam_e5'])}",
+        f"- Terminal Eligibility Date: {_fmt_date(CYCLE['ted'])}",
+        f"- PMK-EE deadline: {_fmt_date(CYCLE['pmkee'])}",
+        f"- ILDC deadline: {_fmt_date(CYCLE['ildc_e6'])} (E6 only)",
+        f"- Min TIR E6: {_fmt_date(CYCLE['min_tir_e6'])}",
+        f"- Min TIR E5: {_fmt_date(CYCLE['min_tir_e5'])}",
+        f"- PMA window E6: {CYCLE['pma_window_e6']}",
+        f"- PMA window E5: {CYCLE['pma_window_e5']}",
+        "- EAW is authoritative source, must be finalized in NSIPS",
+        "- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P",
+    ])
+
+
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
 # Official FMS computation per the MyNavyHR "E4 Through E7 Final Multiple Score"
 # chart (Cycle 104/243 forward), NAVADMIN 312/18, and BUPERSINST 1430.16G.
@@ -1299,17 +1389,32 @@ with tab1:
 
 # ── TAB 2: ADVANCEMENT INFO ───────────────────────────────────────────────────
 with tab2:
-    st.subheader("⏱️ Cycle 272 Countdown")
-
     today = datetime.date.today()
-    deadlines = [
-        ("PMK-EE Deadline",    datetime.date(2026, 7, 31)),
-        ("ILDC Deadline (E6)", datetime.date(2026, 8, 31)),
-        ("E6 Exam Day",        datetime.date(2026, 9, 3)),
-        ("E5 Exam Day",        datetime.date(2026, 9, 10)),
-    ]
 
-    cols = st.columns(4)
+    if cycle_expired(today):
+        # Four "✅ Passed" tiles under a live countdown heading is how an app starts
+        # looking abandoned. Say the cycle is done and stop pretending to count.
+        st.subheader(f"⏱️ Cycle {CYCLE['number']} — Complete")
+        st.info(
+            f"**Cycle {CYCLE['number']} is finished.** The E5 exam was held "
+            f"{_fmt_date(CYCLE['exam_e5'])} and the E6 exam "
+            f"{_fmt_date(CYCLE['exam_e6'])}.\n\n"
+            "The next cycle's dates are not loaded into Score Surge yet — check the "
+            "NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil) for them. Your FMS "
+            "calculator, study tools and score history all still work; only the "
+            "countdown above is waiting on the new NAVADMIN."
+        )
+        deadlines = []
+    else:
+        st.subheader(f"⏱️ Cycle {CYCLE['number']} Countdown")
+        deadlines = [
+            ("PMK-EE Deadline",    CYCLE["pmkee"]),
+            ("ILDC Deadline (E6)", CYCLE["ildc_e6"]),
+            ("E6 Exam Day",        CYCLE["exam_e6"]),
+            ("E5 Exam Day",        CYCLE["exam_e5"]),
+        ]
+
+    cols = st.columns(4) if deadlines else []
     for i, (label, date) in enumerate(deadlines):
         days_left = (date - today).days
         if days_left < 0:
@@ -1357,10 +1462,15 @@ billet application, and what to do if you passed but weren't selected.
 
     st.divider()
 
-    st.subheader("⭐ CPO / E7 Exam Watch — FY27")
-    st.caption("The FY27 CPO board exam is typically held in January–February. The official NAVADMIN has not yet been released.")
+    st.subheader(f"⭐ CPO / E7 Exam Watch — FY{CPO_EXAM['fy']}")
+    st.caption(
+        f"The FY{CPO_EXAM['fy']} CPO board exam is typically held in January–February. "
+        + ("The date below is confirmed."
+           if CPO_EXAM["announced"] else
+           "The official NAVADMIN has not yet been released.")
+    )
 
-    _cpo_est_date = datetime.date(2027, 2, 1)
+    _cpo_est_date = CPO_EXAM["est_date"]
     _cpo_days_left = (_cpo_est_date - today).days
     if _cpo_days_left < 0:
         _cpo_status = "✅ Est. date passed"
@@ -1372,12 +1482,22 @@ billet application, and what to do if you passed but weren't selected.
         _cpo_status = f"🟢 ~{_cpo_days_left} days"
 
     cpo_col1, cpo_col2 = st.columns(2)
-    cpo_col1.metric("CPO Exam (est.)", _cpo_status, delta="Feb 1, 2027 estimated")
-    cpo_col2.metric("Official NAVADMIN", "⏳ Not yet released")
+    cpo_col1.metric(
+        "CPO Exam" if CPO_EXAM["announced"] else "CPO Exam (est.)",
+        _cpo_status,
+        delta=f"{_fmt_date(_cpo_est_date)}"
+              + ("" if CPO_EXAM["announced"] else " estimated"),
+    )
+    cpo_col2.metric("Official NAVADMIN",
+                    "✅ Released" if CPO_EXAM["announced"] else "⏳ Not yet released")
     st.info(
-        "📋 **FY27 CPO Board Exam** — Historically announced Oct–Nov and administered Jan–Feb. "
-        "Watch for the official NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil). "
-        "This countdown will be updated once the date is confirmed."
+        f"📋 **FY{CPO_EXAM['fy']} CPO Board Exam** — Historically announced Oct–Nov and "
+        "administered Jan–Feb. "
+        + ("The date above is from the published NAVADMIN."
+           if CPO_EXAM["announced"] else
+           "Watch for the official NAVADMIN on "
+           "[MyNavyHR](https://www.mynavyhr.navy.mil). "
+           "This countdown will be updated once the date is confirmed.")
     )
 
 
@@ -1425,20 +1545,9 @@ with tab3:
                 prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
-You know NAVADMIN 168/26 (Cycle 272) inside and out.
+{cycle_authority_line()}
 
-CYCLE 272 FACTS (NAVADMIN 168/26):
-- E6 exam date: 3 September 2026
-- E5 exam date: 10 September 2026
-- Terminal Eligibility Date: 1 January 2027
-- PMK-EE deadline: 31 July 2026
-- ILDC deadline: 31 August 2026 (E6 only)
-- Min TIR E6: 1 January 2024
-- Min TIR E5: 1 January 2026
-- PMA window E6: 1 September 2023 to 31 August 2026
-- PMA window E5: 1 June 2025 to 31 August 2026
-- EAW is authoritative source, must be finalized in NSIPS
-- Most active duty E6 ratings now under BBA, advancement via A2P/CA2P
+{cycle_facts_block()}
 
 Generate a personalized Navy advancement study guide for:
 - Rating: {sg_rating}
@@ -1736,7 +1845,10 @@ with tab6:
                     min_value=0.0, max_value=100.0, value=45.0, step=0.1,
                     key="plan_fms")
                 plan_exam = st.selectbox("Your Exam Date",
-                    ["September 3, 2026 (E6)", "September 10, 2026 (E5)"],
+                    [f"{CYCLE['exam_e6']:%B} {CYCLE['exam_e6'].day}, "
+                     f"{CYCLE['exam_e6']:%Y} (E6)",
+                     f"{CYCLE['exam_e5']:%B} {CYCLE['exam_e5'].day}, "
+                     f"{CYCLE['exam_e5']:%Y} (E5)"],
                     key="plan_exam")
             plan_weak = st.text_area(
                 "Weak topics (from your practice history or your own knowledge):",
@@ -1747,8 +1859,7 @@ with tab6:
                 "Build My Personalized Study Plan", width="stretch")
 
         if plan_submit:
-            exam_date = (datetime.date(2026, 9, 3) if "E6" in plan_exam
-                         else datetime.date(2026, 9, 10))
+            exam_date = (CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"])
             days_left = (exam_date - datetime.date.today()).days
             days_left = max(days_left, 1)
 

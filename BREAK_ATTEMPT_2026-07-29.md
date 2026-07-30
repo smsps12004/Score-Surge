@@ -10,7 +10,7 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ## STATUS as of 30 July 2026
 
-Suites now: `run_checks.py` **89/89**, `smoke_test.py` **25/25**.
+Suites now: `run_checks.py` **101/101**, `smoke_test.py` **25/25**.
 
 | # | Finding | Status |
 |---|---|---|
@@ -21,11 +21,17 @@ Suites now: `run_checks.py` **89/89**, `smoke_test.py` **25/25**.
 | 5 | Two-column layout puts the PMA value in the SIPG field | open — needs coordinate-based parsing |
 | 6 | `smoke_test.py` never tested a paying user | **FIXED** — `0ebb38a` |
 | 7 | Failed score save swallowed silently | open |
-| 8 | Cycle 272 dates hardcoded in four places | open — expires 10 Sep 2026 |
+| 8 | Cycle 272 dates hardcoded in four places | **FIXED** — see below |
 | 9 | Smaller things | all open |
 
 Every fix carries its own regression checks, so none of these can come back quietly.
-Findings 5 and 8 are real work and want their own sessions. Finding 8 has a deadline.
+Finding 5 is real work and wants its own session.
+
+**Rolling the app to the next cycle** is now one edit: the `CYCLE` dict at the top of
+`app.py`. It feeds the countdown, the planner's exam-date picker and the AI prompts.
+`CPO_EXAM` is separate, with an `announced` flag to flip when the FY27 NAVADMIN drops.
+Two checks in `run_checks.py` section 8 scan `app.py` itself and fail if a date literal
+or the cycle number ever reappears outside that block.
 
 **Related, found while fixing 4 and not yet addressed:** the integer fallback in
 `extract_number_near_label` still grabs stray digits when a field's real value is
