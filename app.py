@@ -170,7 +170,7 @@ def upgrade_banner(required_tier: str):
             st.link_button(
                 f"⬆️ Upgrade to {label} — {price}",
                 url=url,
-                use_container_width=True,
+                width="stretch",
             )
     else:
         st.info("Log in to upgrade your plan.")
@@ -203,7 +203,7 @@ def show_auth_page():
         with st.form("login_form"):
             login_email = st.text_input("Email")
             login_password = st.text_input("Password", type="password")
-            login_submit = st.form_submit_button("Log In", use_container_width=True)
+            login_submit = st.form_submit_button("Log In", width="stretch")
 
         if login_submit:
             if not login_email or not login_password:
@@ -230,7 +230,7 @@ def show_auth_page():
             signup_password = st.text_input("Password", type="password")
             signup_password2 = st.text_input("Confirm Password", type="password")
             signup_submit = st.form_submit_button(
-                "Create Account & Start Free Trial", use_container_width=True
+                "Create Account & Start Free Trial", width="stretch"
             )
 
         if signup_submit:
@@ -313,7 +313,7 @@ with col_user:
     tier_label = TIER_LABELS.get(st.session_state.tier, st.session_state.tier)
     username = st.session_state.user.email.split("@")[0]
     st.caption(f"**{username}**\n{tier_label}")
-    if st.button("Log Out", use_container_width=True):
+    if st.button("Log Out", width="stretch"):
         supabase.auth.sign_out()
         for key in ["user", "tier", "access_token", "refresh_token"]:
             st.session_state[key] = None
@@ -996,7 +996,7 @@ with tab1:
             )
         submitted = st.form_submit_button(
             "📊 Calculate My FMS" if paygrade_chosen else "📊 Select a paygrade above to calculate",
-            use_container_width=True, disabled=not paygrade_chosen,
+            width="stretch", disabled=not paygrade_chosen,
         )
 
     # paygrade_chosen is re-checked here, not just on the button: a disabled button
@@ -1133,7 +1133,7 @@ with tab1:
                 "PNA": breakdown["PNA Points"],
                 "FMS": fms, "Max": fms_max, "% of Max": pct,
             }]),
-            use_container_width=True,
+            width="stretch",
         )
 
         st.subheader("📥 Download Report")
@@ -1186,7 +1186,7 @@ with tab1:
             st.download_button(
                 label="📥 Download PDF Report", data=f,
                 file_name="FMS_Report_" + sailor_name.replace(" ", "_") + ".pdf",
-                mime="application/pdf", use_container_width=True,
+                mime="application/pdf", width="stretch",
             )
 
 
@@ -1296,7 +1296,7 @@ with tab3:
                 ])
             sg_subject = st.text_input("Subject (only for Single Subject Deep Dive)",
                                        placeholder="e.g. Military Awards, UCMJ, Evals")
-            sg_submit = st.form_submit_button("Generate My Study Guide", use_container_width=True)
+            sg_submit = st.form_submit_button("Generate My Study Guide", width="stretch")
 
         if sg_submit:
             if True:
@@ -1364,7 +1364,7 @@ Keep it tight. Every sentence must earn its place."""
                         st.download_button(
                             "📥 Download Study Guide", data=guide_text,
                             file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                            mime="text/plain", use_container_width=True,
+                            mime="text/plain", width="stretch",
                         )
                     except Exception as e:
                         st.error("Something went wrong: " + str(e))
@@ -1401,7 +1401,7 @@ with tab4:
                                           tutor_topics[tutor_topic]["subtopics"],
                                           key="tutor_subtopic")
 
-        if st.button("📖 Start Lesson", use_container_width=True):
+        if st.button("📖 Start Lesson", width="stretch"):
             if True:
                 if tutor_topic not in tutor_topics:
                     tutor_topic = list(tutor_topics.keys())[0]
@@ -1443,7 +1443,7 @@ Keep it tight. Make it stick."""
                         st.download_button(
                             "📥 Download This Lesson", data=lesson,
                             file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                            mime="text/plain", use_container_width=True,
+                            mime="text/plain", width="stretch",
                         )
                     except Exception as e:
                         st.error("Error: " + str(e))
@@ -1453,7 +1453,7 @@ Keep it tight. Make it stick."""
             st.caption("Type any follow-up question about this topic.")
             sailor_question = st.text_input("Your question",
                                             placeholder="e.g. What happens if a sailor misses the travel claim deadline?")
-            if st.button("Ask", use_container_width=True):
+            if st.button("Ask", width="stretch"):
                 if sailor_question:
                     with st.spinner("Chief is thinking..."):
                         try:
@@ -1503,7 +1503,7 @@ with tab5:
                 pq_topic = st.selectbox("Topic", list(pq_topics.keys()), key="pq_topic")
             with col2:
                 pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-            pq_submit = st.form_submit_button("Generate Mock Exam", use_container_width=True)
+            pq_submit = st.form_submit_button("Generate Mock Exam", width="stretch")
 
         if pq_submit:
             if True:
@@ -1542,7 +1542,7 @@ Make the questions realistic exam difficulty. Include tricky distractors. Refere
             st.markdown(st.session_state.practice_questions)
             st.subheader("✍️ Submit Your Answers")
             sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
-            if st.button("Grade My Answers", use_container_width=True):
+            if st.button("Grade My Answers", width="stretch"):
                 if sailor_answers:
                     with st.spinner("Chief is grading..."):
                         try:
@@ -1588,7 +1588,7 @@ End with a line in exactly this format: Final Score: X/Y"""
                                 "📥 Download Practice Results",
                                 data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
                                 file_name="PracticeResults.txt", mime="text/plain",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         except Exception as e:
                             st.error("Error: " + str(e))
@@ -1604,7 +1604,7 @@ End with a line in exactly this format: Final Score: X/Y"""
                     "date": "Date", "topic": "Topic", "score": "Score",
                     "total": "Total", "pct": "% Correct",
                 }),
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -1637,7 +1637,7 @@ with tab6:
                 key="plan_weak"
             )
             plan_submit = st.form_submit_button(
-                "Build My Personalized Study Plan", use_container_width=True)
+                "Build My Personalized Study Plan", width="stretch")
 
         if plan_submit:
             exam_date = (datetime.date(2026, 9, 3) if "E6" in plan_exam
@@ -1684,7 +1684,7 @@ No fluff. Every line earns its place."""
                         data=plan_text,
                         file_name=f"StudyPlan_{plan_rating}_{plan_paygrade}.txt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 except Exception as e:
                     st.error("Error building plan: " + str(e))
@@ -1728,7 +1728,7 @@ Use this to get personalized strategy on:
                 key="bba_question"
             )
             bba_submit = st.form_submit_button(
-                "Get My BBA Strategy", use_container_width=True)
+                "Get My BBA Strategy", width="stretch")
 
         if bba_submit:
             bba_prompt = f"""You are a senior Navy Personnel Specialist (PS) Chief
@@ -1772,7 +1772,7 @@ This sailor is counting on you — give them the real talk."""
                         data=bba_advice,
                         file_name=f"BBA_Strategy_{bba_rating}.txt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 except Exception as e:
                     st.error("Error: " + str(e))
@@ -1799,7 +1799,7 @@ with tab7:
                 "% Correct": _pct,
                 "Result":    "✅ Pass" if _pct >= 70 else "❌ Needs Work",
             })
-        st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(_hist_rows), width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -1844,6 +1844,6 @@ with tab7:
             if st.button(
                 f"📚 Study: {_rec_topic[:60]}",
                 key=f"profile_study_{hash(_rec_topic) % 99999}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.info(f"Head to the AI Tutor tab and select **{_rec_topic[:60]}** to start your lesson!")

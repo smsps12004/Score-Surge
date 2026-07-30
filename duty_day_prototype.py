@@ -237,7 +237,7 @@ with st.sidebar:
         "- Free-text answers are buffered and graded in **one** call at debrief\n"
         "- Nothing here writes to your database"
     )
-    if st.button("↺ Start over", use_container_width=True):
+    if st.button("↺ Start over", width="stretch"):
         for k in list(S.keys()):
             del S[k]
         st.rerun()
@@ -248,7 +248,7 @@ if S.stage == "brief":
     with st.container(border=True):
         st.markdown("**The Chief:**")
         st.markdown(SCENARIO["brief"])
-    if st.button("🎯 Take the watch", use_container_width=True, type="primary"):
+    if st.button("🎯 Take the watch", width="stretch", type="primary"):
         S.stage = "reference"
         st.rerun()
 
@@ -265,7 +265,7 @@ elif S.stage == "reference":
     free = st.text_input("Something else — tell the Chief (optional)", key="ref_free",
                          placeholder="Type the reference you'd use instead")
 
-    if st.button("Lock it in", use_container_width=True, type="primary",
+    if st.button("Lock it in", width="stretch", type="primary",
                  disabled=(pick is None and not free.strip())):
         S.ref_correct = bool(pick) and dict(ref["choices"])[pick]
         if free.strip():
@@ -282,7 +282,7 @@ elif S.stage == "feedback_ref":
     with st.container(border=True):
         st.markdown("**The Chief explains:**")
         st.markdown(ref["why"])
-    if st.button("Keep going", use_container_width=True, type="primary"):
+    if st.button("Keep going", width="stretch", type="primary"):
         S.stage = "beat"
         S.beat_idx = 0
         st.rerun()
@@ -302,7 +302,7 @@ elif S.stage == "beat":
         pick = st.radio(beat["prompt"], labels, index=None, key=f"pick_{i}")
         free = st.text_input("Something else — tell the Chief (optional)",
                              key=f"free_{i}", placeholder="Describe what you'd do instead")
-        if st.button("Commit", use_container_width=True, type="primary",
+        if st.button("Commit", width="stretch", type="primary",
                      disabled=(pick is None and not free.strip())):
             correct_map = {c[0]: c[1] for c in beat["choices"]}
             why_map = {c[0]: c[2] for c in beat["choices"]}
@@ -317,7 +317,7 @@ elif S.stage == "beat":
         picked = st.multiselect(beat["prompt"], beat["items"], key=f"ord_{i}",
                                 help="Tap them in the order you'd work them.")
         st.caption(f"Selected {len(picked)} of {len(beat['items'])}.")
-        if st.button("Commit", use_container_width=True, type="primary",
+        if st.button("Commit", width="stretch", type="primary",
                      disabled=len(picked) != len(beat["items"])):
             correct = [beat["items"][k] for k in beat["correct_order"]]
             S[f"beat_{i}_seq"] = score_order(picked, correct)
@@ -357,7 +357,7 @@ elif S.stage == "feedback_beat":
             st.markdown(beat["why"])
 
     last = i >= len(SCENARIO["beats"]) - 1
-    if st.button("Debrief" if last else "Next", use_container_width=True, type="primary"):
+    if st.button("Debrief" if last else "Next", width="stretch", type="primary"):
         if last:
             S.stage = "debrief"
         else:
@@ -402,7 +402,7 @@ elif S.stage == "debrief":
             st.markdown(f"- **{label}:** {text}")
 
     st.divider()
-    if st.button("↺ Run it again", use_container_width=True):
+    if st.button("↺ Run it again", width="stretch"):
         for k in list(S.keys()):
             del S[k]
         st.rerun()
