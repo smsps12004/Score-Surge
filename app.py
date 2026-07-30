@@ -486,6 +486,20 @@ FIELD_RANGES = {
 }
 
 
+# A number as a profile sheet prints it. The old pattern accepted a period and at
+# most two decimal places, which quietly cost sailors points: "4,06" — what OCR
+# returns when it reads a period as a comma, routine on a photographed sheet — was
+# consumed as the integer 4, and "4.060" the same way. The field was still reported
+# as successfully read, so the sailor saw "Read all six fields" above a PMA that had
+# lost 1.8 FMS points.
+#
+# The comma form is deliberately limited to exactly two decimals, with (?!\d) to
+# stop it eating a third. That is the only way "SEP 30,2025" stays a date instead of
+# becoming 30.20 in the Service in Paygrade field. The period form is open-ended
+# because "4.060" is unambiguous.
+_NUMBER_TOKEN = re.compile(r"\b\d{1,3}(?:\.\d+|,\d{2}(?!\d))?\b")
+
+
 # For each field, a regex matching every OTHER field's labels. Used to stop the
 # search before the next row begins, so a field whose value is genuinely missing
 # does not quietly borrow the number belonging to the row underneath it.
@@ -519,14 +533,14 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
                 segment = segment[: nxt.start()]
 
         decimals, integers = [], []
-        for num_match in re.finditer(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", segment):
-            token = num_match.group(1)
-            value = float(token)
+        for num_match in _NUMBER_TOKEN.finditer(segment):
+            token = num_match.group(0)
+            value = round(float(token.replace(",", ".")), 2)
             if valid_range is not None:
                 lo, hi = valid_range
                 if not (lo <= value <= hi):
                     continue
-            (decimals if "." in token else integers).append(value)
+            (decimals if ("." in token or "," in token) else integers).append(value)
         if decimals:
             return decimals[0]
         if integers:

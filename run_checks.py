@@ -31,7 +31,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 79
+EXPECTED_TOTAL = 89
 
 
 def skip(reason):
@@ -137,6 +137,41 @@ def main():
               "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00")
     check("missing value reported, not borrowed from next row",
           "tir" in parse(absent)[1], True)
+
+    # The number pattern used to accept a period and at most two decimals. "4,06" —
+    # what OCR returns when it reads a period as a comma, routine on a photographed
+    # sheet — was consumed as the integer 4, and the field was still reported as
+    # successfully read. The sailor saw "Read all six fields" above a PMA that had
+    # quietly lost 1.8 FMS points.
+    commas = ("EXAM STANDARD SCORE 62,00\nPERFORMANCE MARK AVERAGE 4,06\n"
+              "SERVICE IN PAYGRADE 3,50\nAWARDS POINTS 4,00\n"
+              "EDUCATION POINTS 4,00\nPNA POINTS 6,00")
+    c = parse(commas)
+    check("OCR comma decimal: PMA", c[0]["pma"], 4.06)
+    check("OCR comma decimal: SIPG", c[0]["tir"], 3.5)
+    check("OCR comma decimal: exam score", c[0]["exam_score"], 62.0)
+    check("OCR comma decimal: nothing falls back to a placeholder", c[1], [])
+
+    three_dp = ("EXAM STANDARD SCORE 62.000\nPERFORMANCE MARK AVERAGE 4.060\n"
+                "SERVICE IN PAYGRADE 3.500\nAWARDS POINTS 4.000\n"
+                "EDUCATION POINTS 4.000\nPNA POINTS 6.000")
+    t = parse(three_dp)[0]
+    check("three decimal places: PMA", t["pma"], 4.06)
+    check("three decimal places: SIPG", t["tir"], 3.5)
+
+    # Accepting the comma must not let dates and thousands separators in. This is
+    # why the comma form takes exactly two decimals and no more.
+    comma_noise = ("EXAM STANDARD SCORE (CYCLE 272) 62.00\n"
+                   "RSCA PMA AS OF SEP 30,2025 4.06\n"
+                   "SERVICE IN PAYGRADE AS OF JAN 01,2026 3.50\n"
+                   "AWARDS POINTS PER SECNAVINST 1,650 4.00\n"
+                   "EDUCATION POINTS 4.00\nPNA POINTS 6.00")
+    n = parse(comma_noise)[0]
+    check("'SEP 30,2025' is not read as a PMA", n["pma"], 4.06)
+    check("'JAN 01,2026' is not read as SIPG", n["tir"], 3.5)
+    check("'SECNAVINST 1,650' is not read as awards", n["awards"], 4.0)
+    check("a comma with three decimals is not guessed at",
+          parse("PERFORMANCE MARK AVERAGE 4,060")[0]["pma"], 4.0)
 
     print("\n5. PAYGRADE DETECTION")
     # Navy systems print the same paygrade as E6, E-6 and E06, and often name the

@@ -8,6 +8,33 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ---
 
+## STATUS as of 30 July 2026
+
+Suites now: `run_checks.py` **89/89**, `smoke_test.py` **25/25**.
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Stripe sessions created on every render | **FIXED** — `5ac6687` |
+| 2 | E6 sheet as E5 reads higher in the 3.92–4.00 band | **FIXED** — `0aef0fc` |
+| 3 | Paygrade regex misses `E-6`, `E06`, `PSC (E7)` | **FIXED** — `0ebb38a` |
+| 4 | `4,06` and `4.060` silently truncate to `4.0` | **FIXED** — see below |
+| 5 | Two-column layout puts the PMA value in the SIPG field | open — needs coordinate-based parsing |
+| 6 | `smoke_test.py` never tested a paying user | **FIXED** — `0ebb38a` |
+| 7 | Failed score save swallowed silently | open |
+| 8 | Cycle 272 dates hardcoded in four places | open — expires 10 Sep 2026 |
+| 9 | Smaller things | all open |
+
+Every fix carries its own regression checks, so none of these can come back quietly.
+Findings 5 and 8 are real work and want their own sessions. Finding 8 has a deadline.
+
+**Related, found while fixing 4 and not yet addressed:** the integer fallback in
+`extract_number_near_label` still grabs stray digits when a field's real value is
+absent — `SERVICE IN PAYGRADE AS OF SEP 30,2025` with no value reads SIPG as 30.0
+rather than reporting the field missing. That behaviour predates all of this work
+and is unchanged by it. It belongs with finding 5.
+
+---
+
 ## 1. Every page load creates live Stripe checkout sessions — HIGH
 
 `upgrade_banner()` calls `create_checkout_session()` while the page is drawing, not when
