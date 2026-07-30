@@ -549,6 +549,21 @@ def parse_ocr_text(raw_text):
     return results, missing
 
 
+# How a paygrade is actually written on a sheet. Navy systems print E6, E-6 and
+# E06 interchangeably, and a sheet often names the rate before the paygrade:
+# "ADVANCEMENT TO PSC (E7)". Matching only a bare "E6" meant detection quietly
+# failed on all of those and handed the choice back to the sailor — which is the
+# one decision that must not be guessed.
+#
+# The leading \b is load-bearing. Without it, the optional separator lets the "e"
+# in an ordinary word pair up with a nearby digit: "ADVANCEMENT TO THE 5TH" would
+# read as E5.
+_PG_TOKEN = r"\be[\s\-\.]?0?([4-7])\b"
+# An optional rate abbreviation and/or opening bracket between the wording and the
+# paygrade: "TO PSC (E7)", "TO PS1 E6".
+_PG_LEAD = r"(?:[a-z]{2,4}\d?\s*)?\(?\s*"
+
+
 def extract_paygrade(raw_text):
     """Read the paygrade the sailor is competing for off the profile sheet.
 
@@ -561,15 +576,15 @@ def extract_paygrade(raw_text):
     t = " ".join(raw_text.split()).lower()
     # Most explicit wording first, so a stray "E5" elsewhere on the sheet loses.
     for pattern in (
-        r"paygrade\s*(?:you\s*are\s*)?competing\s*for\s*[:\-]?\s*(e[4-7])",
-        r"competing\s*for\s*(?:paygrade\s*)?[:\-]?\s*(e[4-7])",
-        r"advancement\s*to\s*(?:paygrade\s*)?[:\-]?\s*(e[4-7])",
-        r"candidate\s*for\s*[:\-]?\s*(e[4-7])",
-        r"paygrade\s*[:\-]\s*(e[4-7])",
+        rf"paygrade\s*(?:you\s*are\s*)?competing\s*for\s*[:\-]?\s*\(?\s*{_PG_TOKEN}",
+        rf"competing\s*for\s*(?:paygrade\s*)?[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
+        rf"advancement\s*to\s*(?:paygrade\s*)?[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
+        rf"candidate\s*for\s*[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
+        rf"paygrade\s*[:\-]\s*\(?\s*{_PG_TOKEN}",
     ):
         m = re.search(pattern, t)
         if m:
-            return m.group(1).upper()
+            return "E" + m.group(1)
     return None
 
 

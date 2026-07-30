@@ -28,7 +28,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 55
+EXPECTED_TOTAL = 68
 
 
 def skip(reason):
@@ -136,15 +136,39 @@ def main():
           "tir" in parse(absent)[1], True)
 
     print("\n5. PAYGRADE DETECTION")
+    # Navy systems print the same paygrade as E6, E-6 and E06, and often name the
+    # rate first: "ADVANCEMENT TO PSC (E7)". Matching only a bare "E6" meant
+    # detection silently failed on all of those and pushed the choice back onto the
+    # sailor — the one decision that must never be guessed, because an E6 sheet
+    # scored under E5 rules can come out HIGHER than the truth.
     for text, want in [
         ("PAYGRADE COMPETING FOR: E6", "E6"),
         ("PAYGRADE YOU ARE COMPETING FOR:  E7", "E7"),
         ("Competing for paygrade - E5", "E5"),
         ("ADVANCEMENT TO E6", "E6"),
-        ("no paygrade statement anywhere", None),
-        ("E5 mentioned but not as a labelled field", None),
+        ("ADVANCEMENT TO E-6", "E6"),
+        ("PAYGRADE: E-7", "E7"),
+        ("PAYGRADE: E06", "E6"),
+        ("PAYGRADE COMPETING FOR: E05", "E5"),
+        ("PAYGRADE: E 6", "E6"),
+        ("CANDIDATE FOR ADVANCEMENT TO PSC (E7)", "E7"),
+        ("ADVANCEMENT TO PS1 E6", "E6"),
+        ("PAYGRADE COMPETING FOR: (E6)", "E6"),
+        ("CURRENT PAYGRADE: E6 PAYGRADE COMPETING FOR: E7", "E7"),
     ]:
-        check(f"'{text[:40]}'", getpg(text), want)
+        check(f"reads '{text[:44]}'", getpg(text), want)
+
+    # Loosening the pattern must not make it fire on ordinary prose. The word
+    # boundary before the "e" is what stops "THE 5TH" reading as E5.
+    for text in [
+        "no paygrade statement anywhere",
+        "E5 mentioned but not as a labelled field",
+        "ADVANCEMENT TO THE 5TH DIVISION",
+        "ADVANCEMENT TO THE 6 PILLARS OF LEADERSHIP",
+        "PAYGRADE: E60",
+        "CANDIDATE FOR THE 7 SEAS AWARD",
+    ]:
+        check(f"ignores '{text[:44]}'", getpg(text), None)
 
     # ── 6. Paygrade/value conflicts are reported, not silently clamped ───────
     # Regression guard for the bug where an E6 sheet read under E5 rules had its

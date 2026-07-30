@@ -29,13 +29,15 @@ def check(name, got, want):
     print(f"  {'PASS' if ok else 'FAIL'}  {name:<52} got={got!r:<10} want={want!r}")
 
 
-def build_app(tier="elite"):
+def build_app(tier="chief"):
     """Start app.py past the login gate with throwaway secrets.
 
-    NOTE: "elite" is not a real tier. TIER_ORDER is free/petty_officer/chief, so
-    can_access() treats it as free and every check below sees the FREE app. Fixing
-    that changes what the existing checks exercise, so it is a separate job — see
-    the report from 29 Jul 2026. Section 6 passes an explicit tier for that reason.
+    The default used to be "elite", which is not a tier. TIER_ORDER is
+    free/petty_officer/chief, so can_access() returned False for everything and
+    every check ran against the FREE app — the AI Study Guide, Tutor, Mock Exam,
+    Planner and BBA Hub, i.e. everything the $12.99 and $19.99 tiers pay for, had
+    never rendered in an automated check. Default is a paying user now; section 6
+    asks for "free" explicitly so both sides of the paywall are covered.
     """
     from streamlit.testing.v1 import AppTest
 
@@ -67,6 +69,14 @@ def main():
     if at.exception:
         print("\nThe page does not come up. Nothing below this will be meaningful.")
         return 1
+
+    # The default tier must actually BE a tier. A typo here ("elite") silently
+    # downgrades every check below to the free app while still passing, which is
+    # how the five paid tabs went untested. A locked banner means we are not the
+    # paying user we think we are.
+    check("default tier really has paid access",
+          len([w for w in at.warning if "tier required" in w.value]), 0)
+    check("all seven tabs are present", len(at.tabs), 7)
 
     print("\n2. PAYGRADE MUST BE CHOSEN BEFORE SCORING")
     # Regression guard: defaulting this to E5 silently mis-scored E6 sheets.
