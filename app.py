@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import io
 import json
 import tempfile
 import os
@@ -875,28 +876,105 @@ def redact_pii(raw_text):
     return "\n".join(out)
 
 
+# A phone photo of a profile sheet OCRs badly below about 200 DPI and gets slow
+# above it without reading any better.
+OCR_DPI = 200
+
+
+def ocr_engine_ready():
+    """Is the tesseract BINARY actually here?
+
+    OCR_IMAGE_AVAILABLE only says the Python packages imported. pytesseract is a
+    wrapper around a separate system binary that requirements.txt cannot install —
+    on Streamlit Cloud that needs packages.txt. Without it every image upload hit
+    TesseractNotFoundError, which nothing caught, so the sailor got a raw Python
+    traceback where the page should have been.
+    """
+    if not OCR_IMAGE_AVAILABLE:
+        return False
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
 def extract_text_from_upload(uploaded_file):
+    """Text from a profile sheet, whatever form it arrives in.
+
+    Three shapes, because sailors send all three:
+      1. a PDF with a real text layer      -> read it directly
+      2. a PDF that is a photo or a scan   -> render each page and OCR it
+      3. a photo or screenshot             -> OCR it
+
+    Shape 2 is the one that used to fail. The PDF branch only ever read the text
+    layer, so a sheet photographed on a phone and saved as a PDF — which is how a
+    real one arrives — came back empty and the sailor was told the document could
+    not be read. There is nothing wrong with the document.
+    """
     raw_text = ""
     suffix = os.path.splitext(uploaded_file.name)[1]
+    # Browsers are inconsistent about the MIME type they attach, so the filename
+    # gets a vote too.
+    is_pdf = (uploaded_file.type == "application/pdf"
+              or suffix.lower() == ".pdf")
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
+
     try:
-        if uploaded_file.type == "application/pdf":
+        if is_pdf:
             if not OCR_PDF_AVAILABLE:
-                st.error("PyMuPDF not installed.")
-                return ""
+                st.error("Cannot read PDFs on this server (PyMuPDF is missing). "
+                         "Upload a photo instead, or enter your scores by hand below.")
+                return None
             doc = fitz.open(tmp_path)
             for page in doc:
                 raw_text += page.get_text()
+
+            # No text layer means it is a picture of a sheet, not a document.
+            if not raw_text.strip():
+                if not ocr_engine_ready():
+                    st.error(
+                        "**This PDF is a photo or a scan, not a text document.** "
+                        "Reading pictures is not available on this server right now, "
+                        "so your scores could not be read automatically. Enter them "
+                        "by hand below — the calculator works exactly the same."
+                    )
+                    return None
+                with st.spinner("This looks like a photo — reading it may take a moment..."):
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=OCR_DPI)
+                        raw_text += pytesseract.image_to_string(
+                            Image.open(io.BytesIO(pix.tobytes("png")))
+                        )
         else:
-            if not OCR_IMAGE_AVAILABLE:
-                st.error("pytesseract or Pillow not installed.")
-                return ""
-            image = Image.open(tmp_path)
-            raw_text = pytesseract.image_to_string(image)
+            if not ocr_engine_ready():
+                st.error(
+                    "**Reading photos is not available on this server right now.** "
+                    "Upload your sheet as a PDF if you have one, or enter your scores "
+                    "by hand below — the calculator works exactly the same."
+                )
+                return None
+            with st.spinner("Reading your photo..."):
+                raw_text = pytesseract.image_to_string(Image.open(tmp_path))
+
+    except Exception as e:
+        # Whatever went wrong, a sailor with a working calculator in front of them
+        # should not be looking at a stack trace.
+        st.error(
+            "**Could not read that file.** Enter your scores by hand below — the "
+            "calculator works exactly the same. "
+            f"\n\nTechnical detail, if you are reporting this: `{type(e).__name__}`"
+        )
+        return None
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
     return raw_text
 
 
@@ -1111,7 +1189,11 @@ with tab1:
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
-            raw_text = extract_text_from_upload(uploaded_file)
+            _extracted = extract_text_from_upload(uploaded_file)
+        # None means extract_text_from_upload has already said what went wrong and
+        # what to do about it. A second, vaguer error underneath helps nobody.
+        _already_explained = _extracted is None
+        raw_text = _extracted or ""
         if raw_text.strip():
             extracted_data, missing_fields = parse_ocr_text(raw_text)
             detected_paygrade = extract_paygrade(raw_text)
@@ -1172,8 +1254,12 @@ with tab1:
                     "in memory and the temporary file is deleted straight after."
                 )
                 st.text(redact_pii(raw_text)[:2000])
-        else:
-            st.error("Could not extract text. Try a clearer image or enter values manually.")
+        elif not _already_explained:
+            st.error(
+                "**Could not read any text from that file.** If it is a photo, try "
+                "again in better light with the whole sheet flat in frame — or just "
+                "enter your scores by hand below."
+            )
 
     st.subheader("📋 Enter or Edit Your Scores")
 

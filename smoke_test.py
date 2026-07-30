@@ -152,6 +152,57 @@ def main():
         at.selectbox[0].select("E6").run()
         check("a later rerun creates no further sessions", len(stripe_calls), before)
 
+    print("\n7. A BAD UPLOAD NEVER TAKES THE PAGE DOWN")
+    # A real profile sheet turned out to be a phone photo wrapped in a PDF: no text
+    # layer at all. The PDF branch only read the text layer, so the format sheets
+    # actually arrive in was the one format the uploader could not read. And
+    # pytesseract is a wrapper around a system binary requirements.txt cannot
+    # install — without packages.txt every image upload raised TesseractNotFoundError
+    # into an empty except-less path, so the sailor got a stack trace.
+    import io as _io
+
+    import fitz as _fitz
+    from PIL import Image as _Image
+
+    _buf = _io.BytesIO()
+    _Image.new("RGB", (120, 120), "white").save(_buf, format="PNG")
+    _png = _buf.getvalue()
+
+    # A PDF that is a picture, exactly like the real sheet.
+    _doc = _fitz.open()
+    _doc.new_page().insert_image(_fitz.Rect(0, 0, 400, 400), stream=_png)
+    _scanned_pdf = _doc.tobytes()
+
+    def upload(name, data, mime, patcher):
+        at = build_app()
+        at.run()
+        at.file_uploader[0].set_value((name, data, mime))
+        with patcher:
+            at.run()
+        return at
+
+    at = upload("sheet.png", _png, "image/png",
+                patch("pytesseract.get_tesseract_version", side_effect=OSError("no binary")))
+    check("missing OCR binary does not crash the page", len(at.exception), 0)
+    check("...and says so once, not twice", len(at.error), 1)
+
+    at = upload("sheet.png", _png, "image/png",
+                patch("pytesseract.image_to_string", side_effect=RuntimeError("boom")))
+    check("OCR blowing up does not crash the page", len(at.exception), 0)
+    check("...and the sailor gets a message, not a traceback", len(at.error), 1)
+
+    # The capability that was missing: a text-less PDF must fall back to OCR.
+    sheet_text = ("PAYGRADE COMPETING FOR: E6\nEXAM STANDARD SCORE 62.00\n"
+                  "PERFORMANCE MARK AVERAGE (RSCA PMA) 4.06\nSERVICE IN PAYGRADE 3.50\n"
+                  "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00")
+    at = upload("photo_of_sheet.pdf", _scanned_pdf, "application/pdf",
+                patch("pytesseract.image_to_string", return_value=sheet_text))
+    check("a photographed PDF is OCR'd instead of rejected", len(at.exception), 0)
+    check("...with no error shown", len(at.error), 0)
+    check("...and the scores actually land in the form",
+          [n.value for n in at.number_input if "Exam Standard Score" in n.label], [62.0])
+    check("...including the paygrade off the sheet", at.selectbox[0].value, "E6")
+
     print("\n" + "=" * 68)
     if FAIL:
         print(f"{len(FAIL)} SMOKE CHECK(S) FAILED — the app is broken for users:")

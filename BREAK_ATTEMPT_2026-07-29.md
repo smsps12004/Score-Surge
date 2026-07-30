@@ -10,7 +10,31 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ## STATUS as of 30 July 2026
 
-Suites now: `run_checks.py` **121/121**, `smoke_test.py` **25/25**.
+Suites now: `run_checks.py` **121/121**, `smoke_test.py` **33/33**.
+
+### Found 30 Jul from a REAL profile sheet — bigger than anything below
+
+Shawn supplied an actual sheet. It is a **phone photo (4032x3024) wrapped in a PDF**,
+with no text layer at all — a picture of the BOL *Exam Profile Data* page, not a form.
+
+1. **The PDF branch only read the text layer**, so the format real sheets arrive in
+   was the one format the uploader could not read. The sailor was told the document
+   could not be read. Nothing was wrong with the document. **FIXED** — text-less PDFs
+   are now rendered and OCR'd.
+2. **No `packages.txt`.** `pytesseract` is a wrapper around a system binary that
+   `requirements.txt` cannot install. On Streamlit Cloud that means every image upload
+   raised `TesseractNotFoundError` into a path with no `except` — a stack trace where
+   the page should be. **FIXED** — `packages.txt` added, plus a real handler.
+3. **Real sheets may not say "paygrade competing for" at all.** The real one has
+   `PRESENT RATE: PS3 | EXAM RATE: PS2` — the paygrade is encoded in the rate
+   abbreviation. All existing detection wording came from mock sheets that were
+   themselves generated. **OPEN, and it needs Shawn's PS1 knowledge.**
+4. OCR on that photo yielded 2846 characters but the parser found none of the six
+   fields. Section-level topic scores and PNA breakdown came through; the FMS block
+   did not. **OPEN.**
+
+The two mock sheets in `test-profile-sheets/` should be treated as convenient
+fixtures, not as evidence about real documents.
 
 | # | Finding | Status |
 |---|---|---|
