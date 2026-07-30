@@ -13,6 +13,7 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
   5. Paygrade detection across those wordings, and that it stays quiet on prose
   6. Over-cap detection, so a wrong paygrade is visible rather than clamped away
   7. Wording conflicts, which cover the PMA band the caps cannot see
+  7b. That no name or DoD ID from a sheet is printed back to the screen
   8. That a finished exam cycle is never quoted as if it were current
   9. That no scraped value can escape a widget's min/max and crash the page
 
@@ -33,7 +34,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 107
+EXPECTED_TOTAL = 121
 
 
 def skip(reason):
@@ -287,6 +288,41 @@ def main():
           conflicts("", "E5", True), [])
     check("both signals at once are both reported",
           len(conflicts(e6_text, "E5", True)), 2)
+
+    # ── 7b. Nothing identifying goes back on screen ──────────────────────────
+    # The "what was read from your sheet" panel printed 2000 raw characters so a
+    # sailor could see why a field was missed. On a real sheet the first 250 of
+    # those are their full name and the last four of their DoD ID, plus the ESO of
+    # record — a second named person who never consented to anything.
+    print("\n7b. PII REDACTION")
+    redact = L["redact_pii"]
+    try:
+        import fitz  # noqa: F811
+    except ImportError:
+        skip("PyMuPDF not installed — PII redaction not checked against a real sheet")
+    else:
+        sheet = os.path.join(SHEETS, "PROFILE_SHEET_PS2_E6_clean.pdf")
+        if not os.path.exists(sheet):
+            skip("sample sheet missing — PII redaction not checked against a real sheet")
+        else:
+            raw = "".join(p.get_text() for p in fitz.open(sheet))
+            shown = redact(raw)
+            for secret in ("RIVERA", "MARCUS", "4417", "HAWKINS"):
+                check(f"'{secret}' never reaches the screen", secret in shown, False)
+            # Redaction is display-only. Parsing must still see the real sheet.
+            check("redaction does not touch the parsed values",
+                  parse(raw)[0]["pma"], 4.06)
+            check("redaction does not touch paygrade detection", getpg(raw), "E6")
+            # ...and it must not eat the things a sailor needs to debug with.
+            for keep in ("EXAM STANDARD SCORE", "PAYGRADE COMPETING FOR", "62.00", "4.06"):
+                check(f"'{keep}' is still shown", keep in shown, True)
+
+    check("inline 'NAME: value' is masked",
+          "RIVERA" in redact("NAME (LAST, FIRST MI): RIVERA, MARCUS T."), False)
+    check("a rate is not mistaken for a name",
+          redact("PRESENT RATE:\nPS2"), "PRESENT RATE:\nPS2")
+    check("empty text does not crash the redactor", redact(""), "")
+    check("None does not crash the redactor", redact(None), "")
 
     # ── 8. The app must not keep quoting a finished cycle ────────────────────
     # The countdown had no concept of a cycle ending: after the last exam day it

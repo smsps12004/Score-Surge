@@ -825,6 +825,56 @@ def paygrade_conflicts(raw_text, paygrade, paygrade_chosen):
     return out
 
 
+# Labels whose value identifies a person. A profile sheet carries the sailor's
+# full name and the last four of their DoD ID within the first ~250 characters,
+# and the ESO of record is a second named person who never consented to anything.
+_PII_LABELS = re.compile(
+    r"(name\s*\(last|^\s*name\s*:|member\s*name|candidate\s*name|"
+    r"dod\s*id|\bdodid\b|\bssn\b|social\s*security|eso\s*of\s*record)",
+    re.IGNORECASE,
+)
+
+
+def redact_pii(raw_text):
+    """Mask identifying values in sheet text before it is put on screen.
+
+    The "what was read from your sheet" panel prints the raw extraction so a
+    sailor can see why a field was missed. On a real sheet that text opens with
+    NAME (LAST, FIRST MI): RIVERA, MARCUS T. and DOD ID (LAST 4): 4417 — printed
+    back to the screen every upload, for a debugging aid.
+
+    Display only. Parsing still runs on the original text, because the paygrade
+    and the six FMS values have to come off the sheet exactly as written.
+    """
+    if not raw_text:
+        return ""
+    lines = raw_text.split("\n")
+    out = []
+    mask_next = False
+    for line in lines:
+        stripped = line.strip()
+        if mask_next and stripped:
+            out.append("    [redacted]")
+            mask_next = False
+            continue
+        m = _PII_LABELS.search(line)
+        if m:
+            label_end = line.find(":", m.start())
+            if label_end == -1:
+                out.append("[redacted]")
+                continue
+            # "NAME (LAST, FIRST MI): RIVERA" -> mask on the same line.
+            # "NAME (LAST, FIRST MI):" alone -> the value is on the next line.
+            if line[label_end + 1:].strip():
+                out.append(line[: label_end + 1] + " [redacted]")
+            else:
+                out.append(line)
+                mask_next = True
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def extract_text_from_upload(uploaded_file):
     raw_text = ""
     suffix = os.path.splitext(uploaded_file.name)[1]
@@ -1116,8 +1166,12 @@ with tab1:
                     mark = "❌ not found — placeholder" if f in missing_fields else "✅ read"
                     st.write(f"**{lbl}:** {extracted_data[f]}  ·  {mark}")
                 st.divider()
-                st.caption("Raw text extracted from your document:")
-                st.text(raw_text[:2000])
+                st.caption(
+                    "Text extracted from your document — your name and DoD ID are "
+                    "masked here. Score Surge does not store your sheet; it is read "
+                    "in memory and the temporary file is deleted straight after."
+                )
+                st.text(redact_pii(raw_text)[:2000])
         else:
             st.error("Could not extract text. Try a clearer image or enter values manually.")
 
