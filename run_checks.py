@@ -28,7 +28,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 45
+EXPECTED_TOTAL = 55
 
 
 def skip(reason):
@@ -146,8 +146,33 @@ def main():
     ]:
         check(f"'{text[:40]}'", getpg(text), want)
 
-    # ── 6. Nothing out of range can reach a widget ───────────────────────────
-    print("\n6. CRASH GUARDS (values that used to break the page)")
+    # ── 6. Paygrade/value conflicts are reported, not silently clamped ───────
+    # Regression guard for the bug where an E6 sheet read under E5 rules had its
+    # PMA trimmed 4.06 -> 4.00 and scored 140.7 instead of 138.5 — higher than the
+    # truth, so nothing looked wrong.
+    print("\n6. OVER-CAP DETECTION (wrong paygrade must be visible)")
+    over = L["over_cap_fields"]
+    e6_sheet = {"exam_score": 62.0, "pma": 4.06, "tir": 3.5,
+                "awards": 4.0, "education": 4.0, "pna": 6.0}
+
+    flagged = over(e6_sheet, "E5", True)
+    check("E6 sheet under E5 rules flags PMA", [f[0] for f in flagged], ["pma"])
+    check("...and reports the value found", flagged[0][1] if flagged else None, 4.06)
+    check("...and reports the cap it broke", flagged[0][2] if flagged else None, 4.00)
+    check("E6 sheet under E6 rules flags nothing", over(e6_sheet, "E6", True), [])
+    check("nothing flagged before a paygrade is picked", over(e6_sheet, "E5", False), [])
+    check("E7 does not flag awards/PNA it never scores", over(e6_sheet, "E7", True), [])
+    check("exam score over 80 is flagged",
+          [f[0] for f in over({**e6_sheet, "exam_score": 99.0}, "E6", True)], ["exam_score"])
+    check("awards over the E5 cap are flagged",
+          [f[0] for f in over({**e6_sheet, "pma": 3.8, "awards": 99.0}, "E5", True)], ["awards"])
+    check("junk values do not crash the reporter",
+          over({**e6_sheet, "pma": "junk"}, "E5", True), [])
+    check("missing field does not crash the reporter",
+          over({"pma": 4.06}, "E5", True), [("pma", 4.06, 4.00)])
+
+    # ── 7. Nothing out of range can reach a widget ───────────────────────────
+    print("\n7. CRASH GUARDS (values that used to break the page)")
     for raw, lo, hi in [(272.0, 0.0, 9.0), (-5.0, 0.0, 80.0), (9999.0, 0.0, 30.0),
                         (None, 0.0, 9.0), ("junk", 0.0, 80.0), (float("nan"), 0.0, 5.8)]:
         out = safe(raw, lo, hi, lo)

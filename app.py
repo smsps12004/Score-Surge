@@ -563,6 +563,49 @@ def safe_value(raw, lo, hi, fallback):
     return min(max(val, lo), hi)
 
 
+FIELD_TITLES = {
+    "exam_score": "Exam Standard Score",
+    "pma": "PMA / RSCA PMA",
+    "tir": "Service in Paygrade (SIPG)",
+    "awards": "Awards Points",
+    "education": "Education Points",
+    "pna": "PNA Points",
+}
+
+
+def over_cap_fields(data, paygrade, paygrade_chosen):
+    """Values read off the sheet that exceed the selected paygrade's maximum.
+
+    safe_value quietly pulls these inside the widget's bounds, which is right for
+    not crashing the page and wrong for telling the truth: an E6 sheet scored as
+    E5 has its PMA trimmed from 4.06 to 4.00 and produces a confident, too-high
+    FMS. Anything this returns should be shown to the sailor, because the usual
+    cause is that the wrong paygrade is selected.
+
+    Returns a list of (field, value_found, cap).
+    """
+    if not paygrade_chosen or paygrade not in FMS_RULES:
+        return []
+    rules = FMS_RULES[paygrade]
+    bounds = {"exam_score": EXAM_MAX, "pma": rules["pma_input_max"]}
+    # Fields a paygrade does not score at all are not "over cap" — E7 ignores
+    # awards, PNA and SIPG entirely, so a sheet listing them is not a conflict.
+    if paygrade != "E7":
+        bounds["awards"] = rules["awards_max"]
+        bounds["pna"] = rules["pna_max"]
+    out = []
+    for field, cap in bounds.items():
+        try:
+            val = float(data[field])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if val != val:  # NaN
+            continue
+        if val > cap:
+            out.append((field, val, cap))
+    return out
+
+
 def extract_text_from_upload(uploaded_file):
     raw_text = ""
     suffix = os.path.splitext(uploaded_file.name)[1]
@@ -664,6 +707,24 @@ PS_TOPICS = {
 # ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────
 RATINGS = ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"]
 PAYGRADES = ["E5", "E6", "E7"]  # No E4 NWAE — advancement to E4 is not exam-based.
+
+# Placeholder shown until the sailor picks a paygrade. Not a valid selection.
+PG_PROMPT = "— Select your paygrade —"
+
+# Widget bounds used before a paygrade is chosen: the widest value across every
+# paygrade, so nothing read off the sheet is clamped away before we know which
+# rules apply. Never used to score — the form is unsubmittable until a real
+# paygrade is selected.
+UNSET_RULES = {
+    "pma_mult": 30, "pma_sub": 60, "pma_max": 120.0,
+    "pma_input_max": max(FMS_RULES[p]["pma_input_max"] for p in PAYGRADES),
+    "pma_name": "PMA / RSCA PMA",
+    "tir_div": 5.0,
+    "tir_max": max(FMS_RULES[p]["tir_max"] for p in PAYGRADES),
+    "awards_max": max(FMS_RULES[p]["awards_max"] for p in PAYGRADES),
+    "edu_max": 4.0, "pna_max": 9.0,
+    "fms_max": max(FMS_RULES[p]["fms_max"] for p in PAYGRADES),
+}
 
 
 def _split_ps_topics():
@@ -791,14 +852,7 @@ with tab1:
                 st.session_state["fms_paygrade"] = detected_paygrade
                 st.session_state["_pg_src"] = file_id
 
-            FIELD_LABELS = {
-                "exam_score": "Exam Standard Score",
-                "pma": "PMA / RSCA PMA",
-                "tir": "Service in Paygrade (SIPG)",
-                "awards": "Awards Points",
-                "education": "Education Points",
-                "pna": "PNA Points",
-            }
+            FIELD_LABELS = FIELD_TITLES
             found = [FIELD_LABELS[f] for f in extracted_data if f not in missing_fields]
 
             if not missing_fields:
@@ -849,17 +903,44 @@ with tab1:
 
     # Outside the form on purpose: changing paygrade must immediately re-scale the
     # PMA field and hide the fields that paygrade does not use.
+    #
+    # There is deliberately NO default paygrade. Defaulting to E5 meant an E6 sheet
+    # whose paygrade line could not be read was scored with E5 rules — and because
+    # the E5 PMA cap (4.00) is lower than a real E6 PMA, the value was silently
+    # clamped and the resulting FMS came out HIGHER than the truth. A flattering
+    # wrong number is one nobody questions. Make the sailor choose instead.
     if "fms_paygrade" not in st.session_state:
-        st.session_state["fms_paygrade"] = "E5"
+        st.session_state["fms_paygrade"] = PG_PROMPT
     paygrade = st.selectbox(
-        "Paygrade You Are Competing For", PAYGRADES, key="fms_paygrade",
+        "Paygrade You Are Competing For", [PG_PROMPT] + PAYGRADES, key="fms_paygrade",
         help="The PMA formula and every point cap change by paygrade. Set automatically "
              "when your profile sheet states it — you can always override it here.",
     )
-    rules = FMS_RULES[paygrade]
+    paygrade_chosen = paygrade in PAYGRADES
+    # Until a paygrade is picked, widget bounds use the widest value across all
+    # paygrades so nothing read off the sheet gets clamped away before we know which
+    # rules apply. The form cannot be submitted in this state.
+    rules = FMS_RULES[paygrade] if paygrade_chosen else UNSET_RULES
     pma_cap = rules["pma_input_max"]
     pma_label = rules["pma_name"]
     is_e7 = paygrade == "E7"
+
+    if not paygrade_chosen:
+        st.warning(
+            "**Pick your paygrade before calculating.** The PMA formula and every point "
+            "cap are different for E5, E6 and E7 — the same profile sheet scores "
+            "differently under each one, so there is no safe default to guess."
+        )
+
+    # Surface any value the sheet gave us that does not fit the chosen paygrade.
+    # This is the tell that the wrong paygrade is selected.
+    for field, found, cap in over_cap_fields(extracted_data, paygrade, paygrade_chosen):
+        st.error(
+            f"**Your sheet says {FIELD_TITLES[field]} is {found:g}, but the {paygrade} "
+            f"maximum is {cap:g}.** The field below has been reduced to {cap:g}, so your "
+            f"FMS will be wrong if {paygrade} is not right. Check the paygrade above — "
+            f"a value this high usually means the sheet is for a higher paygrade."
+        )
 
     with st.form("fms_form"):
         sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
@@ -913,9 +994,15 @@ with tab1:
                 "E7 FMS is exam standard score + RSCA PMA only. Awards, PNA, service in "
                 "paygrade and education do not add points, so those fields are greyed out."
             )
-        submitted = st.form_submit_button("📊 Calculate My FMS", use_container_width=True)
+        submitted = st.form_submit_button(
+            "📊 Calculate My FMS" if paygrade_chosen else "📊 Select a paygrade above to calculate",
+            use_container_width=True, disabled=not paygrade_chosen,
+        )
 
-    if submitted:
+    # paygrade_chosen is re-checked here, not just on the button: a disabled button
+    # is a UI courtesy, not a guarantee, and scoring under a guessed paygrade is the
+    # exact failure this is here to prevent.
+    if submitted and paygrade_chosen:
         education = {"None (0 pts)": 0.0,
                      "Associate's — AA/AS (2 pts)": 2.0,
                      "Bachelor's or above (4 pts)": 4.0}[education]
