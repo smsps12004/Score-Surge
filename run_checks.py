@@ -12,7 +12,8 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
   4. Paygrade detection across the wordings real sheets use
   5. That no scraped value can escape a widget's min/max and crash the page
 
-Exit code 0 = safe to push. Exit code 1 = something is broken, read the output.
+Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
+not run, read the output. A skipped check is never treated as a pass.
 """
 
 import os
@@ -23,7 +24,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "app.py")
 SHEETS = os.path.join(HERE, "test-profile-sheets")
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
+
+# Every check this file is supposed to run when nothing is missing. If the count
+# at the end doesn't match this, checks went missing and the run is NOT a pass.
+EXPECTED_TOTAL = 45
+
+
+def skip(reason):
+    """Record a block we could not run. A skipped check is not a passed check."""
+    SKIP.append(reason)
+    print(f"  SKIP  {reason}")
 
 
 def check(name, got, want, tol=0.005):
@@ -85,14 +96,14 @@ def main():
     try:
         import fitz  # PyMuPDF
     except ImportError:
-        print("  SKIP  PyMuPDF not installed (pip install pymupdf)")
+        skip("PyMuPDF not installed — parser checks did NOT run (pip install pymupdf)")
     else:
         truth = {"exam_score": 62.0, "pma": 4.06, "tir": 3.5,
                  "awards": 4.0, "education": 4.0, "pna": 6.0}
         for tag in ("clean", "crash-repro"):
             path = os.path.join(SHEETS, f"PROFILE_SHEET_PS2_E6_{tag}.pdf")
             if not os.path.exists(path):
-                print(f"  SKIP  sample sheet missing: {tag}")
+                skip(f"sample sheet missing: {tag} — parser checks did NOT run for it")
                 continue
             raw = "".join(p.get_text() for p in fitz.open(path))
             got, missing = parse(raw)
@@ -153,6 +164,21 @@ def main():
             print(f"   - {name}: got {got!r}, expected {want!r}")
         print("=" * 68)
         return 1
+    if SKIP:
+        print(f"{len(PASS)} passed, but {len(SKIP)} BLOCK(S) WERE SKIPPED — NOT safe to push:")
+        for reason in SKIP:
+            print(f"   - {reason}")
+        print("\nA skipped check is not a passed check. Fix the cause and re-run.")
+        print("=" * 68)
+        return 1
+
+    if len(PASS) != EXPECTED_TOTAL:
+        print(f"EXPECTED {EXPECTED_TOTAL} CHECKS, ONLY {len(PASS)} RAN — NOT safe to push.")
+        print("Checks went missing without being reported as skipped. Investigate before pushing.")
+        print("(If you deliberately added or removed checks, update EXPECTED_TOTAL.)")
+        print("=" * 68)
+        return 1
+
     print(f"ALL {len(PASS)} CHECKS PASSED — safe to push.")
     print("=" * 68)
     return 0
