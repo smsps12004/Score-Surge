@@ -7,6 +7,7 @@ Run this before every `git push`. It answers one question: did I break the math?
 
 It loads the pure logic out of app.py (no Streamlit needed), then checks:
   1. FMS math against hand-computed values for E5, E6 and E7
+  1b. The same math against two VERIFIED REAL sheets, to the cent
   2. Every point cap actually caps
   3. The profile sheet parser against the real sample PDFs in test-profile-sheets/
   4. Label handling on the wordings real sheets use
@@ -34,7 +35,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 121
+EXPECTED_TOTAL = 128
 
 
 def skip(reason):
@@ -86,6 +87,38 @@ def main():
     check("E7 exam + PMA only", fms("E7", 55, 4.50, 6, 8, 4, 5)[0], 136.00)
     check("E7 ignores awards/edu/PNA", fms("E7", 55, 4.50, 0, 0, 0, 0)[0], 136.00)
 
+    # ── 1b. Against REAL profile sheets ──────────────────────────────────────
+    # Two genuine NETPDC sheets Shawn verified, 30 Jul 2026. Every other check in
+    # this file is hand-computed from the published chart — which proves the code
+    # matches my reading of the chart, not that either matches the Navy. These two
+    # do, and they reproduce to the cent.
+    #
+    # Reading a real sheet: the FMS table prints POINTS, with the raw figure in
+    # parentheses underneath. "PMA (Eval Avg) 48.00 (3.60)" is 48.00 points from an
+    # eval average of 3.60. "Serv. In Pay Grade (YYMM) 01.20 (0600)" is 1.20 points
+    # from 6 years 0 months. The app's inputs are the RAW figures, not the points.
+    print("\n1b. REAL SHEETS (verified)")
+
+    # GM2 competing for GM1 -> E6. Cycle 259, MAR 23.
+    # Exam 69.15 | PMA 48.00 (3.60) | SIPG 01.20 (0600) | Awards 6 | Edu 0.00 | PNA 4.50
+    a_total, a = fms("E6", 69.15, 3.60, 6.0, 6, 0.00, 4.50)
+    check("real E6 sheet: PMA 3.60 -> 48.00 points", a["PMA Points"], 48.00)
+    check("real E6 sheet: 6 yrs SIPG -> 1.20 points", a["Time in Rate"], 1.20)
+    check("real E6 sheet: FMS matches the sheet exactly", a_total, 128.85)
+
+    # BM3 competing for BM2 -> E5. Cycle 243, MAR 19.
+    # Exam 56.43 | PMA 48.00 (3.80) | SIPG 00.20 (0100) | Awards 0 | Edu 0.00 | PNA 0.00
+    b_total, b = fms("E5", 56.43, 3.80, 1.0, 0, 0.00, 0.00)
+    check("real E5 sheet: PMA 3.80 -> 48.00 points", b["PMA Points"], 48.00)
+    check("real E5 sheet: 1 yr SIPG -> 0.20 points", b["Time in Rate"], 0.20)
+    check("real E5 sheet: FMS matches the sheet exactly", b_total, 104.63)
+
+    # The same eval average is worth the same points at E5 and E6 only by
+    # coincidence at these two values. Scoring either sheet under the other's rules
+    # gets a different answer, which is the whole reason the paygrade must be right.
+    check("real E6 sheet scored as E5 is NOT the same number",
+          fms("E5", 69.15, 3.60, 6.0, 6, 0.00, 4.50)[0] == 128.85, False)
+
     # ── 2. Caps ──────────────────────────────────────────────────────────────
     print("\n2. POINT CAPS")
     check("E6 PMA caps at 114", fms("E6", 0, 5.80, 0, 0, 0, 0)[1]["PMA Points"], 114.00)
@@ -102,12 +135,12 @@ def main():
     # widgets all carry min_value=0.0 so nothing negative could arrive through the
     # form, which is exactly why it went unnoticed — but compute_fms is reachable
     # from anywhere, and a negative subtracts from a number the sailor is trusting.
-    b = fms("E6", -50, 4.06, -100, -50, -99, -99)[1]
-    check("negative exam score floors at 0", b["Exam Standard Score"], 0.00)
-    check("negative SIPG floors at 0", b["Time in Rate"], 0.00)
-    check("negative awards floors at 0", b["Awards"], 0.00)
-    check("negative education floors at 0", b["Education"], 0.00)
-    check("negative PNA floors at 0", b["PNA Points"], 0.00)
+    neg = fms("E6", -50, 4.06, -100, -50, -99, -99)[1]
+    check("negative exam score floors at 0", neg["Exam Standard Score"], 0.00)
+    check("negative SIPG floors at 0", neg["Time in Rate"], 0.00)
+    check("negative awards floors at 0", neg["Awards"], 0.00)
+    check("negative education floors at 0", neg["Education"], 0.00)
+    check("negative PNA floors at 0", neg["PNA Points"], 0.00)
     check("an all-negative sheet scores 0, not a negative FMS",
           fms("E6", -50, 0, -100, -50, -99, -99)[0], 0.00)
 
