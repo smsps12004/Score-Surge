@@ -35,7 +35,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 128
+EXPECTED_TOTAL = 149
 
 
 def skip(reason):
@@ -245,6 +245,41 @@ def main():
         ("CURRENT PAYGRADE: E6 PAYGRADE COMPETING FOR: E7", "E7"),
     ]:
         check(f"reads '{text[:44]}'", getpg(text), want)
+
+    # How real sheets ACTUALLY state it. Two genuine sheets and one photographed
+    # one carry no "paygrade competing for" wording at all — they have a header row
+    # PRESENT RATE | EXAM RATE | GROUP | BRANCH CLASS | CYCLE ... with the values in
+    # a grid underneath. A rate is its own paygrade: the numeral is the grade and C
+    # is Chief. Confirmed by Shawn, and by arithmetic — the GM1 sheet reconciles
+    # only under E6 rules, the BM2 sheet only under E5.
+    r2p = L["rate_to_paygrade"]
+    for rate, want in [("HM3", "E4"), ("BM3", "E4"), ("PS2", "E5"), ("BM2", "E5"),
+                       ("PS1", "E6"), ("GM1", "E6"), ("PSC", "E7"), ("GMC", "E7"),
+                       ("PSCS", "E8"), ("PSCM", "E9")]:
+        check(f"rate {rate} is {want}", r2p(rate), want)
+    for junk in ("SN", "PS", "PS4", "", None):
+        check(f"{junk!r} is not a rate", r2p(junk), None)
+
+    # Value rows lifted from the real sheets, including OCR output from a photo.
+    for name, text, want in [
+        ("GM sheet value row",
+         "PRESENT RATE EXAM RATE GROUP BRANCH CLASS CYCLE SERIAL NO. DATE UIC "
+         "PARENT UIC GM2 GM1 USN 259 2590023 MAR 23", "E6"),
+        ("BM sheet value row",
+         "PRESENT EXAM BRANCH SERIAL RATE RATE GROUP CLASS CYCLE NO. DATE UIC "
+         "BM3 BM2 USN 243 2430329 MAR 19 21825", "E5"),
+        ("photographed sheet, OCR'd",
+         "3 AN NICHOLAS 596815320 PS3 PS2 USNRT 266 2600469 SEP 23 66231 43106", "E5"),
+        ("labelled exam rate", "EXAM RATE: PSC", "E7"),
+    ]:
+        check(f"{name} -> {want}", getpg(text), want)
+
+    # The prose on a real sheet must not be mistaken for a paygrade statement.
+    check("'CANNOT BE ADVANCED TO THE NEXT HIGHER PAY GRADE' is not a paygrade",
+          getpg("SUBJECT CANDIDATE PASSED THE EXAMINATION BUT DUE TO QUOTA "
+                "LIMITATIONS CANNOT BE ADVANCED TO THE NEXT HIGHER PAY GRADE"), None)
+    check("a topic score row is not a rate pair",
+          getpg("TOPIC 1. WEAPONS SYSTEMS FUNDAMENTALS 28 16 69"), None)
 
     # Loosening the pattern must not make it fire on ordinary prose. The word
     # boundary before the "e" is what stops "THE 5TH" reading as E5.

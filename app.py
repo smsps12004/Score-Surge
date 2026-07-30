@@ -700,27 +700,107 @@ _PG_TOKEN = r"\be[\s\-\.]?0?([4-7])\b"
 _PG_LEAD = r"(?:[a-z]{2,4}\d?\s*)?\(?\s*"
 
 
+# A rate is its own paygrade: the numeral is the grade, C is Chief. Confirmed by
+# Shawn (PS1, ret.) and by arithmetic on two real sheets — a GM1 sheet only
+# reconciles under E6 rules, a BM2 sheet only under E5.
+RATE_SUFFIX_TO_PAYGRADE = {
+    "3": "E4", "2": "E5", "1": "E6",
+    "CM": "E9", "CS": "E8", "C": "E7",   # longest first; C alone is Chief
+}
+# PS2, GM1, HM3, PSC, PSCS, PSCM. Two to four letters then the grade marker.
+_RATE_TOKEN = r"[A-Z]{2,4}(?:CM|CS|C|3|2|1)"
+
+
+def rate_to_paygrade(rate):
+    """'GM1' -> 'E6'. None if it is not a rate we recognise."""
+    if not rate:
+        return None
+    r = str(rate).strip().upper()
+    if not re.fullmatch(_RATE_TOKEN, r):
+        return None
+    for suffix in ("CM", "CS", "C", "3", "2", "1"):
+        if r.endswith(suffix):
+            return RATE_SUFFIX_TO_PAYGRADE[suffix]
+    return None
+
+
+def extract_exam_rate(raw_text):
+    """The rate a sailor is testing INTO, read off a real profile sheet.
+
+    Real sheets do not say "paygrade competing for" anywhere. They carry a header
+    row — PRESENT RATE | EXAM RATE | GROUP | BRANCH CLASS | CYCLE ... — with the
+    values in a grid underneath. All the wording detection was built against mock
+    sheets that were themselves generated, so it was matching language no real
+    document uses.
+
+    Two ways in, both taken from real sheets:
+      1. the EXAM RATE label with the rate near it
+      2. the two rates side by side in the value row, same rating, e.g. "GM2 GM1"
+         or "PS3 PS2" — the second one is the exam rate
+
+    Returns (rate, paygrade), or (None, None).
+    """
+    if not raw_text:
+        return None, None
+    t = " ".join(raw_text.split())
+
+    # 1. Labelled. OCR loses the column alignment, so allow some noise between the
+    #    label and the value, but not so much that PRESENT RATE's value wins.
+    m = re.search(rf"exam\s*rate\W{{0,4}}\s*({_RATE_TOKEN})\b", t, re.IGNORECASE)
+    if m:
+        pg = rate_to_paygrade(m.group(1))
+        if pg:
+            return m.group(1).upper(), pg
+
+    # 2. Adjacent pair in the value row: same rating twice, present then exam.
+    #    "PS3 PS2" is unambiguous in a way a lone rate is not — a sheet mentions
+    #    the sailor's present rate in several places, but only once next to the
+    #    rate they are testing into.
+    m = re.search(rf"\b([A-Z]{{2,4}})(CM|CS|C|3|2|1)\s+\1(CM|CS|C|3|2|1)\b", t)
+    if m:
+        exam_rate = m.group(1) + m.group(3)
+        pg = rate_to_paygrade(exam_rate)
+        if pg:
+            return exam_rate, pg
+
+    return None, None
+
+
 def extract_paygrade(raw_text):
     """Read the paygrade the sailor is competing for off the profile sheet.
 
     Matters more than it looks: the PMA formula, every point cap and the FMS
     maximum all change by paygrade. Scoring an E6 sheet with E5 rules produces a
     confident, wrong number.
+
+    The EXAM RATE column is checked before the bare "Paygrade:" label, because a
+    lone paygrade field on a sheet is usually the sailor's CURRENT one — and
+    scoring a sailor at the grade they already hold is precisely the mistake this
+    whole function exists to prevent.
     """
     if not raw_text:
         return None
     t = " ".join(raw_text.split()).lower()
-    # Most explicit wording first, so a stray "E5" elsewhere on the sheet loses.
+    # Explicit wording first, so a stray "E5" elsewhere on the sheet loses.
     for pattern in (
         rf"paygrade\s*(?:you\s*are\s*)?competing\s*for\s*[:\-]?\s*\(?\s*{_PG_TOKEN}",
         rf"competing\s*for\s*(?:paygrade\s*)?[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
         rf"advancement\s*to\s*(?:paygrade\s*)?[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
         rf"candidate\s*for\s*[:\-]?\s*{_PG_LEAD}{_PG_TOKEN}",
-        rf"paygrade\s*[:\-]\s*\(?\s*{_PG_TOKEN}",
     ):
         m = re.search(pattern, t)
         if m:
             return "E" + m.group(1)
+
+    # Then how real sheets actually say it.
+    _, pg = extract_exam_rate(raw_text)
+    if pg:
+        return pg
+
+    # Last: a bare "Paygrade: E6" with nothing saying which paygrade it means.
+    m = re.search(rf"paygrade\s*[:\-]\s*\(?\s*{_PG_TOKEN}", t)
+    if m:
+        return "E" + m.group(1)
     return None
 
 
@@ -1220,15 +1300,22 @@ with tab1:
                 )
 
             if detected_paygrade in PAYGRADES:
+                _exam_rate, _ = extract_exam_rate(raw_text)
+                _how = (f"your exam rate is **{_exam_rate}**" if _exam_rate
+                        else "your sheet states it")
                 st.info(
-                    f"📌 Detected **{detected_paygrade}** on your sheet — the paygrade below is "
-                    f"set to match. The PMA formula and every point cap change by paygrade, so "
-                    f"this has to be right. Change it if it's wrong."
+                    f"📌 Detected **{detected_paygrade}** — {_how}. The paygrade below is "
+                    f"set to match. The PMA formula and every point cap change by paygrade, "
+                    f"so this has to be right. Change it if it's wrong."
                 )
             elif detected_paygrade:
+                # E4 advancement is not exam-based; E8 and E9 are board-selected and
+                # Score Surge does not score them. Saying "no longer has an exam" was
+                # right for E4 and wrong for the Chief grades.
                 st.warning(
-                    f"Your sheet says **{detected_paygrade}**, which no longer has an "
-                    "advancement exam. Pick your paygrade manually below."
+                    f"Your sheet points to **{detected_paygrade}**, which Score Surge "
+                    "does not score — the calculator covers E5, E6 and E7. Pick your "
+                    "paygrade manually below."
                 )
             else:
                 st.warning(

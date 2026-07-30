@@ -10,7 +10,7 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ## STATUS as of 30 July 2026
 
-Suites now: `run_checks.py` **121/121**, `smoke_test.py` **33/33**.
+Suites now: `run_checks.py` **149/149**, `smoke_test.py` **33/33**.
 
 ### Found 30 Jul from a REAL profile sheet — bigger than anything below
 
@@ -25,13 +25,26 @@ with no text layer at all — a picture of the BOL *Exam Profile Data* page, not
    `requirements.txt` cannot install. On Streamlit Cloud that means every image upload
    raised `TesseractNotFoundError` into a path with no `except` — a stack trace where
    the page should be. **FIXED** — `packages.txt` added, plus a real handler.
-3. **Real sheets may not say "paygrade competing for" at all.** The real one has
-   `PRESENT RATE: PS3 | EXAM RATE: PS2` — the paygrade is encoded in the rate
-   abbreviation. All existing detection wording came from mock sheets that were
-   themselves generated. **OPEN, and it needs Shawn's PS1 knowledge.**
+3. **Real sheets do not say "paygrade competing for" at all.** They carry
+   `PRESENT RATE | EXAM RATE` and the paygrade is the rate's own grade — the numeral
+   is the grade, C is Chief. **FIXED** — `rate_to_paygrade` / `extract_exam_rate`,
+   confirmed by Shawn and by arithmetic on two sheets. The photographed sheet now
+   detects E5 from `PS2` and says so: "Detected E5 — your exam rate is PS2."
 4. OCR on that photo yielded 2846 characters but the parser found none of the six
-   fields. Section-level topic scores and PNA breakdown came through; the FMS block
-   did not. **OPEN.**
+   FMS values. **OPEN — this is the remaining parser work**, and the real layout
+   explains why:
+   - the six labels are **column headers**, printed once, with values in a grid
+     underneath; label-then-scan-forward finds the next header instead of a value
+   - each column prints **points with the raw figure in parentheses**:
+     `PMA (Eval Avg) 48.00 (3.60)` and `Serv. In Pay Grade (YYMM) 01.20 (0600)`.
+     The app's inputs are the raw figures. Grabbing the first number takes 48.00
+   - directly beneath the sailor's row is **AVERAGE of candidates advanced in your
+     rate** — a second row of entirely plausible numbers in every column. Any
+     parser that is not row-aware will read another candidate's average as the
+     sailor's score
+
+   This wants PyMuPDF word coordinates, not flat text — the row a number sits in
+   is the whole problem, and flattening has already thrown it away.
 
 The two mock sheets in `test-profile-sheets/` should be treated as convenient
 fixtures, not as evidence about real documents.
