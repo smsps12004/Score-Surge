@@ -9,8 +9,11 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
   1. FMS math against hand-computed values for E5, E6 and E7
   2. Every point cap actually caps
   3. The profile sheet parser against the real sample PDFs in test-profile-sheets/
-  4. Paygrade detection across the wordings real sheets use
-  5. That no scraped value can escape a widget's min/max and crash the page
+  4. Label handling on the wordings real sheets use
+  5. Paygrade detection across those wordings, and that it stays quiet on prose
+  6. Over-cap detection, so a wrong paygrade is visible rather than clamped away
+  7. Wording conflicts, which cover the PMA band the caps cannot see
+  8. That no scraped value can escape a widget's min/max and crash the page
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -28,7 +31,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 68
+EXPECTED_TOTAL = 79
 
 
 def skip(reason):
@@ -195,8 +198,47 @@ def main():
     check("missing field does not crash the reporter",
           over({"pma": 4.06}, "E5", True), [("pma", 4.06, 4.00)])
 
-    # ── 7. Nothing out of range can reach a widget ───────────────────────────
-    print("\n7. CRASH GUARDS (values that used to break the page)")
+    # ── 7. The sheet's wording vs the dropdown ───────────────────────────────
+    # over_cap_fields only fires when a number breaks a cap, so it cannot see
+    # anything at or below PMA 4.00. E5 PMA points are (pma x 80) - 256 and E6 is
+    # (pma x 30) - 60; they cross at 3.92, so an E6 sheet scored as E5 with a PMA
+    # between 3.92 and 4.00 reads HIGHER than the truth with no cap broken. These
+    # checks cover that band using the sheet's own text.
+    print("\n7. PAYGRADE CONFLICTS (what the caps cannot see)")
+    conflicts = L["paygrade_conflicts"]
+    e6_text = ("PAYGRADE COMPETING FOR: E6\n"
+               "PERFORMANCE MARK AVERAGE (RSCA PMA) 3.95\n"
+               "SERVICE IN PAYGRADE 3.50")
+    e5_text = ("PAYGRADE COMPETING FOR: E5\n"
+               "PERFORMANCE MARK AVERAGE 3.95\n"
+               "SERVICE IN PAYGRADE 2.00")
+
+    # The exact band the caps miss. Nothing is over cap here, by construction.
+    check("no cap is broken in the 3.92-4.00 band",
+          over({"exam_score": 62.0, "pma": 3.95, "tir": 3.5,
+                "awards": 4.0, "education": 4.0, "pna": 6.0}, "E5", True), [])
+    check("...and scoring it as E5 really does read higher",
+          fms("E5", 62, 3.95, 3.5, 4, 4, 6)[0] > fms("E6", 62, 3.95, 3.5, 4, 4, 6)[0], True)
+    check("...but the wording conflict IS caught",
+          len(conflicts(e6_text, "E5", True)) >= 1, True)
+
+    check("E6 sheet under E6 rules is quiet", conflicts(e6_text, "E6", True), [])
+    check("E5 sheet under E5 rules is quiet", conflicts(e5_text, "E5", True), [])
+    check("stated paygrade disagreeing with the dropdown is caught",
+          len(conflicts(e5_text, "E7", True)) >= 1, True)
+    check("RSCA wording under E5 is caught even with no stated paygrade",
+          len(conflicts("PERFORMANCE MARK AVERAGE (RSCA PMA) 3.95", "E5", True)), 1)
+    check("RSCA wording under E6 is not a conflict",
+          conflicts("PERFORMANCE MARK AVERAGE (RSCA PMA) 3.95", "E6", True), [])
+    check("nothing is claimed before a paygrade is picked",
+          conflicts(e6_text, "E5", False), [])
+    check("no sheet uploaded means nothing to disagree with",
+          conflicts("", "E5", True), [])
+    check("both signals at once are both reported",
+          len(conflicts(e6_text, "E5", True)), 2)
+
+    # ── 8. Nothing out of range can reach a widget ───────────────────────────
+    print("\n8. CRASH GUARDS (values that used to break the page)")
     for raw, lo, hi in [(272.0, 0.0, 9.0), (-5.0, 0.0, 80.0), (9999.0, 0.0, 30.0),
                         (None, 0.0, 9.0), ("junk", 0.0, 80.0), (float("nan"), 0.0, 5.8)]:
         out = safe(raw, lo, hi, lo)

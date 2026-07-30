@@ -646,6 +646,50 @@ def over_cap_fields(data, paygrade, paygrade_chosen):
     return out
 
 
+def paygrade_conflicts(raw_text, paygrade, paygrade_chosen):
+    """Where the sheet's own words disagree with the paygrade that was picked.
+
+    over_cap_fields() catches the wrong paygrade only when a number breaks a cap,
+    which means it only fires above PMA 4.00. That leaves a hole. E5 PMA points are
+    (pma x 80) - 256 and E6 is (pma x 30) - 60; the two lines cross at 3.92, so
+    between 3.92 and 4.00 an E6 sheet scored under E5 rules produces a HIGHER FMS
+    than the truth — a 4.00 RSCA PMA reads 140.7 instead of 136.7 — and no cap is
+    broken, so nothing is shown. A flattering wrong number is the one nobody
+    questions.
+
+    Text catches what the caps cannot, across the whole range:
+      - the sheet names a paygrade and it is not the one selected
+      - the sheet says RSCA, which only E6 and E7 sheets do, while E5 is selected
+
+    Returns a list of plain-English strings, strongest signal first.
+    """
+    if not paygrade_chosen or not raw_text:
+        return []
+    out = []
+    t = " ".join(raw_text.split()).lower()
+
+    stated = extract_paygrade(raw_text)
+    if stated and stated != paygrade:
+        out.append(
+            f"**Your sheet says you are competing for {stated}, but {paygrade} is "
+            f"selected above.** The PMA formula and every point cap are different for "
+            f"each paygrade, so one of these is producing the wrong number. The sheet "
+            f"is usually right."
+        )
+
+    # RSCA PMA is the E6/E7 figure. An E5 candidate's sheet carries a plain eval
+    # PMA and never mentions RSCA, so this wording under E5 is a real disagreement.
+    if "rsca" in t and paygrade == "E5":
+        out.append(
+            "**Your sheet mentions RSCA PMA, which only appears on E6 and E7 sheets.** "
+            "E5 uses a plain performance mark average capped at 4.00. If this is an E6 "
+            "sheet being scored as E5, your FMS can come out several points too HIGH "
+            "without anything else looking wrong."
+        )
+
+    return out
+
+
 def extract_text_from_upload(uploaded_file):
     raw_text = ""
     suffix = os.path.splitext(uploaded_file.name)[1]
@@ -876,6 +920,9 @@ with tab1:
 
     extracted_data = DEFAULT_VALUES.copy()
     detected_paygrade = None
+    # Held past the upload block: the paygrade cross-check below needs the sheet's
+    # own wording, and it runs after the dropdown, not before it.
+    raw_text = ""
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
@@ -971,6 +1018,12 @@ with tab1:
             "cap are different for E5, E6 and E7 — the same profile sheet scores "
             "differently under each one, so there is no safe default to guess."
         )
+
+    # The sheet's own wording, checked against the dropdown. This covers the range
+    # the cap check cannot see — between PMA 3.92 and 4.00 an E6 sheet scored as E5
+    # comes out HIGHER than the truth without breaking any cap.
+    for _conflict in paygrade_conflicts(raw_text, paygrade, paygrade_chosen):
+        st.error(_conflict)
 
     # Surface any value the sheet gave us that does not fit the chosen paygrade.
     # This is the tell that the wrong paygrade is selected.
