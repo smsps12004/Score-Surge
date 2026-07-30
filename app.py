@@ -322,10 +322,30 @@ if not st.session_state.tier:
 
 if st.session_state.user and "score_history_loaded" not in st.session_state:
     raw = load_score_history(st.session_state.user.id)
+    # load_score_history catches its own errors, but this unpacking used to sit
+    # outside any guard — and it runs before a single tab draws. One missing column
+    # in score_history and every logged-in sailor got a blank page at the header,
+    # with a working FMS calculator sitting behind it. A row we cannot read is worth
+    # skipping; it is history, not the thing they came for.
+    def _hist_num(value):
+        """A stored number we can compare and chart, whatever came back.
+
+        A null `pct` in the database is not harmless: My Profile does
+        `"Pass" if pct >= 70`, and None >= 70 raises. Coercing here keeps a bad row
+        from taking down the tab that displays it.
+        """
+        try:
+            n = float(value)
+        except (TypeError, ValueError):
+            return 0
+        return 0 if n != n else n  # NaN
+
     st.session_state.score_history = [
-        {"date": r["date"], "topic": r["topic"],
-         "score": r["score"], "total": r["total"], "pct": r["pct"]}
+        {"date": str(r.get("date") or "—"), "topic": str(r.get("topic") or "—"),
+         "score": _hist_num(r.get("score")), "total": _hist_num(r.get("total")),
+         "pct": _hist_num(r.get("pct"))}
         for r in raw
+        if isinstance(r, dict)
     ]
     st.session_state.score_history_loaded = True
 
@@ -496,21 +516,32 @@ def pma_points(paygrade: str, pma_value: float) -> float:
 
 
 def tir_points(paygrade: str, years_in_paygrade: float) -> float:
-    """Service in paygrade (years) / 5, capped by paygrade."""
+    """Service in paygrade (years) / 5, capped by paygrade, never below zero."""
     r = FMS_RULES[paygrade]
-    return round(min(years_in_paygrade / r["tir_div"], r["tir_max"]), 2)
+    raw = years_in_paygrade / r["tir_div"]
+    return round(min(max(raw, 0.0), r["tir_max"]), 2)
 
 
 def compute_fms(paygrade, exam_score, pma, years_in_rate, awards, education, pna):
-    """Return (total_fms, ordered breakdown dict) using the official chart."""
+    """Return (total_fms, ordered breakdown dict) using the official chart.
+
+    Every component is clamped at BOTH ends. These used to cap the top only, which
+    the widgets hid because they all carry min_value=0.0 — but the function is
+    reachable from anywhere, and a negative slipping through subtracts from a score
+    the sailor is trusting. No FMS component is ever worth less than zero.
+    """
     r = FMS_RULES[paygrade]
+
+    def band(value, hi):
+        return round(min(max(value, 0.0), hi), 2)
+
     parts = {
-        "Exam Standard Score": round(min(exam_score, EXAM_MAX), 2),
+        "Exam Standard Score": band(exam_score, EXAM_MAX),
         "PMA Points":          pma_points(paygrade, pma),
         "Time in Rate":        tir_points(paygrade, years_in_rate),
-        "Awards":              round(min(awards, r["awards_max"]), 2),
-        "Education":           round(min(education, r["edu_max"]), 2),
-        "PNA Points":          round(min(pna, r["pna_max"]), 2),
+        "Awards":              band(awards, r["awards_max"]),
+        "Education":           band(education, r["edu_max"]),
+        "PNA Points":          band(pna, r["pna_max"]),
     }
     return round(sum(parts.values()), 2), parts
 
@@ -1780,26 +1811,34 @@ End with a line in exactly this format: Final Score: X/Y"""
                             import re as re2
                             score_match = re2.search(r'Final Score:\s*(\d+)/(\d+)', grade_result) or \
                                           re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
-                            if score_match:
+                            # A grader that returns "Final Score: 0/0" used to divide
+                            # by zero here and hand the sailor "Error: division by
+                            # zero" after they had just sat a whole mock exam.
+                            if score_match and int(score_match.group(2)) > 0:
                                 scored = int(score_match.group(1))
                                 total = int(score_match.group(2))
-                                st.session_state.score_history.append({
+                                entry = {
                                     "date": datetime.date.today().strftime("%b %d"),
                                     "topic": pq_topic, "score": scored, "total": total,
                                     "pct": round((scored / total) * 100),
-                                })
+                                }
+                                st.session_state.score_history.append(entry)
                                 if st.session_state.user:
+                                    # Never crash the page over history, but never
+                                    # pretend it saved either. Swallowing this meant a
+                                    # sailor watched their score appear, then found it
+                                    # gone at next login with no explanation — the most
+                                    # likely live cause of "the app lost my scores".
                                     try:
-                                        supabase.table("score_history").insert({
-                                            "user_id": st.session_state.user.id,
-                                            "date": datetime.date.today().strftime("%b %d"),
-                                            "topic": pq_topic,
-                                            "score": scored,
-                                            "total": total,
-                                            "pct": round((scored / total) * 100),
-                                        }).execute()
+                                        supabase.table("score_history").insert(
+                                            {"user_id": st.session_state.user.id, **entry}
+                                        ).execute()
                                     except Exception:
-                                        pass
+                                        st.caption(
+                                            "⚠️ Scored, but could not save to your account "
+                                            "— this result will disappear when you log out. "
+                                            "Download it below if you want to keep it."
+                                        )
                             st.download_button(
                                 "📥 Download Practice Results",
                                 data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",

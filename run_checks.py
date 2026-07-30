@@ -33,7 +33,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 101
+EXPECTED_TOTAL = 107
 
 
 def skip(reason):
@@ -96,6 +96,19 @@ def main():
     check("PNA caps at 9", fms("E6", 0, 0, 0, 0, 0, 999)[1]["PNA Points"], 9.00)
     check("PMA below floor is never negative",
           fms("E5", 0, 1.00, 0, 0, 0, 0)[1]["PMA Points"], 0.00)
+
+    # Every component clamps at BOTH ends. These used to cap the top only. The
+    # widgets all carry min_value=0.0 so nothing negative could arrive through the
+    # form, which is exactly why it went unnoticed — but compute_fms is reachable
+    # from anywhere, and a negative subtracts from a number the sailor is trusting.
+    b = fms("E6", -50, 4.06, -100, -50, -99, -99)[1]
+    check("negative exam score floors at 0", b["Exam Standard Score"], 0.00)
+    check("negative SIPG floors at 0", b["Time in Rate"], 0.00)
+    check("negative awards floors at 0", b["Awards"], 0.00)
+    check("negative education floors at 0", b["Education"], 0.00)
+    check("negative PNA floors at 0", b["PNA Points"], 0.00)
+    check("an all-negative sheet scores 0, not a negative FMS",
+          fms("E6", -50, 0, -100, -50, -99, -99)[0], 0.00)
 
     # ── 3. Parser against the real sample sheets ─────────────────────────────
     print("\n3. PROFILE SHEET PARSER")

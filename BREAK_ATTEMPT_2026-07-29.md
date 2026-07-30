@@ -10,7 +10,7 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ## STATUS as of 30 July 2026
 
-Suites now: `run_checks.py` **101/101**, `smoke_test.py` **25/25**.
+Suites now: `run_checks.py` **107/107**, `smoke_test.py` **25/25**.
 
 | # | Finding | Status |
 |---|---|---|
@@ -20,12 +20,25 @@ Suites now: `run_checks.py` **101/101**, `smoke_test.py` **25/25**.
 | 4 | `4,06` and `4.060` silently truncate to `4.0` | **FIXED** — see below |
 | 5 | Two-column layout puts the PMA value in the SIPG field | open — needs coordinate-based parsing |
 | 6 | `smoke_test.py` never tested a paying user | **FIXED** — `0ebb38a` |
-| 7 | Failed score save swallowed silently | open |
+| 7 | Failed score save swallowed silently | **FIXED** |
 | 8 | Cycle 272 dates hardcoded in four places | **FIXED** — see below |
-| 9 | Smaller things | all open |
+| 9 | Smaller things | 4 of 8 fixed — see below |
 
 Every fix carries its own regression checks, so none of these can come back quietly.
 Finding 5 is real work and wants its own session.
+
+**Finding 9, item by item:**
+
+| Item | Status |
+|---|---|
+| `load_score_history` unpacking outside its `try` | **FIXED** — rows are skipped or defaulted, never fatal |
+| `total` of zero divides by zero | **FIXED** |
+| `compute_fms` has no lower clamp | **FIXED** — both ends, all six components |
+| `over_cap_fields` skips `tir` and `education` | open — not reachable, completeness only |
+| SIPG as `03 YRS 06 MOS` reads 3.0 | open — belongs with finding 5 |
+| A minus sign is ignored | open — theoretical |
+| Raw sheet dump shows name and DoD ID | **open — the one with a real privacy cost** |
+| All 8 AI calls hardcode the model | open |
 
 **Rolling the app to the next cycle** is now one edit: the `CYCLE` dict at the top of
 `app.py`. It feeds the countdown, the planner's exam-date picker and the AI prompts.
