@@ -17,6 +17,7 @@ Exit code 0 = the app renders and the FMS flow works. Exit code 1 = read the out
 
 import sys
 import types
+from unittest.mock import patch
 
 FAIL = []
 
@@ -28,8 +29,14 @@ def check(name, got, want):
     print(f"  {'PASS' if ok else 'FAIL'}  {name:<52} got={got!r:<10} want={want!r}")
 
 
-def build_app():
-    """Start app.py past the login gate with throwaway secrets."""
+def build_app(tier="elite"):
+    """Start app.py past the login gate with throwaway secrets.
+
+    NOTE: "elite" is not a real tier. TIER_ORDER is free/petty_officer/chief, so
+    can_access() treats it as free and every check below sees the FREE app. Fixing
+    that changes what the existing checks exercise, so it is a separate job — see
+    the report from 29 Jul 2026. Section 6 passes an explicit tier for that reason.
+    """
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file("app.py", default_timeout=120)
@@ -40,7 +47,7 @@ def build_app():
     # past it without touching Supabase.
     at.session_state["user"] = types.SimpleNamespace(id="smoke-test-user",
                                                      email="smoke@test.invalid")
-    at.session_state["tier"] = "elite"
+    at.session_state["tier"] = tier
     return at
 
 
@@ -95,6 +102,45 @@ def main():
     check("no exception switching to E7", len(at.exception), 0)
     disabled_now = [n.label for n in at.number_input if n.disabled]
     check("E7 greys out the fields it does not score", len(disabled_now) >= 3, True)
+
+    print("\n6. NO STRIPE CALL UNTIL THE SAILOR TAPS UPGRADE")
+    # Regression guard. upgrade_banner() used to create a Checkout Session while the
+    # page was drawing. Streamlit re-runs all seven tabs on every interaction, so a
+    # free user typing in the FMS calculator created five live Stripe sessions per
+    # keystroke — lag on every rerun, junk in the Stripe dashboard, and five red
+    # errors on a working page whenever Stripe was slow. Sessions are created on
+    # click now. If this check ever counts above zero, that regressed.
+    stripe_calls = []
+
+    def _fake_session(**kwargs):
+        stripe_calls.append(kwargs)
+        return types.SimpleNamespace(url="https://checkout.stripe.test/session")
+
+    at = build_app(tier="free")
+    with patch("stripe.checkout.Session.create", side_effect=_fake_session):
+        at.run()
+        check("free page renders", len(at.exception), 0)
+        check("locked tabs show an upgrade banner",
+              len([w for w in at.warning if "tier required" in w.value]), 5)
+        check("ZERO Stripe sessions created on render", len(stripe_calls), 0)
+
+        upgrades = [b for b in at.button if "Upgrade to" in b.label]
+        check("every locked tab offers an upgrade button", len(upgrades), 5)
+        # AppTest does not model st.link_button, so the checkout link is checked via
+        # the caption that only renders once a session URL exists.
+        paid = lambda: len([c for c in at.caption if "Opens Stripe" in c.value])
+        check("no checkout link before the tap", paid(), 0)
+
+        # Tapping one Upgrade button is worth exactly one Stripe call.
+        upgrades[0].click().run()
+        check("no exception after tapping Upgrade", len(at.exception), 0)
+        check("tapping Upgrade creates exactly one session", len(stripe_calls), 1)
+        check("checkout link appears after the tap", paid() >= 1, True)
+
+        # A later rerun must not quietly create another one.
+        before = len(stripe_calls)
+        at.selectbox[0].select("E6").run()
+        check("a later rerun creates no further sessions", len(stripe_calls), before)
 
     print("\n" + "=" * 68)
     if FAIL:

@@ -161,19 +161,44 @@ def create_checkout_session(tier: str, user_email: str):
         return None
 
 
-def upgrade_banner(required_tier: str):
+def upgrade_banner(required_tier: str, where: str):
+    """Draw a locked-tab banner. `where` only has to be unique per call site.
+
+    A Stripe Checkout Session is created when the sailor taps Upgrade — never
+    while the page is drawing. This used to call create_checkout_session() inline,
+    and because Streamlit re-runs the code for all seven tabs on every single
+    interaction, a free user typing in the FMS calculator created five live Stripe
+    sessions per keystroke: five network round trips of added lag on every rerun,
+    thousands of abandoned sessions in the Stripe dashboard, and five stacked red
+    errors on a working page any time Stripe was slow or the key was wrong.
+    """
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
-    if st.session_state.get("user"):
-        url = create_checkout_session(required_tier, st.session_state.user.email)
-        if url:
-            st.link_button(
-                f"⬆️ Upgrade to {label} — {price}",
-                url=url,
-                width="stretch",
-            )
-    else:
+
+    if not st.session_state.get("user"):
         st.info("Log in to upgrade your plan.")
+        return
+
+    # Keyed on the tier, not the call site: the same tier is the same checkout, so
+    # tapping Upgrade on one locked tab is worth one Stripe call, not five.
+    url_key = f"_checkout_url_{required_tier}"
+    if st.button(
+        f"⬆️ Upgrade to {label} — {price}",
+        key=f"upgrade_{required_tier}_{where}",
+        width="stretch",
+    ):
+        with st.spinner("Opening secure checkout..."):
+            st.session_state[url_key] = create_checkout_session(
+                required_tier, st.session_state.user.email
+            )
+
+    if st.session_state.get(url_key):
+        st.link_button(
+            f"✅ Continue to secure checkout — {label}",
+            url=st.session_state[url_key],
+            width="stretch",
+        )
+        st.caption("Opens Stripe in a new tab. Your card details never touch Score Surge.")
 
 
 def load_score_history(user_id: str) -> list:
@@ -1280,7 +1305,7 @@ with tab3:
     st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
 
     if not can_access("petty_officer"):
-        upgrade_banner("petty_officer")
+        upgrade_banner("petty_officer", "study_guide")
     else:
         with st.form("study_guide_form"):
             col1, col2 = st.columns(2)
@@ -1376,7 +1401,7 @@ with tab4:
     st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
 
     if not can_access("petty_officer"):
-        upgrade_banner("petty_officer")
+        upgrade_banner("petty_officer", "ai_tutor")
     else:
         col1, col2 = st.columns(2)
         with col1:
@@ -1481,7 +1506,7 @@ with tab5:
         st.session_state.score_history = []
 
     if not can_access("chief"):
-        upgrade_banner("chief")
+        upgrade_banner("chief", "mock_exam")
     else:
         colA, colB = st.columns(2)
         with colA:
@@ -1614,7 +1639,7 @@ with tab6:
     st.caption("Your personalized day-by-day study roadmap based on your scores, weak areas, and time to exam.")
 
     if not can_access("chief"):
-        upgrade_banner("chief")
+        upgrade_banner("chief", "planner")
     else:
         with st.form("planner_form"):
             col1, col2 = st.columns(2)
@@ -1695,7 +1720,7 @@ No fluff. Every line earns its place."""
     st.caption("AI-powered guidance for navigating Billet-Based Advancement. Built for E6s under A2P.")
 
     if not can_access("chief"):
-        upgrade_banner("chief")
+        upgrade_banner("chief", "bba_hub")
     else:
         st.markdown("""
 Use this to get personalized strategy on:
