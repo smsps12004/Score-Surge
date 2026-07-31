@@ -10,7 +10,7 @@ I did not change `app.py`. Nothing here is fixed yet.
 
 ## STATUS as of 30 July 2026
 
-Suites now: `run_checks.py` **149/149**, `smoke_test.py` **33/33**.
+Suites now: `run_checks.py` **154/154**, `smoke_test.py` **33/33**.
 
 ### Found 30 Jul from a REAL profile sheet — bigger than anything below
 
@@ -43,8 +43,44 @@ with no text layer at all — a picture of the BOL *Exam Profile Data* page, not
      parser that is not row-aware will read another candidate's average as the
      sailor's score
 
-   This wants PyMuPDF word coordinates, not flat text — the row a number sits in
-   is the whole problem, and flattening has already thrown it away.
+   This wants word coordinates, not flat text — the row a number sits in is the
+   whole problem, and flattening has already thrown it away.
+
+### Notes for whoever builds the table extractor
+
+Word boxes from the GM sheet (`pytesseract.image_to_data`, 3x upscaled), which is
+what the layout actually looks like:
+
+```
+ y~624 | YOUR@104   48.00@1149            0.00@2115   128.85@2734
+ y~650 | multiple broken   69.15@877   01.20@1465   6@1823   4.50@2433   128.94@2997
+ y~702 | down each factor  (3.60)@1148   (0600)@1454
+ y~728 | of@318   70.91@1153                          <- AVERAGE row starts here
+ y~754 | AVERAGE candidates  58.58@880   01.06@1464   3.3@2440
+```
+
+Three things fall out of that:
+
+1. **x position identifies the column reliably**, even when OCR mangles the header
+   text. y position alone does not — the sailor's own values straddle two y bands
+   because the print is not perfectly aligned.
+2. **The sailor's value is always the FIRST one in its column, top to bottom.** The
+   AVERAGE row is always below. That single rule avoids the average-row trap
+   without needing to parse the row labels at all, which is worth a lot because
+   "AVERAGE of candidates advanced in your rate" wraps across lines.
+3. **Take the parenthesised figure for PMA and SIPG, the plain one for the rest.**
+   SIPG parens are YYMM: `(0600)` is 6 years 0 months = 6.0, `(0503)` is 5.25.
+
+The blocker is establishing the column x-ranges. Header words OCR inconsistently —
+"PMA" came back as "PTAs" on one sheet and was missing entirely on the other — so
+anchoring on header text is not dependable with only two samples to tune against.
+
+**Suggested approach, because it cannot be confidently wrong:** the sheet prints
+`Your Final Multiple`. Extract candidate numbers, try the plausible column
+assignments, and accept one only if `compute_fms(...)` reproduces the printed
+total. A misread cannot reconcile, so the parser either returns the right answer
+or admits it could not read the sheet. That matches the standing rule — the number
+being right, or the app clearly saying it does not know.
 
 The two mock sheets in `test-profile-sheets/` should be treated as convenient
 fixtures, not as evidence about real documents.
