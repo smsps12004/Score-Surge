@@ -16,7 +16,7 @@ st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 # Optional imports
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageFilter, ImageOps
     OCR_IMAGE_AVAILABLE = True
 except ImportError:
     OCR_IMAGE_AVAILABLE = False
@@ -709,6 +709,12 @@ RATE_SUFFIX_TO_PAYGRADE = {
 }
 # PS2, GM1, HM3, PSC, PSCS, PSCM. Two to four letters then the grade marker.
 _RATE_TOKEN = r"[A-Z]{2,4}(?:CM|CS|C|3|2|1)"
+# Lowest to highest. Used to insist a PRESENT/EXAM rate pair really is one grade
+# apart, in that order.
+RATE_GRADE_ORDER = ["3", "2", "1", "C", "CS", "CM"]
+# Form abbreviations that happen to look like rates once OCR has had a go. "UIC"
+# is "UI" + "C" and appears twice side by side in a real sheet's header row.
+_NOT_RATES = {"UIC", "NEC", "SSN", "EAOS", "PRD", "USN", "USNR"}
 
 
 def rate_to_paygrade(rate):
@@ -716,7 +722,7 @@ def rate_to_paygrade(rate):
     if not rate:
         return None
     r = str(rate).strip().upper()
-    if not re.fullmatch(_RATE_TOKEN, r):
+    if r in _NOT_RATES or not re.fullmatch(_RATE_TOKEN, r):
         return None
     for suffix in ("CM", "CS", "C", "3", "2", "1"):
         if r.endswith(suffix):
@@ -756,12 +762,19 @@ def extract_exam_rate(raw_text):
     #    "PS3 PS2" is unambiguous in a way a lone rate is not — a sheet mentions
     #    the sailor's present rate in several places, but only once next to the
     #    rate they are testing into.
-    m = re.search(rf"\b([A-Z]{{2,4}})(CM|CS|C|3|2|1)\s+\1(CM|CS|C|3|2|1)\b", t)
-    if m:
-        exam_rate = m.group(1) + m.group(3)
-        pg = rate_to_paygrade(exam_rate)
-        if pg:
-            return exam_rate, pg
+    #
+    #    The grades must be CONSECUTIVE, present then exam. Without that, "UIC UIC"
+    #    in the header row of a real sheet reads as "UI" + "C" twice and hands back
+    #    a confident E7 for an E5 candidate. A sailor competes for the next grade
+    #    up, never their own and never two at once, so this is free accuracy.
+    for m in re.finditer(rf"\b([A-Z]{{2,4}}?)(CM|CS|C|3|2|1)\s+\1(CM|CS|C|3|2|1)\b", t):
+        present, exam = m.group(2), m.group(3)
+        if (present in RATE_GRADE_ORDER and exam in RATE_GRADE_ORDER
+                and RATE_GRADE_ORDER.index(exam) == RATE_GRADE_ORDER.index(present) + 1):
+            exam_rate = m.group(1) + exam
+            pg = rate_to_paygrade(exam_rate)
+            if pg:
+                return exam_rate, pg
 
     return None, None
 
@@ -960,6 +973,63 @@ def redact_pii(raw_text):
 # above it without reading any better.
 OCR_DPI = 200
 
+# The FMS table is small text on a shaded background, which is close to the worst
+# case for OCR at native size. Enlarging to roughly this width before reading is
+# the single biggest accuracy win available — measured on two real sheets, the
+# figures found went from 0/7 and 1/6 to 6/7 and 5/6. Past about 2x the sharpening
+# starts inventing edges and accuracy falls again, so this is a target, not a
+# multiplier: a 4000px phone photo is already big enough and is left alone.
+OCR_TARGET_WIDTH = 2200
+# --psm 6 treats the page as one uniform block, which suits a form. --psm 11 finds
+# sparse text and picks up figures the first pass drops, at roughly double the time,
+# so it is only used when the first pass comes back thin.
+OCR_PRIMARY_CONFIG = "--psm 6"
+OCR_FALLBACK_CONFIG = "--psm 11"
+
+
+def prepare_for_ocr(image):
+    """Grayscale, enlarge to a readable size, lift contrast, sharpen."""
+    img = image.convert("L")
+    scale = OCR_TARGET_WIDTH / max(img.width, 1)
+    if scale > 1.05:
+        scale = min(scale, 4.0)
+        img = img.resize((int(img.width * scale), int(img.height * scale)),
+                         Image.LANCZOS)
+    return ImageOps.autocontrast(img).filter(ImageFilter.SHARPEN)
+
+
+def ocr_text(image):
+    """Read a sheet image, trying harder only if the first pass looks thin.
+
+    The second pass roughly doubles the wait, which matters on a phone, so it is
+    spent only when the first pass has not found a paygrade or has missed more
+    than a couple of the six figures.
+    """
+    prepared = prepare_for_ocr(image)
+    text = pytesseract.image_to_string(prepared, config=OCR_PRIMARY_CONFIG)
+
+    def thin(t):
+        try:
+            return extract_paygrade(t) is None or len(parse_ocr_text(t)[1]) > 2
+        except Exception:
+            return True
+
+    if thin(text):
+        text += "\n" + pytesseract.image_to_string(prepared,
+                                                   config=OCR_FALLBACK_CONFIG)
+
+    # Enlarging and sharpening rescues the small figures in the FMS table, but it
+    # can blur larger print that was already legible — on one real sheet it gained
+    # every figure and lost the rate pair. When the paygrade is still unknown the
+    # untouched image is worth one more look, because the paygrade is the one field
+    # where being wrong is worse than being slow.
+    if extract_paygrade(text) is None:
+        try:
+            text += "\n" + pytesseract.image_to_string(image)
+        except Exception:
+            pass
+    return text
+
 
 def ocr_engine_ready():
     """Is the tesseract BINARY actually here?
@@ -1026,7 +1096,7 @@ def extract_text_from_upload(uploaded_file):
                 with st.spinner("This looks like a photo — reading it may take a moment..."):
                     for page in doc:
                         pix = page.get_pixmap(dpi=OCR_DPI)
-                        raw_text += pytesseract.image_to_string(
+                        raw_text += ocr_text(
                             Image.open(io.BytesIO(pix.tobytes("png")))
                         )
         else:
@@ -1038,7 +1108,7 @@ def extract_text_from_upload(uploaded_file):
                 )
                 return None
             with st.spinner("Reading your photo..."):
-                raw_text = pytesseract.image_to_string(Image.open(tmp_path))
+                raw_text = ocr_text(Image.open(tmp_path))
 
     except Exception as e:
         # Whatever went wrong, a sailor with a working calculator in front of them

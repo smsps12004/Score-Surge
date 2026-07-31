@@ -35,7 +35,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 149
+EXPECTED_TOTAL = 154
 
 
 def skip(reason):
@@ -273,6 +273,17 @@ def main():
         ("labelled exam rate", "EXAM RATE: PSC", "E7"),
     ]:
         check(f"{name} -> {want}", getpg(text), want)
+
+    # PRESENT and EXAM rate are always one grade apart, present first. Without that
+    # rule the header row of a real sheet reads "UIC UIC" as "UI"+"C" twice and
+    # hands back a confident E7 to an E5 candidate — found on Shawn's BM sheet,
+    # which is exactly the wrong-paygrade failure everything else here guards.
+    check("'UIC UIC' in a header row is not a rate pair",
+          getpg("PRESENT EXAM RATE RATE UIC UIC PARENT"), None)
+    check("UIC is not a rate", r2p("UIC"), None)
+    check("a two-grade jump is not a rate pair", getpg("PS2 PSC"), None)
+    check("a backwards pair is not a rate pair", getpg("GM1 GM2"), None)
+    check("PS1 PSC is a real progression", getpg("RATE RATE PS1 PSC USN"), "E7")
 
     # The prose on a real sheet must not be mistaken for a paygrade statement.
     check("'CANNOT BE ADVANCED TO THE NEXT HIGHER PAY GRADE' is not a paygrade",
