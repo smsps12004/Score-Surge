@@ -540,6 +540,41 @@ def _fmt_date(d):
     return f"{d.day} {d:%B %Y}"
 
 
+def deadline_tile(date, today):
+    """(status, date_line) for one cycle date.
+
+    A passed deadline used to render as "✅ Passed". Under the heading "PMK-EE
+    Deadline" a green tick reads as "you passed your PMK-EE" — the opposite of what
+    it means, which is that the window shut. A sailor who has not completed PMK-EE
+    could scan this page and come away reassured. Nothing good is ever a green tick
+    here, and the date is always shown: "27 days" builds urgency, "3 September 2026"
+    is what a sailor writes on a calendar.
+    """
+    days_left = (date - today).days
+    if days_left < 0:
+        status = "⛔ Closed"
+    elif days_left == 0:
+        status = "🔴 Today"
+    elif days_left <= 14:
+        status = f"🔴 {days_left} day" + ("" if days_left == 1 else "s")
+    elif days_left <= 30:
+        status = f"🟡 {days_left} days"
+    else:
+        status = f"🟢 {days_left} days"
+    return status, _fmt_date(date)
+
+
+def sailor_paygrade():
+    """The paygrade this sailor is competing for, or None if they haven't said.
+
+    Read from the FMS calculator, which is where they set it (or where the profile
+    sheet reader detected it). Used to show a sailor their own exam date instead of
+    a wall of dates for three paygrades they have to filter themselves.
+    """
+    pg = st.session_state.get("fms_paygrade")
+    return pg if pg in PAYGRADES else None
+
+
 def cycle_expired(today=None):
     """True once the last exam day of this cycle has passed.
 
@@ -1854,7 +1889,62 @@ with tab2:
         )
         deadlines = []
     else:
-        st.subheader(f"⏱️ Cycle {CYCLE['number']} Countdown")
+        _pg = sailor_paygrade()
+
+        # ── The sailor's own exam, front and centre ──────────────────────────
+        # This tab used to show ILDC, the E6 exam, the E5 exam and the FY27 CPO
+        # estimate all at once, and leave the sailor to work out which two lines
+        # were theirs. The app already knows what they are competing for.
+        if _pg == "E5":
+            _my_exam_label, _my_exam_date = "Your E5 Exam Day", CYCLE["exam_e5"]
+        elif _pg == "E6":
+            _my_exam_label, _my_exam_date = "Your E6 Exam Day", CYCLE["exam_e6"]
+        elif _pg == "E7":
+            _my_exam_label, _my_exam_date = "Your CPO Board Exam (est.)", CPO_EXAM["est_date"]
+        else:
+            _my_exam_label = _my_exam_date = None
+
+        if _my_exam_date:
+            st.subheader(f"⏱️ Cycle {CYCLE['number']} — Your Countdown")
+            _status, _date_line = deadline_tile(_my_exam_date, today)
+            st.metric(_my_exam_label, _status)
+            st.caption(f"📅 {_date_line}")
+
+            _days_out = (_my_exam_date - today).days
+
+            # ── Something to actually do about it ────────────────────────────
+            # Four countdowns and no next step is a poster, not a product.
+            if _days_out >= 0:
+                _weak = sorted(
+                    [h for h in st.session_state.get("score_history", [])
+                     if isinstance(h, dict) and float(h.get("pct") or 0) < 70],
+                    key=lambda h: float(h.get("pct") or 0),
+                )
+                _weeks = max(_days_out // 7, 0)
+                _pace = (f"about {_weeks} week" + ("" if _weeks == 1 else "s")
+                         if _weeks else "less than a week")
+                if _weak:
+                    st.info(
+                        f"**{_days_out} days out — {_pace} of study time left.** "
+                        f"Your weakest topic so far is **{_weak[0]['topic']}** "
+                        f"({int(float(_weak[0].get('pct') or 0))}%). Start there: open the "
+                        "**Study Guide** tab for that topic, then re-test it under **Mock Exam**."
+                    )
+                else:
+                    st.info(
+                        f"**{_days_out} days out — {_pace} of study time left.** "
+                        "You have no graded topics yet. Take a short exam under **Mock Exam** "
+                        "to find your weak spots before you spend study time guessing."
+                    )
+        else:
+            st.subheader(f"⏱️ Cycle {CYCLE['number']} Countdown")
+            st.info(
+                "**Set the paygrade you're competing for** on the **FMS Calculator** tab "
+                "(or upload your profile sheet) and this page will show your exam date and "
+                "your deadlines instead of everyone's."
+            )
+
+        # ── Everything else, out of the way but one tap down ─────────────────
         deadlines = [
             ("PMK-EE Deadline",    CYCLE["pmkee"]),
             ("ILDC Deadline (E6)", CYCLE["ildc_e6"]),
@@ -1862,25 +1952,56 @@ with tab2:
             ("E5 Exam Day",        CYCLE["exam_e5"]),
         ]
 
-    cols = st.columns(4) if deadlines else []
-    for i, (label, date) in enumerate(deadlines):
-        days_left = (date - today).days
-        if days_left < 0:
-            status = "✅ Passed"
-        elif days_left <= 14:
-            status = f"🔴 {days_left} days"
-        elif days_left <= 30:
-            status = f"🟡 {days_left} days"
-        else:
-            status = f"🟢 {days_left} days"
-        cols[i].metric(label, status)
+    if deadlines:
+        _all_open = st.expander(
+            "All Cycle {} dates".format(CYCLE["number"]),
+            expanded=sailor_paygrade() is None,
+        )
+        with _all_open:
+            # Two columns, not four. At four, "🟡 25 days" truncated to "🟡 25 d…" on a
+            # laptop and would have been worse on the phone most sailors use. The date
+            # sits in a caption rather than st.metric's delta, which draws a ↑ arrow
+            # that means nothing next to a calendar date.
+            for i in range(0, len(deadlines), 2):
+                cols = st.columns(2)
+                for col, (label, date) in zip(cols, deadlines[i:i + 2]):
+                    _status, _date_line = deadline_tile(date, today)
+                    col.metric(label, _status)
+                    col.caption(f"📅 {_date_line}")
+            st.caption(f"Source: {CYCLE['navadmin']} (Cycle {CYCLE['number']}).")
+
+        # A closed PMK-EE window is not good news, and the old "✅ Passed" tile
+        # implied the sailor had passed the test rather than missed the door.
+        if (CYCLE["pmkee"] - today).days < 0:
+            # The ⚠️ is written into the text on purpose. Under this app's dark navy
+            # theme st.warning renders olive, which reads closer to green than amber —
+            # and the entire point of this message is that it is not good news.
+            st.warning(
+                f"⚠️ **The PMK-EE deadline closed on {_fmt_date(CYCLE['pmkee'])}.** That is the "
+                "deadline passing, not you passing anything. If you have not completed your "
+                f"PMK-EE, you are not eligible for the Cycle {CYCLE['number']} exam — check "
+                "your status with your ESO now."
+            )
 
     st.divider()
 
+    _pg_now = sailor_paygrade()
     st.subheader("📋 What is Billet-Based Advancement (BBA)?")
-    st.caption("Most E6 sailors are now under BBA. Here's what that means for you.")
+    if _pg_now == "E6":
+        st.caption("You're competing for E6 — BBA is how you advance. Read this one.")
+    elif _pg_now == "E5":
+        st.caption("You're competing for E5, so BBA doesn't gate you yet — but it's the "
+                   "system waiting at E6. Worth knowing before you get there.")
+    elif _pg_now == "E7":
+        st.caption("You're competing for E7 via the CPO board, not A2P — but you'll be "
+                   "advising E6s through this.")
+    else:
+        st.caption("Most E6 sailors are now under BBA. Here's what that means for you.")
 
-    with st.expander("Read the plain-English BBA breakdown"):
+    # Opened by default for the sailors it actually gates. This is the thing that
+    # separates Score Surge from generic exam prep — sailors who pass and still do
+    # not advance — and it was a collapsed grey row.
+    with st.expander("Read the plain-English BBA breakdown", expanded=(_pg_now == "E6")):
         st.markdown("""
 **The old system:** Pass the exam + high enough FMS = you advance.
 
@@ -1910,43 +2031,53 @@ billet application, and what to do if you passed but weren't selected.
 
     st.divider()
 
-    st.subheader(f"⭐ CPO / E7 Exam Watch — FY{CPO_EXAM['fy']}")
-    st.caption(
-        f"The FY{CPO_EXAM['fy']} CPO board exam is typically held in January–February. "
-        + ("The date below is confirmed."
-           if CPO_EXAM["announced"] else
-           "The official NAVADMIN has not yet been released.")
-    )
-
-    _cpo_est_date = CPO_EXAM["est_date"]
-    _cpo_days_left = (_cpo_est_date - today).days
-    if _cpo_days_left < 0:
-        _cpo_status = "✅ Est. date passed"
-    elif _cpo_days_left <= 14:
-        _cpo_status = f"🔴 ~{_cpo_days_left} days"
-    elif _cpo_days_left <= 30:
-        _cpo_status = f"🟡 ~{_cpo_days_left} days"
+    # Prominent for the sailors it belongs to, one tap down for everyone else.
+    # An E5 does not need the FY27 CPO estimate competing with their own exam date.
+    _cpo_title = f"⭐ CPO / E7 Exam Watch — FY{CPO_EXAM['fy']}"
+    if _pg_now == "E7":
+        st.subheader(_cpo_title)
+        _cpo_box = st.container()
     else:
-        _cpo_status = f"🟢 ~{_cpo_days_left} days"
+        _cpo_box = st.expander(_cpo_title)
 
-    cpo_col1, cpo_col2 = st.columns(2)
-    cpo_col1.metric(
-        "CPO Exam" if CPO_EXAM["announced"] else "CPO Exam (est.)",
-        _cpo_status,
-        delta=f"{_fmt_date(_cpo_est_date)}"
-              + ("" if CPO_EXAM["announced"] else " estimated"),
-    )
-    cpo_col2.metric("Official NAVADMIN",
-                    "✅ Released" if CPO_EXAM["announced"] else "⏳ Not yet released")
-    st.info(
-        f"📋 **FY{CPO_EXAM['fy']} CPO Board Exam** — Historically announced Oct–Nov and "
-        "administered Jan–Feb. "
-        + ("The date above is from the published NAVADMIN."
-           if CPO_EXAM["announced"] else
-           "Watch for the official NAVADMIN on "
-           "[MyNavyHR](https://www.mynavyhr.navy.mil). "
-           "This countdown will be updated once the date is confirmed.")
-    )
+    with _cpo_box:
+        st.caption(
+            f"The FY{CPO_EXAM['fy']} CPO board exam is typically held in January–February. "
+            + ("The date below is confirmed."
+               if CPO_EXAM["announced"] else
+               "The official NAVADMIN has not yet been released.")
+        )
+
+        _cpo_est_date = CPO_EXAM["est_date"]
+        _cpo_days_left = (_cpo_est_date - today).days
+        if _cpo_days_left < 0:
+            _cpo_status = "⛔ Est. date passed"
+        elif _cpo_days_left <= 14:
+            _cpo_status = f"🔴 ~{_cpo_days_left} days"
+        elif _cpo_days_left <= 30:
+            _cpo_status = f"🟡 ~{_cpo_days_left} days"
+        else:
+            _cpo_status = f"🟢 ~{_cpo_days_left} days"
+
+        cpo_col1, cpo_col2 = st.columns(2)
+        cpo_col1.metric(
+            "CPO Exam" if CPO_EXAM["announced"] else "CPO Exam (est.)",
+            _cpo_status,
+            delta=f"{_fmt_date(_cpo_est_date)}"
+                  + ("" if CPO_EXAM["announced"] else " estimated"),
+            delta_color="off",
+        )
+        cpo_col2.metric("Official NAVADMIN",
+                        "✅ Released" if CPO_EXAM["announced"] else "⏳ Not yet released")
+        st.info(
+            f"📋 **FY{CPO_EXAM['fy']} CPO Board Exam** — Historically announced Oct–Nov and "
+            "administered Jan–Feb. "
+            + ("The date above is from the published NAVADMIN."
+               if CPO_EXAM["announced"] else
+               "Watch for the official NAVADMIN on "
+               "[MyNavyHR](https://www.mynavyhr.navy.mil). "
+               "This countdown will be updated once the date is confirmed.")
+        )
 
 
 # ── TAB 3: AI STUDY GUIDE ─────────────────────────────────────────────────────
@@ -2222,6 +2353,56 @@ def exam_all_verified(questions: list) -> bool:
         str(q.get("verified", "")).strip().lower() in ("yes", "true", "1")
         for q in questions
     )
+
+
+def score_bars(entries, show_topic=True):
+    """Score history as plain bars anyone can read at a glance.
+
+    This replaced st.line_chart, which drew an interactive Vega chart: hover
+    tooltips, click-drag zoom, a fullscreen button and a download menu. A sailor
+    checking their scores would nudge the trackpad and zoom the axis. Worse, with
+    two sittings both at 33% the y-axis auto-scaled to 4–28 — a percentage chart
+    that never showed 0 or 100 and looked like nonsense.
+
+    A bar per sitting, a fixed 0–100 scale, and a gold line at the 70% pass mark.
+    No chart element means no toolbar to fight with, and nothing to interpret:
+    longer bar is better, past the gold line is a pass.
+    """
+    if not entries:
+        return
+    blocks = []
+    for e in entries:
+        try:
+            pct = max(0, min(100, int(round(float(e.get("pct") or 0)))))
+        except (TypeError, ValueError):
+            pct = 0
+        if pct >= 80:
+            fill, verdict = "#2E9E5B", "✅ Solid"
+        elif pct >= 70:
+            fill, verdict = "#C8A02C", "✅ Pass"
+        else:
+            fill, verdict = "#B3453C", "❌ Needs work"
+        head = str(e.get("date") or "—")
+        if show_topic:
+            head += f" — {e.get('topic') or '—'}"
+        blocks.append(
+            f"<div style='margin:0 0 16px 0;'>"
+            f"<div style='font-size:0.88rem;opacity:.85;margin-bottom:5px;'>{head}</div>"
+            f"<div style='position:relative;height:30px;width:100%;border-radius:6px;"
+            f"background:rgba(255,255,255,0.10);overflow:hidden;'>"
+            f"<div style='position:absolute;inset:0 auto 0 0;width:{pct}%;"
+            f"background:{fill};'></div>"
+            f"<div style='position:absolute;left:70%;top:0;bottom:0;width:2px;"
+            f"background:#F5C518;'></div>"
+            f"<div style='position:absolute;left:12px;top:0;height:30px;line-height:30px;"
+            f"font-weight:700;color:#fff;font-size:0.95rem;'>"
+            f"{int(e.get('score') or 0)} of {int(e.get('total') or 0)} &nbsp;·&nbsp; {pct}%"
+            f"</div></div>"
+            f"<div style='font-size:0.82rem;margin-top:4px;opacity:.9;'>{verdict}</div>"
+            f"</div>"
+        )
+    st.markdown("".join(blocks), unsafe_allow_html=True)
+    st.caption("The gold line is the 70% pass mark. Longer bar is better.")
 
 
 # ── TAB 5: MOCK EXAM ──────────────────────────────────────────────────────────
@@ -2560,15 +2741,9 @@ Rules:
             st.divider()
             st.subheader("📈 Your Score History")
             st.caption("Track your improvement over time.")
-            history_df = pd.DataFrame(st.session_state.score_history)
-            st.line_chart(history_df.set_index("date")["pct"])
-            st.dataframe(
-                history_df[["date", "topic", "score", "total", "pct"]].rename(columns={
-                    "date": "Date", "topic": "Topic", "score": "Score",
-                    "total": "Total", "pct": "% Correct",
-                }),
-                width="stretch",
-            )
+            # Bars, not a chart, and no separate table underneath — the bars already
+            # carry the date, topic, score and percentage.
+            score_bars(st.session_state.score_history)
 
 
 # ── TAB 6: ADVANCEMENT PLANNER ────────────────────────────────────────────────
@@ -2764,7 +2939,9 @@ with tab7:
                 "% Correct": _pct,
                 "Result":    "✅ Pass" if _pct >= 70 else "❌ Needs Work",
             })
-        st.dataframe(pd.DataFrame(_hist_rows), width="stretch", hide_index=True)
+        # st.table, not st.dataframe: a static table with no hover toolbar, no
+        # sort handles and nothing to accidentally zoom or fullscreen.
+        st.table(pd.DataFrame(_hist_rows))
 
     st.markdown("---")
 
@@ -2792,11 +2969,11 @@ with tab7:
     if not _score_hist:
         st.info("Complete a session to see your score trend.")
     else:
-        _trend_df = pd.DataFrame([
-            {"Session": i + 1, "Score %": _entry.get("pct", 0)}
-            for i, _entry in enumerate(_score_hist)
-        ]).set_index("Session")
-        st.line_chart(_trend_df)
+        # Oldest at the top, newest at the bottom, so improvement reads downward.
+        score_bars(
+            [{**_e, "date": f"Session {i + 1} · {_e.get('date', '—')}"}
+             for i, _e in enumerate(_score_hist)]
+        )
 
     st.markdown("---")
 
