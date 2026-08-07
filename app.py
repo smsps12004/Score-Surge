@@ -3,6 +3,8 @@ import pandas as pd
 import re
 import io
 import json
+import base64
+import time
 import tempfile
 import os
 import datetime
@@ -50,13 +52,53 @@ for key, default in [
         st.session_state[key] = default
 
 # ── RESTORE SESSION ACROSS RERUNS ─────────────────────────────────────────────
-if st.session_state.access_token and not st.session_state.user:
+def _token_expiring(token: str, within_seconds: int = 120) -> bool:
+    """True if this access token is close enough to expiry to be worth refreshing.
+
+    Reading the `exp` claim is local and free. Calling set_session on every rerun
+    would put a network round trip behind every single radio button on a mock exam.
+    Unreadable or undated tokens are treated as expiring, so the slow, safe path runs.
+    """
     try:
-        res = supabase.auth.set_session(
-            st.session_state.access_token,
-            st.session_state.refresh_token
-        )
-        st.session_state.user = res.user
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # base64url, padding stripped
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+        return True if not exp else (float(exp) - time.time()) < within_seconds
+    except Exception:
+        return True
+
+
+# Streamlit re-executes this entire file on every interaction, and `create_client`
+# above returns a brand new, ANONYMOUS client each time. st.session_state survives
+# a rerun; the client's authentication does not.
+#
+# The guard here used to be `if access_token and not st.session_state.user:` — so on
+# the first rerun after login, `user` was already set, the restore was skipped, and
+# from then on every database call went out unauthenticated. Postgres refused the
+# insert with "new row violates row-level security policy" (42501) because auth.uid()
+# was NULL and could not be matched against user_id. That is the RLS policy working
+# exactly as intended. Reads failed the same way and returned nothing, which is why
+# score history only ever survived inside a single browser session.
+#
+# Loosening the policy would "fix" this by letting anyone read and write every
+# sailor's scores. The fix belongs here.
+if st.session_state.access_token:
+    try:
+        if not st.session_state.user or _token_expiring(st.session_state.access_token):
+            res = supabase.auth.set_session(
+                st.session_state.access_token,
+                st.session_state.refresh_token
+            )
+            st.session_state.user = res.user
+            # set_session can hand back rotated tokens. Keeping the old ones would
+            # mean refreshing again on every rerun from here on.
+            if getattr(res, "session", None):
+                st.session_state.access_token = res.session.access_token
+                st.session_state.refresh_token = res.session.refresh_token
+        else:
+            # The token is still good — attach it to this run's client so database
+            # calls carry the sailor's identity. Local, no network round trip.
+            supabase.postgrest.auth(st.session_state.access_token)
     except Exception:
         st.session_state.access_token = None
         st.session_state.refresh_token = None
@@ -94,36 +136,78 @@ LEGACY_PRICE_IDS = {
 PRICE_TO_TIER = {v: k for k, v in STRIPE_PRICE_IDS.items()}
 PRICE_TO_TIER.update(LEGACY_PRICE_IDS)
 
-def get_user_tier(user_id: str) -> str:
-    try:
-        result = (
+def get_user_tier(user_id: str, user_email: str = "") -> str:
+    """What this sailor is entitled to see.
+
+    This used to call `.single()`, which raises both when there is no row AND when
+    the network hiccups — the same except branch handled both. So one transient
+    Supabase blip took a PAYING sailor, wrote a profile row, and showed them "free"
+    with their paid tabs locked. Money in, access out. A read failure must never be
+    treated as "this person has not paid".
+
+    A plain select tells the two cases apart: `[]` means genuinely new, an exception
+    means we could not find out. Only the first one is allowed to write anything.
+    """
+    def _fetch():
+        return (
             supabase.table("profiles")
             .select("tier, trial_start")
             .eq("id", user_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        profile = result.data
-        if not profile:
-            return "free"
-        tier = profile["tier"]
+
+    try:
+        try:
+            result = _fetch()
+        except Exception:
+            result = _fetch()  # one retry — a blip should not cost someone their tier
+
+        rows = result.data or []
+
+        if not rows:
+            # Genuinely new. Signup only creates this row when Supabase returns a
+            # session immediately; with email confirmation switched on it does not,
+            # and every new sailor silently lost the 3-day trial they were promised
+            # on the signup screen. Creating it here closes that hole.
+            new_row = {
+                "id": user_id,
+                "tier": "trial",
+                "trial_start": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            if user_email:
+                # The Stripe webhook matches profiles on email. A row without one can
+                # never be upgraded by it.
+                new_row["email"] = user_email
+            try:
+                supabase.table("profiles").insert(new_row).execute()
+                return "trial"
+            except Exception:
+                # Most likely the row exists after all and this raced, or `email` is
+                # not a column. Either way: do not invent an entitlement.
+                return "free"
+
+        profile = rows[0]
+        tier = profile.get("tier") or "free"
         if tier == "trial":
-            trial_start = datetime.datetime.fromisoformat(
-                profile["trial_start"].replace("Z", "+00:00")
-            )
+            started = profile.get("trial_start")
+            if not started:
+                return "trial"  # no start date recorded — do not expire them early
+            try:
+                trial_start = datetime.datetime.fromisoformat(
+                    str(started).replace("Z", "+00:00")
+                )
+            except Exception:
+                return "trial"
             days_elapsed = (datetime.datetime.now(datetime.timezone.utc) - trial_start).days
             if days_elapsed >= 3:
                 supabase.table("profiles").update({"tier": "free"}).eq("id", user_id).execute()
                 return "free"
         return tier
     except Exception:
-        try:
-            supabase.table("profiles").insert({
-                "id": user_id,
-                "tier": "free"
-            }).execute()
-        except Exception:
-            pass
+        # We could not read the tier. Show the least-privilege view for this render,
+        # but write NOTHING — the next rerun tries again, and a paying sailor is not
+        # demoted in the database over a failed lookup.
         return "free"
 
 
@@ -243,7 +327,7 @@ def show_auth_page():
                     st.session_state.user = res.user
                     st.session_state.access_token = res.session.access_token
                     st.session_state.refresh_token = res.session.refresh_token
-                    st.session_state.tier = get_user_tier(res.user.id)
+                    st.session_state.tier = get_user_tier(res.user.id, res.user.email or "")
                     st.rerun()
                 except Exception:
                     st.error("Login failed — check your email and password.")
@@ -278,13 +362,31 @@ def show_auth_page():
                         st.session_state.refresh_token = res.session.refresh_token
                         st.session_state.tier = "trial"
                         try:
+                            # `email` is written because the Stripe webhook matches
+                            # profiles on it. Without it, a sailor can pay and the
+                            # webhook updates zero rows while reporting success.
                             supabase.table("profiles").upsert({
                                 "id": res.user.id,
+                                "email": res.user.email,
                                 "tier": "trial",
-                                "trial_start": datetime.datetime.utcnow().isoformat()
+                                "trial_start": datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).isoformat(),
                             }).execute()
                         except Exception:
-                            pass
+                            # Most likely `email` is not a column on profiles yet.
+                            # Fall back to the row we know the schema accepts, so a
+                            # new sailor still gets the trial they were promised.
+                            try:
+                                supabase.table("profiles").upsert({
+                                    "id": res.user.id,
+                                    "tier": "trial",
+                                    "trial_start": datetime.datetime.now(
+                                        datetime.timezone.utc
+                                    ).isoformat(),
+                                }).execute()
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         st.info("Check your email to confirm your account, then log in.")
@@ -319,7 +421,9 @@ if not st.session_state.user:
 
 # Load tier if missing
 if not st.session_state.tier:
-    st.session_state.tier = get_user_tier(st.session_state.user.id)
+    st.session_state.tier = get_user_tier(
+        st.session_state.user.id, getattr(st.session_state.user, "email", "") or ""
+    )
 
 if st.session_state.user and "score_history_loaded" not in st.session_state:
     raw = load_score_history(st.session_state.user.id)
@@ -360,9 +464,25 @@ with col_user:
     username = st.session_state.user.email.split("@")[0]
     st.caption(f"**{username}**\n{tier_label}")
     if st.button("Log Out", width="stretch"):
-        supabase.auth.sign_out()
-        for key in ["user", "tier", "access_token", "refresh_token"]:
-            st.session_state[key] = None
+        # sign_out is a network call. If it fails we must STILL drop this sailor's
+        # session locally — a logout that half-works is worse than one that errors.
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+        # Clear everything, not just the four auth keys.
+        #
+        # This used to null out user/tier/access_token/refresh_token and leave the rest
+        # of session_state standing. Three things went wrong with that:
+        #   1. The last exam, the answers picked and the grade stayed on screen after
+        #      the next sailor logged in.
+        #   2. `score_history_loaded` survived, so load_score_history never re-ran and
+        #      the new sailor was shown the previous one's scores out of memory.
+        #   3. On a shared machine — a duty office computer, a squadron workstation —
+        #      that is one sailor's exam performance shown to another. Not acceptable
+        #      for anything with a login on it.
+        # The defaults below are re-created by the init block at the top on the rerun.
+        st.session_state.clear()
         st.rerun()
 
 if st.session_state.get("_payment_success"):
@@ -2016,6 +2136,94 @@ Keep it tight. Make it stick."""
                             st.error("Error: " + str(e))
 
 
+def parse_exam_json(raw: str) -> list:
+    """Turn the Chief's exam into rows the app can actually work with.
+
+    Questions used to arrive as one blob of markdown that got printed straight to the
+    page. Nothing could be attached to an individual question — so answers were
+    bubble-in nowhere, the answer key printed alongside the questions, and grading had
+    to be shipped back to Claude to re-read its own output.
+
+    The field names here are deliberately the ones in `questions.db` (Score Surge DB
+    repo) so the exam engine and the verified question bank speak the same language.
+    A question from either source is the same shape to everything downstream.
+
+    Returns [] rather than raising: a malformed exam should ask the sailor to hit
+    Generate again, not take down the tab.
+    """
+    text = (raw or "").strip()
+    # Models fence JSON more often than not, and the fence is not JSON.
+    if text.startswith("```"):
+        text = re.sub(r"^```[A-Za-z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    clean = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        q = {
+            "question": str(row.get("question") or "").strip(),
+            "answer_a": str(row.get("answer_a") or "").strip(),
+            "answer_b": str(row.get("answer_b") or "").strip(),
+            "answer_c": str(row.get("answer_c") or "").strip(),
+            "answer_d": str(row.get("answer_d") or "").strip(),
+            "correct_answer": str(row.get("correct_answer") or "").strip().upper()[:1],
+            "explanation": str(row.get("explanation") or "").strip(),
+            "source_manual": str(row.get("source_manual") or "").strip(),
+            "chapter_section": str(row.get("chapter_section") or "").strip(),
+        }
+        # A question missing an option, or keyed to an answer that isn't one of the
+        # four, cannot be graded. Drop it rather than show a sailor something unanswerable.
+        if not q["question"] or q["correct_answer"] not in ("A", "B", "C", "D"):
+            continue
+        if not all(q[f"answer_{L}"] for L in ("a", "b", "c", "d")):
+            continue
+        # Two options that say the same thing make a question unanswerable — there are
+        # then two right answers and only one is keyed. This catches the crude case
+        # only. It will NOT catch two different names for the same document
+        # ("NAVPERS 1070/602" vs "Page 2 Dependency Application"), which is a Navy fact,
+        # not a string fact. That class needs a verified question bank, not a parser.
+        norm = [re.sub(r"[^a-z0-9]", "", q[f"answer_{L}"].lower()) for L in ("a", "b", "c", "d")]
+        if len(set(norm)) < 4:
+            continue
+        clean.append(q)
+    return clean
+
+
+def exam_source_line(q: dict) -> str:
+    """The reference under an answer.
+
+    This line used to read "📖 Source: ...", which presents an AI-generated guess with
+    the authority of a citation. Verification found questions citing cancelled articles
+    and the wrong reference entirely — a wrong answer wearing a uniform. Until a
+    question comes from the verified bank, its reference is a lead to check, not a
+    source to trust, and it says so.
+    """
+    ref = ", ".join(p for p in (q.get("source_manual", ""), q.get("chapter_section", "")) if p)
+    if not ref:
+        return "⚠️ No reference given — treat this one with caution."
+    if str(q.get("verified", "")).strip().lower() in ("yes", "true", "1"):
+        return f"📖 Verified source: {ref}"
+    return f"🔎 Unverified lead: {ref} — confirm in your bib before you trust it."
+
+
+def exam_all_verified(questions: list) -> bool:
+    """True only if every question came from the verified bank."""
+    return bool(questions) and all(
+        str(q.get("verified", "")).strip().lower() in ("yes", "true", "1")
+        for q in questions
+    )
+
+
 # ── TAB 5: MOCK EXAM ──────────────────────────────────────────────────────────
 with tab5:
     st.subheader("🎯 Full Mock Exam")
@@ -2050,100 +2258,303 @@ with tab5:
             pq_submit = st.form_submit_button("Generate Mock Exam", width="stretch")
 
         if pq_submit:
-            if True:
-                if pq_topic not in pq_topics:
-                    pq_topic = list(pq_topics.keys())[0]
-                bib_refs = pq_topics[pq_topic]["bib"]
-                pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
-Generate exactly {pq_num} multiple choice practice questions for:
+            if pq_topic not in pq_topics:
+                pq_topic = list(pq_topics.keys())[0]
+            bib_refs = pq_topics[pq_topic]["bib"]
+            pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
+
+Write exactly {pq_num} NWAE-style multiple choice questions for:
 - Topic: {pq_topic}
 - Rating / Paygrade: {pq_rating} advancing to {pq_paygrade}
 - Governing References: {bib_refs}
-Format each question EXACTLY like this:
-Q1: [Question text]
-A) [Option]
-B) [Option]
-C) [Option]
-D) [Option]
-ANSWER: [Letter]
-EXPLANATION: [2-3 sentences explaining why this is correct and what regulation supports it. Then on a new line add: 📖 Source: [Manual name, Chapter/Section X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic for the sailor's rating and paygrade. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.]
-Make the questions realistic exam difficulty. Include tricky distractors. Reference specific regulations. No fluff."""
 
-                with st.spinner("Chief is writing your exam..."):
+Return ONLY a JSON array. No preamble, no markdown fences, no commentary.
+Each element must have exactly these keys:
+
+[
+  {{
+    "question": "The question text. Do not include a 'Q1:' prefix.",
+    "answer_a": "First option, text only. Do not include an 'A)' prefix.",
+    "answer_b": "Second option.",
+    "answer_c": "Third option.",
+    "answer_d": "Fourth option.",
+    "correct_answer": "A single letter: A, B, C, or D",
+    "explanation": "2-3 sentences on why the correct answer is right and which regulation supports it.",
+    "source_manual": "The governing manual or instruction, e.g. MILPERSMAN or NAVEDTRA 14257",
+    "chapter_section": "e.g. Chapter 4 or Article 1430-010"
+  }}
+]
+
+Rules:
+- Realistic exam difficulty, with tricky but plausible distractors.
+- Spread the correct answer across A, B, C and D. Do not favour one letter.
+- All four options must be genuinely different answers. Never write two options that name
+  the same form, document, regulation or concept in different words — for example
+  "NAVPERS 1070/602" and "Page 2 Dependency Application" are the same document, so they
+  must never appear as two separate choices. Exactly one option can be correct.
+- Do not conflate related but distinct concepts (for example excess leave, advance leave,
+  separation leave and terminal leave are four different things). If a question would
+  require blurring them, write a different question.
+- Cite only references you are confident are current and in force. Do not cite articles
+  that have been cancelled or superseded. If you are not certain an article number is
+  current, name the manual and omit a specific article rather than inventing one.
+- Prefer the governing publication for the subject matter. Do not cite an eligibility or
+  ID-card manual as the authority for a pay or allowance transaction.
+- No fluff."""
+
+            with st.spinner("Chief is writing your exam..."):
+                try:
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                    message = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=4000,
+                        messages=[{"role": "user", "content": pq_prompt}]
+                    )
+                    parsed = parse_exam_json(message.content[0].text)
+                    if not parsed:
+                        st.error("Chief's exam came back in a format the app couldn't read. "
+                                 "Hit Generate Mock Exam again.")
+                    else:
+                        st.session_state.exam_questions = parsed
+                        st.session_state.exam_topic = pq_topic
+                        st.session_state.exam_rating = pq_rating
+                        # Clear anything left over from a previous sitting, including the
+                        # old free-text format, so a new exam never opens pre-graded.
+                        for stale in ("exam_result", "exam_blank_warning", "practice_questions"):
+                            st.session_state.pop(stale, None)
+                        for i in range(50):
+                            st.session_state.pop(f"exam_pick_{i}", None)
+                except Exception as e:
+                    st.error("Error: " + str(e))
+
+        exam_qs = st.session_state.get("exam_questions") or []
+        if exam_qs:
+            exam_topic = st.session_state.get("exam_topic", pq_topic)
+            exam_rating = st.session_state.get("exam_rating", pq_rating)
+            exam_result = st.session_state.get("exam_result")
+
+            def _grade_exam(picks):
+                """Grade against the answer key we already hold.
+
+                The grader used to be a second Claude call that re-read its own exam
+                text and reported a score in prose, which then had to be regex'd back
+                out. That round trip cost money, could disagree with itself, and once
+                returned "Final Score: 0/0". The correct letter is right here.
+                """
+                rows, correct = [], 0
+                for q, picked in zip(exam_qs, picks):
+                    is_right = bool(picked) and picked == q["correct_answer"]
+                    correct += 1 if is_right else 0
+                    rows.append({**q, "picked": picked, "is_right": is_right})
+
+                total = len(exam_qs)
+                pct = round((correct / total) * 100) if total else 0
+
+                # The Chief's voice is the product, so this one call stays — but it is
+                # only ever the closing remark. A failure here must not cost the sailor
+                # a graded exam.
+                feedback = ""
+                missed = [r["question"] for r in rows if not r["is_right"]]
+                try:
+                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                    fb_prompt = (
+                        f"You are a {exam_rating} Chief giving a sailor one short, direct "
+                        f"closing remark on their practice exam.\n"
+                        f"Topic: {exam_topic}\nScore: {correct} out of {total} ({pct}%).\n"
+                        + ("Questions missed:\n- " + "\n- ".join(missed) if missed
+                           else "They answered every question correctly.")
+                        + "\n\nTwo to four sentences. Be honest and specific about what to "
+                          "study next. No fluff, no praise they did not earn."
+                        + ("" if exam_all_verified(exam_qs) else
+                           "\n\nIMPORTANT: these questions were AI-generated and have NOT been "
+                           "verified against the official manuals — the answer key itself may be "
+                           "wrong. Verification has caught cancelled article numbers and wrong "
+                           "references. So point the sailor at the governing manual to confirm "
+                           "what they missed. Do not tell them they do not know their job over a "
+                           "question you cannot vouch for. Stay direct, but aim them at the "
+                           "reference rather than judging them on this key.")
+                    )
+                    fb = client.messages.create(
+                        model="claude-opus-4-5", max_tokens=400,
+                        messages=[{"role": "user", "content": fb_prompt}]
+                    )
+                    feedback = fb.content[0].text.strip()
+                except Exception:
+                    feedback = ""
+
+                entry = {
+                    "date": datetime.date.today().strftime("%b %d"),
+                    "topic": exam_topic, "score": correct, "total": total,
+                    "pct": pct,
+                }
+                st.session_state.score_history.append(entry)
+                save_error = ""
+                if st.session_state.user:
+                    # Never crash the page over history, but never pretend it saved
+                    # either. Swallowing this meant a sailor watched their score appear,
+                    # then found it gone at next login with no explanation.
                     try:
-                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                        message = client.messages.create(
-                            model="claude-opus-4-5", max_tokens=2000,
-                            messages=[{"role": "user", "content": pq_prompt}]
-                        )
-                        st.session_state.practice_questions = message.content[0].text
-
+                        supabase.table("score_history").insert(
+                            {"user_id": st.session_state.user.id, **entry}
+                        ).execute()
                     except Exception as e:
-                        st.error("Error: " + str(e))
+                        save_error = f"{type(e).__name__}: {e}"
 
-        if "practice_questions" in st.session_state:
-            st.subheader("📝 Your Practice Questions")
-            st.markdown(st.session_state.practice_questions)
-            st.subheader("✍️ Submit Your Answers")
-            sailor_answers = st.text_area("Type your answers (e.g. Q1: B, Q2: A)", height=150)
-            if st.button("Grade My Answers", width="stretch"):
-                if sailor_answers:
-                    with st.spinner("Chief is grading..."):
-                        try:
-                            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                            grade_prompt = f"""You are a {pq_rating} Chief grading a sailor's practice exam.
-Questions: {st.session_state.practice_questions}
-Sailor's answers: {sailor_answers}
-Grade each answer. State correct or incorrect. Explain the right answer. Reference the regulation.
-For each question, after the explanation add a new line formatted exactly like this: 📖 Source: [Manual name, Chapter X] — for example: NAVEDTRA 14257, Chapter 4 or MILPERSMAN 1430-010, Section 2. Base the source on the actual Navy training manual or instruction that covers this topic. If you are not certain of the exact chapter, provide the most accurate manual name and your best chapter estimate.
-One line of honest feedback. Be direct. No fluff.
-End with a line in exactly this format: Final Score: X/Y"""
-                            message = client.messages.create(
-                                model="claude-opus-4-5", max_tokens=1500,
-                                messages=[{"role": "user", "content": grade_prompt}]
-                            )
-                            grade_result = message.content[0].text
-                            st.subheader("📊 Your Grade")
-                            st.markdown(grade_result)
-                            import re as re2
-                            score_match = re2.search(r'Final Score:\s*(\d+)/(\d+)', grade_result) or \
-                                          re2.search(r'(\d+)\s*out\s*of\s*(\d+)', grade_result)
-                            # A grader that returns "Final Score: 0/0" used to divide
-                            # by zero here and hand the sailor "Error: division by
-                            # zero" after they had just sat a whole mock exam.
-                            if score_match and int(score_match.group(2)) > 0:
-                                scored = int(score_match.group(1))
-                                total = int(score_match.group(2))
-                                entry = {
-                                    "date": datetime.date.today().strftime("%b %d"),
-                                    "topic": pq_topic, "score": scored, "total": total,
-                                    "pct": round((scored / total) * 100),
-                                }
-                                st.session_state.score_history.append(entry)
-                                if st.session_state.user:
-                                    # Never crash the page over history, but never
-                                    # pretend it saved either. Swallowing this meant a
-                                    # sailor watched their score appear, then found it
-                                    # gone at next login with no explanation — the most
-                                    # likely live cause of "the app lost my scores".
-                                    try:
-                                        supabase.table("score_history").insert(
-                                            {"user_id": st.session_state.user.id, **entry}
-                                        ).execute()
-                                    except Exception:
-                                        st.caption(
-                                            "⚠️ Scored, but could not save to your account "
-                                            "— this result will disappear when you log out. "
-                                            "Download it below if you want to keep it."
-                                        )
-                            st.download_button(
-                                "📥 Download Practice Results",
-                                data=f"QUESTIONS:\n{st.session_state.practice_questions}\n\nANSWERS:\n{sailor_answers}\n\nGRADE:\n{grade_result}",
-                                file_name="PracticeResults.txt", mime="text/plain",
-                                width="stretch",
-                            )
-                        except Exception as e:
-                            st.error("Error: " + str(e))
+                st.session_state.exam_result = {
+                    "rows": rows, "score": correct, "total": total, "pct": pct,
+                    "topic": exam_topic, "feedback": feedback, "save_error": save_error,
+                }
+                st.session_state.pop("exam_blank_warning", None)
+
+            # ── ANSWERING ────────────────────────────────────────────────────
+            if not exam_result:
+                st.divider()
+                st.subheader("📝 Your Mock Exam")
+                st.caption(f"{len(exam_qs)} questions · {exam_topic} · "
+                           "answers stay hidden until you submit.")
+                if not exam_all_verified(exam_qs):
+                    st.warning(
+                        "**Unverified practice questions.** These are written by AI from the "
+                        "NWAE bibliography and have not been checked against the official "
+                        "manuals. Spot-checking has found wrong article numbers and cancelled "
+                        "references. Use them to practise the format — confirm anything you "
+                        "learn here against your bib before test day."
+                    )
+
+                with st.form("exam_answer_form"):
+                    for i, q in enumerate(exam_qs):
+                        st.markdown(f"**Q{i + 1}. {q['question']}**")
+                        st.radio(
+                            f"Question {i + 1}",
+                            options=["A", "B", "C", "D"],
+                            index=None,  # nothing pre-selected, same as a blank answer sheet
+                            format_func=lambda L, q=q: f"{L})  {q['answer_' + L.lower()]}",
+                            key=f"exam_pick_{i}",
+                            label_visibility="collapsed",
+                        )
+                        st.write("")
+                    exam_submitted = st.form_submit_button("Submit Exam", width="stretch")
+
+                current_picks = [st.session_state.get(f"exam_pick_{i}")
+                                 for i in range(len(exam_qs))]
+
+                if exam_submitted:
+                    blanks = [i + 1 for i, p in enumerate(current_picks) if p is None]
+                    if blanks:
+                        st.session_state.exam_blank_warning = blanks
+                    else:
+                        with st.spinner("Chief is grading..."):
+                            _grade_exam(current_picks)
+                        st.rerun()
+
+                blanks = st.session_state.get("exam_blank_warning")
+                if blanks:
+                    st.warning(
+                        f"You haven't answered {'question' if len(blanks) == 1 else 'questions'} "
+                        f"{', '.join(str(b) for b in blanks)}. On the real NWAE a blank counts "
+                        "as wrong — go back and answer, or submit as-is."
+                    )
+                    if st.button("Submit anyway — blanks count as wrong", width="stretch"):
+                        with st.spinner("Chief is grading..."):
+                            _grade_exam(current_picks)
+                        st.rerun()
+
+            # ── REVIEW ───────────────────────────────────────────────────────
+            else:
+                score = exam_result["score"]
+                total = exam_result["total"]
+                pct = exam_result["pct"]
+
+                st.divider()
+                st.subheader("📊 Your Grade")
+                verdict = f"**{score} / {total} — {pct}%**"
+                if pct >= 80:
+                    st.success(f"{verdict} · Solid. That's advancement-standard work.")
+                elif pct >= 70:
+                    st.info(f"{verdict} · Passing, but there's room between you and the cut.")
+                else:
+                    st.error(f"{verdict} · Below standard. This topic needs real study time.")
+
+                if not exam_all_verified(exam_result["rows"]):
+                    st.warning(
+                        "**This score is practice, not truth.** These questions were "
+                        "AI-generated and have not been verified against the official manuals. "
+                        "If you're confident an answer marked wrong was actually right, back "
+                        "yourself and check the manual — the key may be the thing that's wrong."
+                    )
+
+                for i, r in enumerate(exam_result["rows"]):
+                    st.markdown(f"**Q{i + 1}. {r['question']}**")
+                    picked = r["picked"]
+                    correct = r["correct_answer"]
+                    picked_text = r.get(f"answer_{picked.lower()}") if picked else None
+
+                    if r["is_right"]:
+                        st.markdown(f"✅ **Correct** — {picked}) {picked_text}")
+                    elif picked:
+                        st.markdown(f"❌ **Incorrect** — you chose {picked}) {picked_text}")
+                        st.markdown(f"**Correct answer: {correct}) "
+                                    f"{r['answer_' + correct.lower()]}**")
+                    else:
+                        st.markdown("❌ **No answer given**")
+                        st.markdown(f"**Correct answer: {correct}) "
+                                    f"{r['answer_' + correct.lower()]}**")
+
+                    if r.get("explanation"):
+                        st.markdown(r["explanation"])
+                    src = exam_source_line(r)
+                    if src:
+                        st.caption(src)
+                    st.divider()
+
+                if exam_result.get("feedback"):
+                    st.markdown("### Chief's Feedback")
+                    st.markdown(exam_result["feedback"])
+
+                if exam_result.get("save_error"):
+                    st.caption(
+                        "⚠️ Scored, but could not save to your account "
+                        "— this result will disappear when you log out. "
+                        "Download it below if you want to keep it."
+                    )
+                    # The reason stays visible, just not shouted at the sailor. A bare
+                    # `except Exception:` here is what hid error 42501 for weeks: the
+                    # RLS policy was rejecting the write because the Supabase client had
+                    # lost its session on rerun, and nothing anywhere recorded why.
+                    # Whatever breaks this next, it will say so.
+                    with st.expander("Technical detail"):
+                        st.code(exam_result["save_error"])
+
+                download_lines = [f"{exam_topic} — {score}/{total} ({pct}%)", ""]
+                for i, r in enumerate(exam_result["rows"]):
+                    download_lines.append(f"Q{i + 1}. {r['question']}")
+                    for L in ("a", "b", "c", "d"):
+                        download_lines.append(f"   {L.upper()}) {r['answer_' + L]}")
+                    download_lines.append(f"   Your answer: {r['picked'] or '(blank)'}")
+                    download_lines.append(f"   Correct answer: {r['correct_answer']}")
+                    if r.get("explanation"):
+                        download_lines.append(f"   {r['explanation']}")
+                    src = exam_source_line(r)
+                    if src:
+                        download_lines.append(f"   {src}")
+                    download_lines.append("")
+                if exam_result.get("feedback"):
+                    download_lines += ["Chief's Feedback:", exam_result["feedback"]]
+
+                col_dl, col_again = st.columns(2)
+                with col_dl:
+                    st.download_button(
+                        "📥 Download Results",
+                        data="\n".join(download_lines),
+                        file_name="PracticeResults.txt", mime="text/plain",
+                        width="stretch",
+                    )
+                with col_again:
+                    if st.button("🔄 Take Another Exam", width="stretch"):
+                        for stale in ("exam_questions", "exam_result", "exam_blank_warning"):
+                            st.session_state.pop(stale, None)
+                        for i in range(50):
+                            st.session_state.pop(f"exam_pick_{i}", None)
+                        st.rerun()
 
         if len(st.session_state.score_history) > 0:
             st.divider()
