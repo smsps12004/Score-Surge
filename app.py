@@ -404,13 +404,26 @@ if _qp.get("stripe_success") == "true" and st.session_state.user:
             if _cs.payment_status in ("paid", "no_payment_required"):
                 _new_tier = _cs.client_reference_id
                 if _new_tier in TIER_ORDER:
-                    supabase.table("profiles").update({"tier": _new_tier}).eq(
+                    _patch = {"tier": _new_tier}
+                    # Record the Stripe customer id on the way past. The webhook
+                    # normally does this, but if it is the one that failed and
+                    # this fallback is what granted access, an unlinked profile
+                    # would never hear about a later cancellation. Whichever
+                    # path gets here first, the link gets made.
+                    _cust = getattr(_cs, "customer", None)
+                    _cust_id = _cust if isinstance(_cust, str) else getattr(_cust, "id", None)
+                    if _cust_id:
+                        _patch["stripe_customer_id"] = _cust_id
+                    supabase.table("profiles").update(_patch).eq(
                         "id", st.session_state.user.id
                     ).execute()
                     st.session_state.tier = _new_tier
                     st.session_state._payment_success = True
-        except Exception:
-            pass
+        except Exception as _e:
+            # Bare `except Exception: pass` here meant a sailor could pay, land
+            # back on the app, and have the grant fail silently with nothing
+            # anywhere to say why. If it is caught, it is recorded.
+            print(f"[stripe_success] could not apply paid tier: {_e!r}")
     st.query_params.clear()
     st.rerun()
 
