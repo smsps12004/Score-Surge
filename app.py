@@ -2134,6 +2134,29 @@ with tab3:
                     else f"Guide type: {sg_type}"
                 )
 
+                # "Practice Questions" is the one guide type that CANNOT obey the blanket
+                # no-facts rule below — a question with no fact in it is not a question.
+                # So that mode gets a narrower rule instead of a broken one, and the sailor
+                # gets the same unverified-content warning the Mock Exam tab already shows.
+                sg_is_questions = (sg_type == "Practice Questions")
+                sg_questions_carve_out = """
+
+=== EXCEPTION FOR THIS GUIDE TYPE ===
+
+This guide type is practice questions, which cannot be written without stating facts. So
+the rules above are replaced by these, and only for the questions themselves:
+
+- Ask about topics and judgment, not about numbers you are unsure of. Prefer "who owns
+  this decision" and "what happens when this fails" over "how many days."
+- Spread the correct answer across A, B, C and D. Do not favour one letter, and do not
+  make the correct answer the longest option.
+- Do not put always, never or only in a wrong answer. Sailors are taught to eliminate
+  those, so the distractor does no work.
+- Do not name the article number in the question itself. The real exam is closed book.
+- Under each question, name the manual to confirm it in. If you are not certain an
+  article number is current, name the manual and stop there rather than inventing one.
+"""
+
                 prompt = f"""You are a senior {sg_rating} Chief Petty Officer with 20 years of service.
 You drink too much coffee, you have zero patience for excuses, and you genuinely want your sailors to advance.
 You are direct, blunt, and efficient. No fluff. No wasted words.
@@ -2157,7 +2180,37 @@ Structure the guide as follows:
 6. One closing line — make it motivating but stern
 
 Use plain English. Write like you're talking to the sailor face to face.
-Keep it tight. Every sentence must earn its place."""
+Keep it tight. Every sentence must earn its place.
+
+=== ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+
+You are writing a STUDY PLAN, not a reference. You do not have the manuals in front of
+you. A sailor will act on what you write. If you state a regulation from memory and you
+are wrong, they learn it wrong and carry it into a closed-book exam.
+
+So: NEVER state any of the following anywhere in this guide.
+
+- A deadline, time limit, or number of days, months or years
+- A dollar amount, pay rate, percentage, point value or score threshold
+- A form number (NAVPERS, DD, NAVSUP, OPNAV) or a system field name
+- An article, chapter, paragraph, instruction or NAVADMIN number
+- Eligibility criteria, thresholds, or any "you must have X to qualify"
+- A specific procedure, routing chain, or approval authority
+
+Naming a manual or a topic area is fine. Stating what it says is not.
+
+Instead, name the thing to learn and send them to the source:
+
+  DO NOT WRITE: "You have 30 days to submit the NAVPERS 1070/613."
+  WRITE INSTEAD: "Know the submission window for administrative remarks — pull the
+                  exact number from the MILPERSMAN article on your bibliography and
+                  memorize it. This one shows up."
+
+Apply this to every section, including exam traps and the daily plan. If a sentence
+would teach a fact a sailor could be tested on, rewrite it as an instruction to go look
+that fact up in their bibliography. A guide that says "learn this, here is where it
+lives, here is why it matters" is more useful than one that guesses the number — and it
+cannot be wrong.{sg_questions_carve_out if sg_is_questions else ""}"""
 
                 with st.spinner("Chief is reviewing your record..."):
                     try:
@@ -2168,6 +2221,25 @@ Keep it tight. Every sentence must earn its place."""
                         )
                         guide_text = message.content[0].text
                         st.subheader("📋 Your Personalized Study Guide")
+                        # The guide is a plan, not a reference. The prompt forbids it from
+                        # stating deadlines, amounts, form numbers or article numbers,
+                        # because it is written from the model's memory with no manual in
+                        # front of it. Say so on screen — a sailor who treats a study plan
+                        # as an authority is the failure this tab has to avoid.
+                        if sg_is_questions:
+                            st.warning(
+                                "**Unverified practice questions.** These are written by AI "
+                                "from the NWAE bibliography and have not been checked against "
+                                "the official manuals. Use them to practise the format — "
+                                "confirm anything you learn here against your bib before "
+                                "test day."
+                            )
+                        else:
+                            st.caption(
+                                "This is a **study plan, not a reference.** It tells you what "
+                                "to learn and where it lives — always confirm the actual "
+                                "numbers, deadlines and form numbers against your bibliography."
+                            )
                         st.markdown(guide_text)
                         st.download_button(
                             "📥 Download Study Guide", data=guide_text,

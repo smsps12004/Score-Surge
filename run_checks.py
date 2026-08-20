@@ -35,7 +35,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 154
+EXPECTED_TOTAL = 169
 
 
 def skip(reason):
@@ -457,6 +457,52 @@ def main():
         (PASS if ok else FAIL).append((f"safe_value({raw!r})", out, f"{lo}..{hi}"))
         print(f"  {'PASS' if ok else 'FAIL'}  safe_value({raw!r:>10}) -> {out} "
               f"(must stay within {lo}..{hi})")
+
+    # ── 10. The Study Guide cannot state a regulation from memory ────────────
+    #
+    # This tab is the only place a paying sailor is handed free-form AI text with no
+    # source behind it. The prompt forbids the model from stating deadlines, dollar
+    # amounts, form numbers, article numbers or eligibility thresholds — it names the
+    # topic and sends them to the bibliography instead. A sailor cannot tell a
+    # remembered regulation from a real one, so the rule has to live in the prompt and
+    # the prompt has to be checked, or it quietly gets edited away.
+    #
+    # The prompt block is built from app.py as TEXT and executed with dummy values, the
+    # same trick the rest of this file uses — no Streamlit, no API call.
+    print("\n10. STUDY GUIDE PROMPT (must not state regulations from memory)")
+    src10 = open(APP, encoding="utf-8").read()
+    _a = src10.index("                topic_instruction = (")
+    _b = src10.index('                with st.spinner("Chief is reviewing your record...")')
+    prompt_block = compile("if True:\n" + src10[_a:_b], "app.py-studyguide", "exec")
+
+    for guide_type, wants_carve_out in (("Crash Plan (3-5 days)", False),
+                                        ("Single Subject Deep Dive", False),
+                                        ("Practice Questions", True)):
+        ns = {
+            "sg_type": guide_type, "sg_subject": "Military Awards",
+            "sg_rating": "PS", "sg_paygrade": "E7", "sg_gap": 4.0,
+            "strategy": "precision mode",
+            # The cycle helpers are the app's own; stub them so this check is about the
+            # accuracy rules and not about dates, which section 8 already covers.
+            "cycle_authority_line": lambda: "AUTHORITY LINE",
+            "cycle_facts_block": lambda: "CYCLE FACTS",
+        }
+        exec(prompt_block, ns)
+        p = ns["prompt"]
+        tag = guide_type.split(" (")[0]
+        check(f"[{tag}] prompt carries the accuracy rules",
+              "ACCURACY RULES" in p, True)
+        check(f"[{tag}] prompt forbids stating form numbers",
+              "form number" in p, True)
+        check(f"[{tag}] prompt forbids stating article numbers",
+              "instruction or NAVADMIN number" in p, True)
+        check(f"[{tag}] no unrendered placeholder left in the prompt",
+              "{sg_" in p, False)
+        # Practice Questions is the one type that cannot obey a blanket no-facts rule,
+        # so it gets a narrower rule instead. Every other type must NOT get that
+        # carve-out — if it leaks, the no-facts rule is off for a plain study guide.
+        check(f"[{tag}] questions carve-out present only where it belongs",
+              "EXCEPTION FOR THIS GUIDE TYPE" in p, wants_carve_out)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
