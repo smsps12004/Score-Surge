@@ -7,3 +7,8 @@ __pycache__/
 .DS_Store
 .backups/
 _to_delete/
+
+# Internal working notes — stay on disk, never on the public repo
+HANDOFF_*.md
+PROJECT_BRIEFING_FOR_AIDO.md
+NEXT_SESSION.md
