@@ -17,6 +17,9 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
   7b. That no name or DoD ID from a sheet is printed back to the screen
   8. That a finished exam cycle is never quoted as if it were current
   9. That no scraped value can escape a widget's min/max and crash the page
+ 10. That the Study Guide prompt cannot state a regulation from memory
+ 11. That EVERY fact-stating prompt is actually wired to the guardrails —
+     section 8 proves they work, section 11 proves they are plugged in
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -35,7 +38,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 169
+EXPECTED_TOTAL = 182
 
 
 def skip(reason):
@@ -503,6 +506,51 @@ def main():
         # carve-out — if it leaks, the no-facts rule is off for a plain study guide.
         check(f"[{tag}] questions carve-out present only where it belongs",
               "EXCEPTION FOR THIS GUIDE TYPE" in p, wants_carve_out)
+
+    # ── 11. Every prompt that states Navy facts must carry the guardrails ────
+    #
+    # Section 8 proves cycle_authority_line() and cycle_facts_block() BEHAVE correctly.
+    # It never checked which prompts actually call them — and on 20 August 2026 the
+    # answer was one out of three. The Study Guide had them; the AI Tutor and the Mock
+    # Exam did not. A whole safety system, tested and passing, wired into a third of
+    # the app. This section checks the wiring, not the wire.
+    print("\n11. GUARDRAIL WIRING (which prompts actually carry the protections)")
+    src11 = open(APP, encoding="utf-8").read()
+
+    def slab_between(start_marker, end_marker):
+        a = src11.index(start_marker)
+        return src11[a: src11.index(end_marker, a)]
+
+    PROMPTS = [
+        ("study guide", 'prompt = f"""You are a senior {sg_rating}', 'with st.spinner("Chief is reviewing'),
+        ("AI tutor",    'lesson_prompt = f"""You are a senior {tutor_rating}', 'with st.spinner("Chief is preparing'),
+        ("mock exam",   'pq_prompt = f"""You are a senior {pq_rating}', 'with st.spinner("Chief is writing'),
+    ]
+    for name, start, end in PROMPTS:
+        body = slab_between(start, end)
+        check(f"{name} prompt calls cycle_authority_line()",
+              "cycle_authority_line()" in body, True)
+        check(f"{name} prompt calls cycle_facts_block()",
+              "cycle_facts_block()" in body, True)
+
+    tutor = slab_between("# ── TAB 4: AI TUTOR", "def parse_exam_json")
+    check("tutor lesson prompt carries the accuracy rules",
+          "ACCURACY RULES" in tutor, True)
+    check("tutor forbids naming an approving authority as fact",
+          "named approving authority" in tutor, True)
+    check("tutor follow-up restates the rules on every turn",
+          "STANDING RULES" in tutor, True)
+    check("tutor follow-up tells the Chief not to defend an earlier claim",
+          "do NOT defend it" in tutor, True)
+    check("tutor lesson is labelled on screen as written from memory",
+          "written from memory, not from the manual" in tutor.lower(), True)
+    check("downloaded lesson carries its own caveat",
+          "WRITTEN FROM MEMORY, NOT FROM THE MANUAL" in tutor, True)
+    # The API requires roles to alternate. Saving only the assistant reply put two
+    # assistant turns back to back, so the SECOND follow-up a sailor asked always
+    # failed. Both roles must be persisted.
+    check("tutor history saves the sailor's turn, not just the Chief's",
+          'tutor_history.append(\n                                {"role": "user"' in tutor, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

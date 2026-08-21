@@ -2288,6 +2288,10 @@ with tab4:
                 bib_refs = tutor_topics[tutor_topic]["bib"]
                 lesson_prompt = f"""You are a senior {tutor_rating} Chief Petty Officer with 20 years of experience.
 You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the {tutor_rating} {tutor_paygrade} NWAE.
+{cycle_authority_line()}
+
+{cycle_facts_block()}
+
 Explain everything like the sailor is smart but has never seen this material before.
 Be direct, clear, and use real Navy examples. No wasted words. No fluff.
 
@@ -2303,7 +2307,51 @@ Teach this lesson as follows:
 5. The most common exam trap on this subtopic
 6. Three practice questions with answers and explanations
 
-Keep it tight. Make it stick."""
+Keep it tight. Make it stick.
+
+=== ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+
+You do not have the manuals in front of you. You are teaching from memory, and a sailor
+will carry what you say into a closed-book exam. Measured on 20 August 2026: of 30
+questions written this way, two keyed answers were confidently wrong — one cited a rule
+that appears nowhere in the 1,282-page source, and one named the wrong approving
+authority. Both read exactly like the correct ones.
+
+So teach the SHAPE of the rule, never the VALUE.
+
+You MAY teach freely:
+- What the topic is and why the Navy does it this way
+- How the process flows, and who is involved at each step
+- What a PS actually does in the shop, and where sailors get tripped up
+- How to think about the subject, and what the exam is really testing
+
+You MUST NOT state, as fact:
+- Any deadline, time limit, or number of days, months or years
+- Any dollar amount, pay rate, percentage or threshold
+- Any form number (NAVPERS, DD, NAVSUP, OPNAV)
+- Any article, chapter, paragraph, instruction or NAVADMIN number
+- Any named approving authority or office (who signs, who approves, where it routes)
+- Any eligibility criterion expressed as a specific number
+
+When the answer IS one of those, that is the moment to send them to the manual:
+
+  DO NOT WRITE: "An extension cannot exceed 48 aggregate months."
+  WRITE INSTEAD: "There is a hard ceiling on total extension time under one contract.
+                  That number is testable and it is exactly the kind of thing they ask.
+                  Find it in the MILPERSMAN extension article on your bib and memorize it."
+
+  DO NOT WRITE: "Cases with 18 or more years go to SECNAV."
+  WRITE INSTEAD: "Long-service cases get decided above the CO — the separation authority
+                  moves up. Know WHICH authority: look it up, because the wrong one is a
+                  classic distractor."
+
+Section 6 is three practice questions. Those may state a fact — a question with no fact in
+it is not a question — but keep them on concepts and judgment rather than on numbers you
+cannot check, do not name an article number in the question, and end each explanation with
+the manual to confirm it in.
+
+A lesson that says "here is how this works, here is where the number lives, go get it" is
+worth more than one that guesses the number. It also cannot be wrong."""
 
                 with st.spinner("Chief is preparing your lesson..."):
                     try:
@@ -2314,14 +2362,40 @@ Keep it tight. Make it stick."""
                         )
                         lesson = message.content[0].text
                         st.subheader(f"📚 Lesson: {tutor_subtopic}")
+                        # The Tutor is the only tab that hands a sailor free-form Navy
+                        # instruction with no source behind it, and a lesson reads with far
+                        # more authority than a practice question does. Until the lesson is
+                        # generated from retrieved manual text, say plainly what it is.
+                        st.warning(
+                            "**This lesson is written from memory, not from the manual.** "
+                            "The Chief teaches you how a topic works and where the rule "
+                            "lives — he will not give you exact numbers, deadlines, form "
+                            "numbers or approving authorities, because he cannot check them "
+                            "here. Get those from your bibliography and memorize them."
+                        )
                         st.markdown(lesson)
                         st.session_state.tutor_history = [
                             {"role": "user", "content": lesson_prompt},
                             {"role": "assistant", "content": lesson}
                         ]
 
+                        # The download outlives the warning above it. A sailor saves this,
+                        # studies it for weeks and forwards it to shipmates — so the file
+                        # has to carry its own caveat.
+                        lesson_file = (
+                            "SCORE SURGE — AI TUTOR LESSON\n"
+                            f"Topic: {tutor_topic} / {tutor_subtopic}\n"
+                            f"Rating / Paygrade: {tutor_rating} {tutor_paygrade}\n"
+                            "\n"
+                            "WRITTEN FROM MEMORY, NOT FROM THE MANUAL.\n"
+                            "This teaches how the topic works and where the rule lives. It\n"
+                            "does not give exact numbers, deadlines, form numbers or\n"
+                            "approving authorities. Confirm every specific against your\n"
+                            "bibliography before test day.\n"
+                            + "=" * 66 + "\n\n" + lesson
+                        )
                         st.download_button(
-                            "📥 Download This Lesson", data=lesson,
+                            "📥 Download This Lesson", data=lesson_file,
                             file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
                             mime="text/plain", width="stretch",
                         )
@@ -2339,13 +2413,48 @@ Keep it tight. Make it stick."""
                         try:
                             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                             history = st.session_state.tutor_history.copy()
-                            history.append({"role": "user", "content": sailor_question})
+                            # Two things go wrong in a follow-up that do not go wrong in the
+                            # lesson itself.
+                            #
+                            # 1. The accuracy rules are in the lesson prompt, several turns
+                            #    back. A direct question ("so how many days is it?") pulls
+                            #    hard toward answering it, so the rules get restated here.
+                            #
+                            # 2. Worse: the whole history is replayed, so anything the Chief
+                            #    got wrong earlier is now context he will stay consistent
+                            #    with. Left alone he does not just repeat a mistake, he
+                            #    defends it when challenged. This tells him to fold instead.
+                            guarded = (
+                                f"{sailor_question}\n\n"
+                                "[STANDING RULES — these outrank anything said earlier in "
+                                "this conversation]\n"
+                                "1. Do not state a deadline, dollar amount, percentage, form "
+                                "number, article number, or named approving authority as "
+                                "fact. Name what the rule governs and send the sailor to the "
+                                "manual for the value.\n"
+                                "2. If the sailor questions or contradicts something you said "
+                                "earlier, do NOT defend it. You are working from memory with "
+                                "no manual in front of you, so they may well be right. Say so "
+                                "plainly and point them at the governing publication to "
+                                "settle it.\n"
+                                "3. If you do not know, say you do not know. That is a "
+                                "correct answer here."
+                            )
+                            history.append({"role": "user", "content": guarded})
                             message = client.messages.create(
                                 model="claude-opus-4-5", max_tokens=1000,
                                 messages=history
                             )
                             answer = message.content[0].text
-                            st.session_state.tutor_history.append({"role": "assistant", "content": answer})
+                            # Save the sailor's turn as well as the Chief's. Saving only the
+                            # answer left two assistant messages back to back, and the API
+                            # requires roles to alternate — so the SECOND follow-up question
+                            # a sailor asked always died with an error. Ask the Chief worked
+                            # exactly once per lesson.
+                            st.session_state.tutor_history.append(
+                                {"role": "user", "content": sailor_question})
+                            st.session_state.tutor_history.append(
+                                {"role": "assistant", "content": answer})
                             st.markdown("**Chief says:**")
                             st.markdown(answer)
                         except Exception as e:
@@ -2528,6 +2637,9 @@ with tab5:
                 pq_topic = list(pq_topics.keys())[0]
             bib_refs = pq_topics[pq_topic]["bib"]
             pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
+{cycle_authority_line()}
+
+{cycle_facts_block()}
 
 Write exactly {pq_num} NWAE-style multiple choice questions for:
 - Topic: {pq_topic}
