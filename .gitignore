@@ -5,3 +5,5 @@ __pycache__/
 .env
 .claude/
 .DS_Store
+.backups/
+_to_delete/

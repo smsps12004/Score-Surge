@@ -38,7 +38,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 182
+EXPECTED_TOTAL = 192
 
 
 def skip(reason):
@@ -551,6 +551,38 @@ def main():
     # failed. Both roles must be persisted.
     check("tutor history saves the sailor's turn, not just the Chief's",
           'tutor_history.append(\n                                {"role": "user"' in tutor, True)
+
+    # ── 12. Where an unanswerable fact gets sent ─────────────────────────────
+    #
+    # The accuracy rules stop the AI stating a regulation from memory. That leaves the
+    # sailor holding a gap, and the referral is what fills it. "Go look it up" sends them
+    # to Google; PS Agent answers out of the manual with the citation attached, so that
+    # is where they go. This is also the first seam joining the two apps, which makes it
+    # exactly the kind of wording a later prompt edit would quietly undo.
+    #
+    # Two halves, both required. The referral has to NAME PS Agent, and it has to carry
+    # enough to ask a good question — the manual and the subject. It must also keep the
+    # ban on inventing an article number, or the referral becomes a new way for the model
+    # to guess a citation, which is the failure the accuracy rules were built to stop.
+    print("\n12. PS AGENT REFERRAL (unanswerable facts go to PS Agent, not 'look it up')")
+
+    sg_prompt = slab_between('prompt = f"""You are a senior {sg_rating}',
+                             'with st.spinner("Chief is reviewing')
+
+    for name, body in (("study guide", sg_prompt), ("tutor lesson", tutor)):
+        check(f"{name} sends the sailor to PS Agent",
+              "PS Agent" in body, True)
+        check(f"{name} rules out Google and a bare look-up",
+              'never a bare "look it up."' in body, True)
+        check(f"{name} referral names the manual and the subject",
+              "name the manual and the exact subject" in body, True)
+        check(f"{name} referral may not invent an article number",
+              "invent an article" in body, True)
+
+    check("tutor follow-up sends the value question to PS Agent",
+          "PS Agent for the value" in tutor, True)
+    check("tutor follow-up settles a challenge via PS Agent",
+          "ask PS Agent about that subject" in tutor, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

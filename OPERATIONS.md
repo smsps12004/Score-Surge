@@ -41,7 +41,8 @@ Score Surge is two projects that have been running independently and need to con
 
 **They are converging.** The question database exists to feed the app. The gate for
 that connection is already defined by the Integration Watchdog: **20 verified
-questions.** As of 2026-07-29 there are 14. Six to go.
+questions.** As of 2026-08-07 there are still 14 — read directly from `questions.db`,
+not inherited from a doc. Six to go, and a packet is ready that would take it to 22.
 
 > ⚠️ There is a third folder, `~/Documents/score surge` (with a space), containing
 > another `app.py`. Its status is unknown. Resolve or delete it before it costs an
@@ -133,7 +134,11 @@ Fixed once, stays fixed. See `BREAK_ATTEMPT_2026-07-29.md` for the full list.
 
 In order. Each step closes before the next opens.
 
-### 1. Exam Engine — structured questions ← IN PROGRESS
+> **Latest handoff: `HANDOFF_2026-08-07.md`.** Read that first — it carries the
+> next action, the current business state, and what was learned. Steps 1 and 2
+> below are DONE as of 7 Aug 2026.
+
+### 1. Exam Engine — structured questions ✅ DONE (7 Aug 2026)
 Rewrite Tab 5 so questions are data, not a blob of text.
 
 Use the `questions.db` field layout as the shape, so the app and the database speak the
@@ -154,14 +159,45 @@ What this fixes in one change:
 Keep one small Claude call for the Chief's closing feedback paragraph. That voice is
 the product.
 
-### 2. Data — the save bug
-`score_history` inserts are failing silently. A diagnostic line is already in place
-(app.py, in the Tab 5 grading block) to surface the real error. Run locally, read the
-error, fix, **then remove the diagnostic.**
+### 2. Data — the save bug ✅ DONE (7 Aug 2026)
+Error 42501, row-level security. Streamlit rebuilds an anonymous Supabase client on
+every rerun and the session restore was guarded by `and not st.session_state.user`,
+true only on the first pass — so every later call went out unauthenticated and
+`auth.uid()` was NULL. Fixed in the app; the RLS policy stays strict. Logout now
+clears all session state, which also closed a privacy leak on shared machines.
 
-### 3. Question Bank — clear the integration gate
+### 2b. Revenue path ✅ DONE AND PROVEN (7 Aug 2026)
+Three things were unproven. All three are now tested against real Stripe events:
+- **Pay without returning to the app.** Real card, Apple Pay from a phone by QR, tab
+  closed at Stripe's confirmation screen. Logged in fresh elsewhere → Chief.
+- **Cancel and lose access.** `customer.subscription.deleted` → tier drops to `free`
+  automatically.
+- **Cancel and keep access until the period ends.** A cancellation scheduled for
+  period end leaves the sailor entitled. `past_due` also counts as entitled, so a
+  card blip does not cut a sailor off mid-study while Stripe is still retrying.
+
+Shipped in `33110e8` plus a dashboard deploy of the edge function. Profiles now
+carry `stripe_customer_id`; subscription events match on it, not on email, which is
+also what makes a hand-set tier (like Shawn's own) unreachable by any Stripe event.
+Full detail in `HANDOFF_2026-08-07.md`.
+
+### 3. Question Bank — clear the integration gate ← DO THIS FIRST
 Six more verified questions reaches 20 and unlocks the Integration Watchdog's work.
-Batch 2 is planned and approved: `question_plan_PSC_200.md` → "Batch 2 — Clustered by Theme".
+
+**Status 7 Aug:** 14 verified, 22 unverified, 36 total — confirmed by reading
+`questions.db`, not by trusting the docs. A verification packet is ready and waiting
+on Shawn's judgment: `Score Surge DB/VERIFICATION_PACKET_2026-08-07.md`. Eight
+existing questions were checked against the actual text of `Whole MILPERSMAN.pdf`
+with the governing passage quoted beside each. Confirming them takes 14 → 22.
+
+**One question failed the check.** ID 140 (Article 1070-270) keys an answer that
+invents an "ID Card Lab within 30 days" step that appears nowhere in the article.
+It stays unverified until rewritten.
+
+**Note on sequencing:** the gate is cleared by *verifying questions that already
+exist*, not by writing new ones. Batch 2 (`question_plan_PSC_200.md` → "Batch 2 —
+Clustered by Theme") is approved and remains the plan for *growing* the bank toward
+200, but it is not what unblocks integration.
 
 ### 4. Integration — connect bank to app
 Exam Engine reads verified questions from the bank first, falls back to AI generation
@@ -173,10 +209,17 @@ Near-black background, blue-fill buttons, gold accents. Pull real hex values fro
 Agent's CSS, not from a screenshot. Verify verdict banners and review cards stay
 readable.
 
+### 5b. Hosting — before anyone is told the app exists
+Streamlit Community Cloud sleeps after 12 quiet hours and allows no custom domain. A
+sailor who pays $19.99 and returns next morning to a "Zzzz" screen assumes it is
+broken. Plan: Render, ~$7/mo, needs a Dockerfile because OCR needs the `tesseract`
+binary that `packages.txt` currently installs. Then point ssstrategicsolutions.com
+at it. This is not a core feature, but it is a launch blocker.
+
 ### Parked (deliberately, not forgotten)
 - Reading six FMS values off a real profile sheet — `BREAK_ATTEMPT_2026-07-29.md`
-- Three post-deploy checks never run: upgrade flow with a real card, JPG upload,
-  photographed sheet paygrade detection
+- Two post-deploy checks never run: JPG upload, photographed sheet paygrade
+  detection. (The upgrade flow with a real card was run and passed on 7 Aug.)
 - Sidebar navigation restructure — too broad to bundle safely
 - PS Agent public launch, Strategic Sailor hub deployment, ad channels
 - Leaderboard, badges, "This Month in Navy History" — after core features are done

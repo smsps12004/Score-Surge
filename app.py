@@ -2199,18 +2199,27 @@ So: NEVER state any of the following anywhere in this guide.
 
 Naming a manual or a topic area is fine. Stating what it says is not.
 
-Instead, name the thing to learn and send them to the source:
+Instead, name the thing to learn and send them to PS Agent.
+
+PS Agent is the other Strategic Sailor app. It answers Navy PS questions out of the
+manuals and hands back the citation, so it is where a sailor gets a value you are not
+allowed to state. Send them THERE — never to Google, and never a bare "look it up."
+
+Every referral must name the manual and the exact subject to ask PS Agent about. A
+specific question gets a specific answer; a vague one does not. Do NOT invent an article
+or paragraph number to put in the referral — the manual plus the subject is enough, and
+a guessed number is the exact failure these rules exist to prevent.
 
   DO NOT WRITE: "You have 30 days to submit the NAVPERS 1070/613."
-  WRITE INSTEAD: "Know the submission window for administrative remarks — pull the
-                  exact number from the MILPERSMAN article on your bibliography and
-                  memorize it. This one shows up."
+  WRITE INSTEAD: "Know the submission window for administrative remarks — ask PS Agent
+                  about the MILPERSMAN article covering administrative remarks and
+                  memorize the number it gives you. This one shows up."
 
 Apply this to every section, including exam traps and the daily plan. If a sentence
-would teach a fact a sailor could be tested on, rewrite it as an instruction to go look
-that fact up in their bibliography. A guide that says "learn this, here is where it
-lives, here is why it matters" is more useful than one that guesses the number — and it
-cannot be wrong.{sg_questions_carve_out if sg_is_questions else ""}"""
+would teach a fact a sailor could be tested on, rewrite it as an instruction to ask PS
+Agent about that subject in the manual on their bibliography. A guide that says "learn
+this, here is where it lives, here is who will tell you the number" is more useful than
+one that guesses the number — and it cannot be wrong.{sg_questions_carve_out if sg_is_questions else ""}"""
 
                 with st.spinner("Chief is reviewing your record..."):
                     try:
@@ -2333,25 +2342,36 @@ You MUST NOT state, as fact:
 - Any named approving authority or office (who signs, who approves, where it routes)
 - Any eligibility criterion expressed as a specific number
 
-When the answer IS one of those, that is the moment to send them to the manual:
+When the answer IS one of those, that is the moment to send them to PS Agent.
+
+PS Agent is the other Strategic Sailor app. It answers Navy PS questions out of the
+manuals and hands back the citation, so it is where the sailor gets a value you are not
+allowed to state. Send them THERE — never to Google, and never a bare "look it up."
+
+Every referral must name the manual and the exact subject to ask PS Agent about. A
+specific question gets a specific answer; a vague one does not. Do NOT invent an article
+or paragraph number to put in the referral — the manual plus the subject is enough, and
+a guessed number is the exact failure these rules exist to prevent.
 
   DO NOT WRITE: "An extension cannot exceed 48 aggregate months."
   WRITE INSTEAD: "There is a hard ceiling on total extension time under one contract.
                   That number is testable and it is exactly the kind of thing they ask.
-                  Find it in the MILPERSMAN extension article on your bib and memorize it."
+                  Ask PS Agent about the MILPERSMAN extension article on your bib and
+                  memorize the ceiling it gives you."
 
   DO NOT WRITE: "Cases with 18 or more years go to SECNAV."
   WRITE INSTEAD: "Long-service cases get decided above the CO — the separation authority
-                  moves up. Know WHICH authority: look it up, because the wrong one is a
+                  moves up. Know WHICH authority: ask PS Agent about the MILPERSMAN
+                  separation authority article on your bib, because the wrong one is a
                   classic distractor."
 
 Section 6 is three practice questions. Those may state a fact — a question with no fact in
 it is not a question — but keep them on concepts and judgment rather than on numbers you
-cannot check, do not name an article number in the question, and end each explanation with
-the manual to confirm it in.
+cannot check, do not name an article number in the question, and end each explanation by
+telling the sailor to confirm it with PS Agent, naming the manual and the subject.
 
-A lesson that says "here is how this works, here is where the number lives, go get it" is
-worth more than one that guesses the number. It also cannot be wrong."""
+A lesson that says "here is how this works, here is where the number lives, ask PS Agent
+for it" is worth more than one that guesses the number. It also cannot be wrong."""
 
                 with st.spinner("Chief is preparing your lesson..."):
                     try:
@@ -2430,13 +2450,17 @@ worth more than one that guesses the number. It also cannot be wrong."""
                                 "this conversation]\n"
                                 "1. Do not state a deadline, dollar amount, percentage, form "
                                 "number, article number, or named approving authority as "
-                                "fact. Name what the rule governs and send the sailor to the "
-                                "manual for the value.\n"
+                                "fact. Name what the rule governs and tell the sailor to ask "
+                                "PS Agent for the value — PS Agent is the other Strategic "
+                                "Sailor app and it answers out of the manuals with the "
+                                "citation attached. Never Google, never a bare 'look it up.' "
+                                "Name the manual and the exact subject to ask PS Agent about, "
+                                "but do NOT invent an article number to put in the referral.\n"
                                 "2. If the sailor questions or contradicts something you said "
                                 "earlier, do NOT defend it. You are working from memory with "
                                 "no manual in front of you, so they may well be right. Say so "
-                                "plainly and point them at the governing publication to "
-                                "settle it.\n"
+                                "plainly and tell them to ask PS Agent about that subject in "
+                                "the governing manual to settle it.\n"
                                 "3. If you do not know, say you do not know. That is a "
                                 "correct answer here."
                             )
