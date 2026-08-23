@@ -20,6 +20,10 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
  10. That the Study Guide prompt cannot state a regulation from memory
  11. That EVERY fact-stating prompt is actually wired to the guardrails —
      section 8 proves they work, section 11 proves they are plugged in
+ 12. Where an unanswerable fact gets sent (PS Agent, never Google)
+ 13. That every topic mapped to real MILPERSMAN text actually resolves to it,
+     and that a mapped lesson is still barred from stating anything the
+     retrieved text doesn't actually say
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -38,7 +42,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 192
+EXPECTED_TOTAL = 212
 
 
 def skip(reason):
@@ -523,7 +527,7 @@ def main():
 
     PROMPTS = [
         ("study guide", 'prompt = f"""You are a senior {sg_rating}', 'with st.spinner("Chief is reviewing'),
-        ("AI tutor",    'lesson_prompt = f"""You are a senior {tutor_rating}', 'with st.spinner("Chief is preparing'),
+        ("AI tutor",    'lesson_body = f"""You are a senior {tutor_rating}', 'with st.spinner("Chief is preparing'),
         ("mock exam",   'pq_prompt = f"""You are a senior {pq_rating}', 'with st.spinner("Chief is writing'),
     ]
     for name, start, end in PROMPTS:
@@ -583,6 +587,58 @@ def main():
           "PS Agent for the value" in tutor, True)
     check("tutor follow-up settles a challenge via PS Agent",
           "ask PS Agent about that subject" in tutor, True)
+
+    # ── 13. Tutor corpus grounding (real MILPERSMAN text, not a guess) ───────
+    #
+    # Item 3 wires a shipped, plain-text copy of the MILPERSMAN into the Tutor, so a
+    # mapped topic teaches from the article's actual wording instead of memory. A
+    # keyword-guess version of this was tried and rejected — it matched "Strength
+    # Loss" to an article about entry-level separations on one shared word. So the
+    # topic-to-article map (TOPIC_ARTICLE_MAP in app.py) is hand-checked, one article
+    # at a time, and this section proves every entry in it still resolves to real
+    # text — not that every topic has been mapped, which is intentionally not true yet.
+    print("\n13. TUTOR CORPUS GROUNDING (mapped topics teach from real MILPERSMAN text)")
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import corpus as _corpus
+    import importlib
+    importlib.reload(_corpus)
+
+    check("corpus text shipped with the app", _corpus.corpus_available(), True)
+
+    src13 = open(APP, encoding="utf-8").read()
+    map_ns = {}
+    _m = src13.index("TOPIC_ARTICLE_MAP = {")
+    _map_end = src13.index("\n}\n", _m) + 3
+    exec(src13[_m:_map_end], map_ns)
+    topic_map = map_ns["TOPIC_ARTICLE_MAP"]
+
+    check("at least one topic is mapped to real MILPERSMAN text",
+          len(topic_map) > 0, True)
+    for (topic, subtopic), articles in topic_map.items():
+        tag = f"{topic.split(' - ')[-1]}/{subtopic}"
+        block, matched = _corpus.build_source_block(articles)
+        check(f"[{tag}] resolves to real article text", bool(block), True)
+        check(f"[{tag}] every mapped article number actually loaded",
+              matched, articles)
+
+    check("an unmapped article number returns nothing, never a guess",
+          _corpus.get_article_text("9999-999"), "")
+
+    check("tutor lesson looks up TOPIC_ARTICLE_MAP before falling back to memory",
+          "TOPIC_ARTICLE_MAP.get((tutor_topic, tutor_subtopic)" in tutor, True)
+    check("grounded lesson must name the article when stating a fact",
+          "you must name the article number when you do" in tutor, True)
+    check("grounded lesson still forbids guessing what the text doesn't cover",
+          "is NOT in the text above, do not guess it" in tutor, True)
+    check("grounded practice questions are limited to the source text",
+          "Base them only on what is in the text above" in tutor, True)
+    check("grounded follow-up may cite the source text, unlike memory mode",
+          "You MAY state a specific fact if, and only" in tutor, True)
+    check("on-screen banner says when a lesson is grounded",
+          "grounded in the real text of milpersman" in tutor.lower(), True)
+    check("downloaded grounded lesson names the article in its caveat",
+          "GROUNDED IN THE REAL TEXT OF MILPERSMAN" in tutor, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

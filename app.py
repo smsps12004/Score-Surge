@@ -11,6 +11,7 @@ import datetime
 from fpdf import FPDF
 import anthropic
 import stripe
+import corpus
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -1369,6 +1370,22 @@ PS_TOPICS = {
     },
 }
 
+# ── TUTOR GROUNDING — real MILPERSMAN articles, hand-checked one at a time ────
+# Score Surge ships a plain-text copy of the MILPERSMAN inside the app (corpus.py).
+# For a (topic, subtopic) pair listed here, the Tutor lesson is built from the ACTUAL
+# text of these articles instead of from memory. Every entry below was pulled and
+# read before being added — this is not a keyword guess. A (topic, subtopic) pair
+# left out of this map just means nobody has checked a matching article for it yet,
+# so the Tutor falls back to its old memory-safe behavior for it, unchanged. This is
+# meant to grow over time as more topics get checked — not a one-time complete job.
+TOPIC_ARTICLE_MAP = {
+    ("E6 - Customer Service Management & Processing", "Leave"): ["1050-010", "1050-080"],
+    ("E5 - Customer Service Management & Processing", "Leave"): ["1050-010", "1050-080"],
+    ("E6 - Reenlistment & Extension Processing", "Eligibility"): ["1160-030"],
+    ("E6 - Reenlistment & Extension Processing", "Administration & Procedures"): ["1160-040", "1160-050"],
+    ("E5 - Separations & Retirement Processing", "DD214"): ["1910-806"],
+}
+
 # ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────
 RATINGS = ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"]
 PAYGRADES = ["E5", "E6", "E7"]  # No E4 NWAE — advancement to E4 is not exam-based.
@@ -2295,7 +2312,18 @@ with tab4:
                 if tutor_topic not in tutor_topics:
                     tutor_topic = list(tutor_topics.keys())[0]
                 bib_refs = tutor_topics[tutor_topic]["bib"]
-                lesson_prompt = f"""You are a senior {tutor_rating} Chief Petty Officer with 20 years of experience.
+
+                # If someone has already checked a real MILPERSMAN article against this
+                # exact topic/subtopic (see TOPIC_ARTICLE_MAP), teach from its actual
+                # text instead of memory. Anything not yet mapped falls back to the old
+                # memory-safe lesson below, completely unchanged.
+                mapped_articles = TOPIC_ARTICLE_MAP.get((tutor_topic, tutor_subtopic), [])
+                source_block, grounded_articles = (
+                    corpus.build_source_block(mapped_articles) if mapped_articles else ("", [])
+                )
+                grounded = bool(source_block)
+
+                lesson_body = f"""You are a senior {tutor_rating} Chief Petty Officer with 20 years of experience.
 You are teaching a Navy advancement exam lesson to a busy young sailor who needs to pass the {tutor_rating} {tutor_paygrade} NWAE.
 {cycle_authority_line()}
 
@@ -2317,7 +2345,32 @@ Teach this lesson as follows:
 6. Three practice questions with answers and explanations
 
 Keep it tight. Make it stick.
+"""
 
+                if grounded:
+                    lesson_prompt = lesson_body + f"""
+=== ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+
+Below is the ACTUAL, REAL text of the MILPERSMAN article(s) that govern this exact
+subtopic — pulled from the manual itself, not from memory.
+
+{source_block}
+
+You MAY state a specific fact — a deadline, dollar figure, form number, approving
+authority, or eligibility number — ONLY if it actually appears in the text above, and
+you must name the article number when you do (e.g. "Per MILPERSMAN {grounded_articles[0]}...").
+
+If the sailor needs a value that is NOT in the text above, do not guess it. Say plainly
+that it isn't in what you have in front of you, and send them to PS Agent, naming the
+manual and the exact subject — never Google, never a bare "look it up."
+
+Section 6 is three practice questions. Base them only on what is in the text above —
+do not introduce a fact from outside it, even one you believe is true.
+
+A lesson grounded in the real text is worth more than one from memory, and it is why
+this one is allowed to state real numbers where the lesson above cannot."""
+                else:
+                    lesson_prompt = lesson_body + """
 === ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
 
 You do not have the manuals in front of you. You are teaching from memory, and a sailor
@@ -2383,35 +2436,56 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                         lesson = message.content[0].text
                         st.subheader(f"📚 Lesson: {tutor_subtopic}")
                         # The Tutor is the only tab that hands a sailor free-form Navy
-                        # instruction with no source behind it, and a lesson reads with far
-                        # more authority than a practice question does. Until the lesson is
-                        # generated from retrieved manual text, say plainly what it is.
-                        st.warning(
-                            "**This lesson is written from memory, not from the manual.** "
-                            "The Chief teaches you how a topic works and where the rule "
-                            "lives — he will not give you exact numbers, deadlines, form "
-                            "numbers or approving authorities, because he cannot check them "
-                            "here. Get those from your bibliography and memorize them."
-                        )
+                        # instruction, and a lesson reads with far more authority than a
+                        # practice question does. Say plainly, every time, whether this
+                        # one is backed by real manual text or written from memory.
+                        if grounded:
+                            st.success(
+                                f"**This lesson is grounded in the real text of MILPERSMAN "
+                                f"{', '.join(grounded_articles)}.** Specific facts stated "
+                                "below are pulled from that text, with the article named, "
+                                "not recalled from memory."
+                            )
+                        else:
+                            st.warning(
+                                "**This lesson is written from memory, not from the manual.** "
+                                "The Chief teaches you how a topic works and where the rule "
+                                "lives — he will not give you exact numbers, deadlines, form "
+                                "numbers or approving authorities, because he cannot check them "
+                                "here. Get those from your bibliography and memorize them."
+                            )
                         st.markdown(lesson)
                         st.session_state.tutor_history = [
                             {"role": "user", "content": lesson_prompt},
                             {"role": "assistant", "content": lesson}
                         ]
+                        st.session_state.tutor_grounded = grounded
+                        st.session_state.tutor_grounded_articles = grounded_articles
 
-                        # The download outlives the warning above it. A sailor saves this,
+                        # The download outlives the banner above it. A sailor saves this,
                         # studies it for weeks and forwards it to shipmates — so the file
                         # has to carry its own caveat.
+                        if grounded:
+                            caveat = (
+                                f"GROUNDED IN THE REAL TEXT OF MILPERSMAN {', '.join(grounded_articles)}.\n"
+                                "Specific facts below are pulled from that text, with the\n"
+                                "article named. Anything the Chief could not find in that\n"
+                                "text, he sent you to PS Agent for instead.\n"
+                            )
+                        else:
+                            caveat = (
+                                "WRITTEN FROM MEMORY, NOT FROM THE MANUAL.\n"
+                                "This teaches how the topic works and where the rule lives. It\n"
+                                "does not give exact numbers, deadlines, form numbers or\n"
+                                "approving authorities. Confirm every specific against your\n"
+                                "bibliography before test day.\n"
+                            )
                         lesson_file = (
                             "SCORE SURGE — AI TUTOR LESSON\n"
                             f"Topic: {tutor_topic} / {tutor_subtopic}\n"
                             f"Rating / Paygrade: {tutor_rating} {tutor_paygrade}\n"
                             "\n"
-                            "WRITTEN FROM MEMORY, NOT FROM THE MANUAL.\n"
-                            "This teaches how the topic works and where the rule lives. It\n"
-                            "does not give exact numbers, deadlines, form numbers or\n"
-                            "approving authorities. Confirm every specific against your\n"
-                            "bibliography before test day.\n"
+                            + caveat
                             + "=" * 66 + "\n\n" + lesson
                         )
                         st.download_button(
@@ -2444,26 +2518,54 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                             #    got wrong earlier is now context he will stay consistent
                             #    with. Left alone he does not just repeat a mistake, he
                             #    defends it when challenged. This tells him to fold instead.
-                            guarded = (
-                                f"{sailor_question}\n\n"
-                                "[STANDING RULES — these outrank anything said earlier in "
-                                "this conversation]\n"
-                                "1. Do not state a deadline, dollar amount, percentage, form "
-                                "number, article number, or named approving authority as "
-                                "fact. Name what the rule governs and tell the sailor to ask "
-                                "PS Agent for the value — PS Agent is the other Strategic "
-                                "Sailor app and it answers out of the manuals with the "
-                                "citation attached. Never Google, never a bare 'look it up.' "
-                                "Name the manual and the exact subject to ask PS Agent about, "
-                                "but do NOT invent an article number to put in the referral.\n"
-                                "2. If the sailor questions or contradicts something you said "
-                                "earlier, do NOT defend it. You are working from memory with "
-                                "no manual in front of you, so they may well be right. Say so "
-                                "plainly and tell them to ask PS Agent about that subject in "
-                                "the governing manual to settle it.\n"
-                                "3. If you do not know, say you do not know. That is a "
-                                "correct answer here."
-                            )
+                            #
+                            # When the lesson was grounded, the real article text is still
+                            # sitting in history a few turns back (it's part of the lesson
+                            # prompt) — so the Chief CAN answer from it here too, he just
+                            # needs telling that he's allowed to and must say which article.
+                            if st.session_state.get("tutor_grounded"):
+                                arts = ", ".join(st.session_state.get("tutor_grounded_articles", []))
+                                guarded = (
+                                    f"{sailor_question}\n\n"
+                                    "[STANDING RULES — these outrank anything said earlier in "
+                                    "this conversation]\n"
+                                    f"1. The real text of MILPERSMAN {arts} is earlier in this "
+                                    "conversation. You MAY state a specific fact if, and only "
+                                    "if, it actually appears in that text, and you must name "
+                                    "the article when you do.\n"
+                                    "2. If the sailor's question needs a value that is NOT in "
+                                    "that text, do not guess it. Say plainly it isn't in what "
+                                    "you have, and send them to PS Agent, naming the manual "
+                                    "and the exact subject. Never Google, never a bare 'look "
+                                    "it up.'\n"
+                                    "3. If the sailor questions or contradicts something you "
+                                    "said earlier and it is not actually supported by the text "
+                                    "above, do NOT defend it — say so plainly and send them to "
+                                    "PS Agent to settle it.\n"
+                                    "4. If you do not know, say you do not know. That is a "
+                                    "correct answer here."
+                                )
+                            else:
+                                guarded = (
+                                    f"{sailor_question}\n\n"
+                                    "[STANDING RULES — these outrank anything said earlier in "
+                                    "this conversation]\n"
+                                    "1. Do not state a deadline, dollar amount, percentage, form "
+                                    "number, article number, or named approving authority as "
+                                    "fact. Name what the rule governs and tell the sailor to ask "
+                                    "PS Agent for the value — PS Agent is the other Strategic "
+                                    "Sailor app and it answers out of the manuals with the "
+                                    "citation attached. Never Google, never a bare 'look it up.' "
+                                    "Name the manual and the exact subject to ask PS Agent about, "
+                                    "but do NOT invent an article number to put in the referral.\n"
+                                    "2. If the sailor questions or contradicts something you said "
+                                    "earlier, do NOT defend it. You are working from memory with "
+                                    "no manual in front of you, so they may well be right. Say so "
+                                    "plainly and tell them to ask PS Agent about that subject in "
+                                    "the governing manual to settle it.\n"
+                                    "3. If you do not know, say you do not know. That is a "
+                                    "correct answer here."
+                                )
                             history.append({"role": "user", "content": guarded})
                             message = client.messages.create(
                                 model="claude-opus-4-5", max_tokens=1000,
