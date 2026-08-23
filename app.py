@@ -1671,6 +1671,25 @@ TOPIC_ARTICLE_MAP = {
     ("E5 - Transfers Management & Processing", "Required Documentation & Forms"): ["1320-300", "1320-308"],
     ("E6 - Separations & Retirement Processing", "Entitlements & Audit"): ["7220-340"],
     ("E5 - Separations & Retirement Processing", "Entitlements"): ["7220-340"],
+    # Added 24 Aug 2026, second pass through the CPPA Handbook — its Section 3a
+    # (Dependency Application/RED) and Section 15 (Name Change Request) name these
+    # exact articles. Both pulled and read from the real corpus text before being
+    # added, same discipline as every other row here:
+    #   1070-270/1070-271 genuinely are the governing articles for a member's
+    #   dependency data, which is what feeds DEERS — a clean match for "DEERS &
+    #   RAPIDS Management," not a keyword-adjacent guess.
+    #   1000-130 is specifically the procedure for correcting a name in the
+    #   official record — an administrative correspondence task, matching
+    #   "Correspondence."
+    # Other CPPA sections found this pass (VBSS/HDIP, FSA, FDHDIP, missed meal
+    # credit, SGLI) were left OUT deliberately: each cites a real MILPERSMAN
+    # article, but none of them has a subtopic in PS_TOPICS that's actually about
+    # that specific pay or entitlement type — forcing one in would be exactly the
+    # kind of confident-but-wrong match this map exists to avoid.
+    ("E6 - Customer Service Management & Processing", "DEERS & RAPIDS Management"): ["1070-270", "1070-271"],
+    ("E5 - Customer Service Management & Processing", "DEERS & RAPIDS Management"): ["1070-270", "1070-271"],
+    ("E6 - Customer Service Management & Processing", "Correspondence"): ["1000-130"],
+    ("E5 - Customer Service Management & Processing", "Correspondence"): ["1000-130"],
 }
 
 # ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────

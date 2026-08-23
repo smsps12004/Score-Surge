@@ -47,7 +47,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 253
+EXPECTED_TOTAL = 261
 
 
 def skip(reason):
