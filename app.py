@@ -807,13 +807,18 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
     Three guards, because profile sheets are dense with numbers that are not scores:
       1. Stop at the next FMS label, so we never read the next row's value.
       2. Ignore anything outside the field's valid range (cycle numbers, question counts).
-      3. Require a decimal. Every real FMS figure on a profile sheet is printed to two
-         decimal places — a bare integer near a label is never the field's actual value,
-         it is a stray digit from something else on the page (most often a date: "SERVICE
-         IN PAYGRADE AS OF SEP 30,2025" used to read SIPG as 30.0). An earlier version of
-         this function fell back to the nearest bare integer when no decimal was found,
-         which is exactly how that happened — reported as successfully read, and wrong.
-         Finding nothing is the honest answer here, not a guess.
+      3. Require a decimal — with one narrow exception, an exact "0". Every real FMS
+         figure on a profile sheet is printed to two decimal places (4.00, 62.00),
+         EXCEPT that a real sheet turned up (24 Aug 2026, Awards field) that prints a
+         true zero with no decimal at all, just a bare "0". Any OTHER bare integer near
+         a label is not the field's actual value, it is a stray digit from something
+         else on the page (most often a date: "SERVICE IN PAYGRADE AS OF SEP 30,2025"
+         used to read SIPG as 30.0) — an earlier version of this function fell back to
+         the nearest bare integer when no decimal was found, which is exactly how that
+         happened, reported as successfully read, and wrong. A lone "0" doesn't carry
+         that risk: no date fragment, cycle number, or serial number on these sheets
+         ever prints as a standalone zero. Finding nothing is still the honest answer
+         for every other bare-integer case.
     """
     text_lower = text.lower()
     stop_re = _OTHER_LABELS.get(field)
@@ -830,7 +835,7 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
 
         for num_match in _NUMBER_TOKEN.finditer(segment):
             token = num_match.group(0)
-            if "." not in token and "," not in token:
+            if "." not in token and "," not in token and token != "0":
                 continue
             value = round(float(token.replace(",", ".")), 2)
             if valid_range is not None:

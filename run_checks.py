@@ -42,7 +42,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 229
+EXPECTED_TOTAL = 232
 
 
 def skip(reason):
@@ -241,6 +241,21 @@ def main():
           "pma" in _three_dp_missing, True)
     check("...and shows the placeholder, not a truncated guess",
           _three_dp_result["pma"], DEFAULT_VALUES["pma"])
+
+    # 24 Aug 2026, real sheet: a real BOL "Exam Profile Data" sheet printed Awards as
+    # a bare "0", no decimal at all — Fix A above (require a decimal) would have
+    # reported a true zero as missing and substituted the 2.0 placeholder instead,
+    # which is worse than the bug it fixed. A lone "0" is now accepted as itself;
+    # every OTHER bare integer must still be rejected, same as before.
+    bare_zero_awards = ("EXAM STANDARD SCORE 49.50\nPMA (EVAL AVG) 64.00 (4.00)\n"
+                         "SERV. IN PAY GRADE 00:20 (0100)\nAWARDS 0\n"
+                         "EDUCATION POINTS 0.00\nPNA 0.00")
+    z = parse(bare_zero_awards)
+    check("a bare '0' Awards is read as a true zero, not missing", z[0]["awards"], 0.0)
+    check("...not silently swapped for the placeholder default",
+          "awards" not in z[1], True)
+    check("a bare non-zero integer near a label is still rejected",
+          "tir" in parse("SERVICE IN PAYGRADE AS OF SEP 30,2025\nAWARDS 0")[1], True)
 
     print("\n5. PAYGRADE DETECTION")
     # Navy systems print the same paygrade as E6, E-6 and E06, and often name the
