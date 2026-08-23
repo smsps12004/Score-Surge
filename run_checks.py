@@ -42,7 +42,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 212
+EXPECTED_TOTAL = 229
 
 
 def skip(reason):
@@ -83,6 +83,9 @@ def main():
     L = load_logic()
     fms, parse, getpg, safe = (L["compute_fms"], L["parse_ocr_text"],
                                L["extract_paygrade"], L["safe_value"])
+    DEFAULT_VALUES = L["DEFAULT_VALUES"]
+    reconciles = L["reading_reconciles"]
+    extract_fm = L["extract_final_multiple"]
 
     # ── 1. FMS math, hand-computed from the MyNavyHR E4-E7 FMS chart ──────────
     print("\n1. FMS MATH")
@@ -227,8 +230,17 @@ def main():
     check("'SEP 30,2025' is not read as a PMA", n["pma"], 4.06)
     check("'JAN 01,2026' is not read as SIPG", n["tir"], 3.5)
     check("'SECNAVINST 1,650' is not read as awards", n["awards"], 4.0)
-    check("a comma with three decimals is not guessed at",
-          parse("PERFORMANCE MARK AVERAGE 4,060")[0]["pma"], 4.0)
+    # A malformed comma-decimal like "4,060" is genuinely ambiguous — is it 4.06 with
+    # a stray trailing digit, or 4.60, or something else entirely? Guessing either way
+    # risks reporting a wrong PMA as successfully read. 24 Aug 2026: this used to fall
+    # back to the bare truncated integer (4.0) and call that "read" — safer than
+    # guessing the decimals, but still a guess dressed up as a reading. Now it's
+    # reported honestly as not found, same as any other unreadable field.
+    _three_dp_result, _three_dp_missing = parse("PERFORMANCE MARK AVERAGE 4,060")
+    check("a comma with three decimals is reported missing, not guessed at",
+          "pma" in _three_dp_missing, True)
+    check("...and shows the placeholder, not a truncated guess",
+          _three_dp_result["pma"], DEFAULT_VALUES["pma"])
 
     print("\n5. PAYGRADE DETECTION")
     # Navy systems print the same paygrade as E6, E-6 and E06, and often name the
@@ -454,6 +466,50 @@ def main():
           "datetime.date(20" in body, False)
     check("no hardcoded cycle number survives outside the CYCLE block",
           str(CYC["number"]) in body, False)
+
+    # ── 8b. A misread can't reconcile with the sheet's own printed total ─────
+    #
+    # 24 Aug 2026, per the 29-30 Jul adversarial finding: a real, densely tabled
+    # profile sheet can hand the parser six individually plausible numbers that are
+    # still wrong (a value from the wrong column, or the AVERAGE-of-candidates row
+    # instead of the sailor's own). "6 of 6 fields found" looks identical either way.
+    # This is the safety net that catches that: check the parsed six against the
+    # Final Multiple the sheet ALREADY prints. A bad read essentially can't produce
+    # a total that happens to match by accident.
+    print("\n8b. RECONCILIATION (a misread can't match the sheet's own printed total)")
+
+    good_e6 = ("EXAM STANDARD SCORE 62.00\nRSCA PMA 4.06\nSERVICE IN PAYGRADE 3.50\n"
+               "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00\n"
+               "YOUR FINAL MULTIPLE 138.50")
+    good_data, _ = parse(good_e6)
+    ok, printed, computed = reconciles("E6", good_data, good_e6)
+    check("a correct read reconciles with the sheet's own total", ok, True)
+    check("...and reports the printed figure it matched", printed, 138.50)
+    check("...and reports the same figure it computed", computed, 138.50)
+
+    # Same six numbers, but as if the PMA value had landed in the SIPG column and
+    # 3.50 had landed in PMA's — the exact column-swap failure mode a real sheet's
+    # layout invites. The total no longer matches what the sheet prints, even though
+    # every individual number still looks perfectly plausible on its own.
+    swapped_e6 = ("EXAM STANDARD SCORE 62.00\nRSCA PMA 3.50\nSERVICE IN PAYGRADE 4.06\n"
+                  "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00\n"
+                  "YOUR FINAL MULTIPLE 138.50")
+    swapped_data, _ = parse(swapped_e6)
+    ok2, printed2, computed2 = reconciles("E6", swapped_data, swapped_e6)
+    check("a column-swapped read does NOT reconcile", ok2, False)
+    check("...even though the sheet's total is still visible", printed2, 138.50)
+
+    # A sheet that never prints a Final Multiple (or one too garbled to OCR) must not
+    # be treated as a failed check — there is nothing to check against.
+    no_total = ("EXAM STANDARD SCORE 62.00\nRSCA PMA 4.06\nSERVICE IN PAYGRADE 3.50\n"
+                "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00")
+    no_total_data, _ = parse(no_total)
+    ok3, printed3, computed3 = reconciles("E6", no_total_data, no_total)
+    check("no printed total means nothing to check, not a failure", ok3, None)
+    check("...and says so by reporting no printed figure", printed3, None)
+
+    check("extract_final_multiple ignores a page number near unrelated text",
+          extract_fm("Page 3 of 8\nFinal Multiple Score chart, see appendix"), None)
 
     # ── 9. Nothing out of range can reach a widget ───────────────────────────
     print("\n9. CRASH GUARDS (values that used to break the page)")

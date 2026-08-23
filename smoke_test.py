@@ -203,6 +203,25 @@ def main():
           [n.value for n in at.number_input if "Exam Standard Score" in n.label], [62.0])
     check("...including the paygrade off the sheet", at.selectbox[0].value, "E6")
 
+    # 24 Aug 2026: the reconciliation check (does the parsed read match the Final
+    # Multiple the sheet itself prints?), exercised through the real rendered page,
+    # not just the pure function. sheet_text above has no printed total, so this
+    # reuses it with one added to check both the confirming and the contradicting path.
+    reconciling_sheet = sheet_text + "\nYOUR FINAL MULTIPLE SCORE (FMS) 138.50"
+    at = upload("photo_of_sheet.pdf", _scanned_pdf, "application/pdf",
+                patch("pytesseract.image_to_string", return_value=reconciling_sheet))
+    check("a read matching the sheet's own total shows no exception", len(at.exception), 0)
+    check("...and confirms the match on screen",
+          any("138.5" in c.value for c in at.caption), True)
+
+    contradicting_sheet = sheet_text + "\nYOUR FINAL MULTIPLE SCORE (FMS) 120.00"
+    at = upload("photo_of_sheet.pdf", _scanned_pdf, "application/pdf",
+                patch("pytesseract.image_to_string", return_value=contradicting_sheet))
+    check("a read that contradicts the sheet's total shows no exception",
+          len(at.exception), 0)
+    check("...and is flagged as untrustworthy on screen, not shown as clean",
+          any("don't add up" in e.value for e in at.error), True)
+
     print("\n" + "=" * 68)
     if FAIL:
         print(f"{len(FAIL)} SMOKE CHECK(S) FAILED — the app is broken for users:")

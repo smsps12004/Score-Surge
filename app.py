@@ -807,8 +807,13 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
     Three guards, because profile sheets are dense with numbers that are not scores:
       1. Stop at the next FMS label, so we never read the next row's value.
       2. Ignore anything outside the field's valid range (cycle numbers, question counts).
-      3. Prefer a decimal (3.50) over a bare integer (01 from a date) — every real
-         FMS figure on a profile sheet is printed to two decimal places.
+      3. Require a decimal. Every real FMS figure on a profile sheet is printed to two
+         decimal places — a bare integer near a label is never the field's actual value,
+         it is a stray digit from something else on the page (most often a date: "SERVICE
+         IN PAYGRADE AS OF SEP 30,2025" used to read SIPG as 30.0). An earlier version of
+         this function fell back to the nearest bare integer when no decimal was found,
+         which is exactly how that happened — reported as successfully read, and wrong.
+         Finding nothing is the honest answer here, not a guess.
     """
     text_lower = text.lower()
     stop_re = _OTHER_LABELS.get(field)
@@ -823,19 +828,16 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
             if nxt:
                 segment = segment[: nxt.start()]
 
-        decimals, integers = [], []
         for num_match in _NUMBER_TOKEN.finditer(segment):
             token = num_match.group(0)
+            if "." not in token and "," not in token:
+                continue
             value = round(float(token.replace(",", ".")), 2)
             if valid_range is not None:
                 lo, hi = valid_range
                 if not (lo <= value <= hi):
                     continue
-            (decimals if ("." in token or "," in token) else integers).append(value)
-        if decimals:
-            return decimals[0]
-        if integers:
-            return integers[0]
+            return value
     return None
 
 
@@ -852,6 +854,63 @@ def parse_ocr_text(raw_text):
             results[field] = DEFAULT_VALUES[field]
             missing.append(field)
     return results, missing
+
+
+# A real profile sheet prints its own Final Multiple Score. That is a second, wholly
+# independent statement of the truth — the sheet doing its own arithmetic on numbers
+# we never touched. A misread table (the PMA value landing in the SIPG column, the
+# AVERAGE-of-candidates row read instead of the sailor's own row — the exact failure
+# mode a real, densely-tabled sheet invites) can still produce six numbers that each
+# look individually plausible. It essentially never produces six numbers whose FMS
+# total happens to match the figure the sheet itself already prints. So that match is
+# a check a bad read is very unlikely to pass by accident, and it costs nothing extra
+# to ask for.
+_FINAL_MULTIPLE_PATTERNS = [
+    r"your\s*final\s*multiple\s*(?:score)?",
+    r"final\s*multiple\s*score",
+    r"final\s*multiple",
+]
+# Widest an FMS total can legitimately be (E6's 222.0 cap, per FMS_RULES) — the same
+# guard-rail idea as FIELD_RANGES, so a page number or cycle number near the words
+# "final multiple" (e.g. in a footer) is never mistaken for the printed total.
+_FINAL_MULTIPLE_RANGE = (0.0, max(r["fms_max"] for r in FMS_RULES.values()))
+
+
+def extract_final_multiple(raw_text):
+    """The Final Multiple Score exactly as the sheet prints it, or None.
+
+    Used only to CHECK a parsed reading against the sheet's own total — this value
+    never sets anything by itself. A sheet that never prints this (or an image too
+    poor to OCR it) simply returns None, which the caller treats as "nothing to check
+    against," not as a failed check.
+    """
+    return extract_number_near_label(
+        raw_text, _FINAL_MULTIPLE_PATTERNS, valid_range=_FINAL_MULTIPLE_RANGE, window=40,
+    )
+
+
+def reading_reconciles(paygrade, extracted_data, raw_text, tol=0.75):
+    """Does the sheet's OWN printed Final Multiple match what got parsed?
+
+    Returns (reconciled, printed, computed):
+      reconciled is True  -> the read matches the sheet's own total. Trust it.
+      reconciled is False -> it does NOT match. Something in the read is wrong, even
+                             though every individual field may look plausible on its
+                             own — this is exactly the failure a column mix-up on a
+                             real, densely tabled sheet produces. Say so plainly.
+      reconciled is None  -> the sheet never printed a Final Multiple to check
+                             against. This says nothing about whether the read is
+                             right — it is not a failed check, there was no check.
+    """
+    computed, _ = compute_fms(
+        paygrade, extracted_data["exam_score"], extracted_data["pma"],
+        extracted_data["tir"], extracted_data["awards"],
+        extracted_data["education"], extracted_data["pna"],
+    )
+    printed = extract_final_multiple(raw_text)
+    if printed is None:
+        return None, None, computed
+    return (abs(printed - computed) <= tol), printed, computed
 
 
 # How a paygrade is actually written on a sheet. Navy systems print E6, E-6 and
@@ -1384,6 +1443,13 @@ TOPIC_ARTICLE_MAP = {
     ("E6 - Reenlistment & Extension Processing", "Eligibility"): ["1160-030"],
     ("E6 - Reenlistment & Extension Processing", "Administration & Procedures"): ["1160-040", "1160-050"],
     ("E5 - Separations & Retirement Processing", "DD214"): ["1910-806"],
+    # Added 24 Aug 2026, sourced from the CPPA Handbook's own reference lists (it names
+    # the exact governing MILPERSMAN article per topic — read and confirmed before
+    # adding, same as every other row here) rather than a keyword guess.
+    ("E6 - Transfers Management & Processing", "Required Documentation & Forms"): ["1320-300", "1320-308"],
+    ("E5 - Transfers Management & Processing", "Required Documentation & Forms"): ["1320-300", "1320-308"],
+    ("E6 - Separations & Retirement Processing", "Entitlements & Audit"): ["7220-340"],
+    ("E5 - Separations & Retirement Processing", "Entitlements"): ["7220-340"],
 }
 
 # ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────
@@ -1553,6 +1619,34 @@ with tab1:
                     "showing typical placeholder values, NOT your numbers. Enter them by hand "
                     "below or your FMS will be wrong."
                 )
+
+            # Second, independent check: does the sheet's OWN printed Final Multiple
+            # match what was just read? A dense, tabled sheet can hand a parser six
+            # individually plausible numbers that are still wrong — a value from the
+            # wrong column, or the AVERAGE-of-candidates row instead of the sailor's
+            # own — and "6 of 6 fields found" above would look identical either way.
+            # This is the check that a bad read cannot pass by accident, because it is
+            # not asking "does each number look right," it's asking "do these six
+            # numbers add up to the total the sheet already claims."
+            if detected_paygrade in PAYGRADES:
+                _reconciled, _printed, _computed = reading_reconciles(
+                    detected_paygrade, extracted_data, raw_text)
+                if _reconciled is False:
+                    st.error(
+                        f"🛑 **These numbers don't add up to the Final Multiple your sheet "
+                        f"prints.** Your sheet says **{_printed}**, but what was read here "
+                        f"computes to **{_computed}**. Something was misread — do not trust "
+                        f"the numbers below. Check every field against your sheet by hand "
+                        f"before using this score for anything."
+                    )
+                elif _reconciled is True:
+                    st.caption(
+                        f"✓ Checked against your sheet's own total: it prints "
+                        f"**{_printed}**, and these six numbers compute to the same "
+                        f"figure. The read matches."
+                    )
+                # _reconciled is None: the sheet never printed a Final Multiple to
+                # check against. That's not a failed check — there's nothing to say.
 
             if detected_paygrade in PAYGRADES:
                 _exam_rate, _ = extract_exam_rate(raw_text)
