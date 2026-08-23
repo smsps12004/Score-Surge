@@ -1650,17 +1650,24 @@ PS_TOPICS = {
     },
 }
 
-# ── TUTOR GROUNDING — real MILPERSMAN articles, hand-checked one at a time ────
-# Score Surge ships a plain-text copy of the MILPERSMAN inside the app (corpus.py).
-# For a (topic, subtopic) pair listed here, the Tutor lesson is built from the ACTUAL
-# text of these articles instead of from memory. Every entry below was pulled and
-# read before being added — this is not a keyword guess. A (topic, subtopic) pair
-# left out of this map just means nobody has checked a matching article for it yet,
-# so the Tutor falls back to its old memory-safe behavior for it, unchanged. This is
-# meant to grow over time as more topics get checked — not a one-time complete job.
+# ── TUTOR GROUNDING — a hand-picked override on top of automatic retrieval ───────
+# Score Surge grounds the Tutor from corpus.db (see corpus.py) — every current
+# MILPERSMAN article, page-resolved. As of 24 Aug 2026, Shawn's standing call:
+# standardize on this one corpus (it replaced the smaller plain-text copy this app
+# used to ship separately) and stop growing THIS map by hand — coverage now grows
+# automatically, keyed off each topic's own bibliography line (see
+# corpus.get_series_grounding()). This map still wins when a pair is listed here,
+# for the handful of topics where a specific article was hand-verified before the
+# automatic path existed. Nothing new should be added to it going forward.
+#
+# 1050-080 (Computation of Leave) was in the map here until this rewrite — real,
+# read, and correct — but it isn't in corpus.db, a genuine gap in the bigger corpus
+# versus the smaller one it replaced. Left out rather than silently claiming a
+# lesson is grounded in an article that can't actually be retrieved. Worth
+# rebuilding corpus.db to close this, not worth blocking on.
 TOPIC_ARTICLE_MAP = {
-    ("E6 - Customer Service Management & Processing", "Leave"): ["1050-010", "1050-080"],
-    ("E5 - Customer Service Management & Processing", "Leave"): ["1050-010", "1050-080"],
+    ("E6 - Customer Service Management & Processing", "Leave"): ["1050-010"],
+    ("E5 - Customer Service Management & Processing", "Leave"): ["1050-010"],
     ("E6 - Reenlistment & Extension Processing", "Eligibility"): ["1160-030"],
     ("E6 - Reenlistment & Extension Processing", "Administration & Procedures"): ["1160-040", "1160-050"],
     ("E5 - Separations & Retirement Processing", "DD214"): ["1910-806"],
@@ -2667,14 +2674,27 @@ with tab4:
                     tutor_topic = list(tutor_topics.keys())[0]
                 bib_refs = tutor_topics[tutor_topic]["bib"]
 
-                # If someone has already checked a real MILPERSMAN article against this
-                # exact topic/subtopic (see TOPIC_ARTICLE_MAP), teach from its actual
-                # text instead of memory. Anything not yet mapped falls back to the old
-                # memory-safe lesson below, completely unchanged.
+                # Two ways a lesson gets grounded in real text instead of memory, tried
+                # in order:
+                #   1. A hand-picked article (TOPIC_ARTICLE_MAP) — someone read this
+                #      exact article against this exact topic/subtopic already. Wins
+                #      when present because it's the most precise signal available.
+                #   2. Automatic: every current MILPERSMAN article in the hundred-series
+                #      this topic's OWN bibliography line already names (e.g.
+                #      "MILPERSMAN 1050 series" for Leave). This is retrieval, not a
+                #      guess — corpus.get_series_grounding()'s docstring explains why
+                #      trusting the bib line is safe where trusting article TITLES was
+                #      not. Standing decision, 24 Aug 2026: the map from step 1 stops
+                #      growing by hand — coverage grows from here on out, because a
+                #      business that needs Shawn to personally read an article before
+                #      every topic can be trusted does not scale.
+                # Anything neither reaches falls back to the old memory-safe lesson
+                # below, completely unchanged — same honesty guarantee either way.
                 mapped_articles = TOPIC_ARTICLE_MAP.get((tutor_topic, tutor_subtopic), [])
-                source_block, grounded_articles = (
-                    corpus.build_source_block(mapped_articles) if mapped_articles else ("", [])
-                )
+                if mapped_articles:
+                    source_block, grounded_articles = corpus.build_source_block(mapped_articles)
+                else:
+                    source_block, grounded_articles = corpus.get_series_grounding(bib_refs)
                 grounded = bool(source_block)
 
                 lesson_body = f"""You are a senior {tutor_rating} Chief Petty Officer with 20 years of experience.

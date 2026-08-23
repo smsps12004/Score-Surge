@@ -28,6 +28,10 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
      real grid-style sheet's own printed values correctly, refuses to guess
      when a column doesn't reconcile, and is a true no-op on the NETPDC-form
      layout that already works
+ 15. Automatic Tutor grounding (corpus.get_series_grounding): finds real
+     articles from a topic's own bibliography line, stays empty for a
+     non-MILPERSMAN topic, respects the article cap, and never serves a
+     superseded edition as current text
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -47,7 +51,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 261
+EXPECTED_TOTAL = 271
 
 
 def skip(reason):
@@ -827,6 +831,72 @@ def main():
               posfields(_real_words, "E6"), None)
     else:
         skip("NETPDC-form fixture missing — could not prove the no-op on a real PDF")
+
+    # ── 15. AUTOMATIC TUTOR GROUNDING (corpus.get_series_grounding) ──────────────
+    #
+    # Shawn's call, 24 Aug 2026: TOPIC_ARTICLE_MAP stops growing by hand. Coverage
+    # grows instead from an automatic lookup keyed on each topic's own bibliography
+    # line — every CURRENT, non-cancelled MILPERSMAN article in the hundred-series
+    # that line already names. This section proves that lookup against the real,
+    # bundled corpus.db: it finds real articles for a real bib line, stays empty for
+    # a bib line that never mentions MILPERSMAN (a JTR/FMR-only topic — must fall
+    # back to the memory-safe lesson exactly like an unmapped topic does today),
+    # respects the article cap, and never hands back a superseded edition.
+    print("\n15. AUTOMATIC TUTOR GROUNDING (corpus.get_series_grounding)")
+
+    block, matched = _corpus.get_series_grounding("MILPERSMAN 1050 series, NSIPS")
+    check("1050 series: finds real articles from the topic's own bib line",
+          "1050-010" in matched, True)
+    check("1050 series: more than just the one hand-mapped article",
+          len(matched) > 1, True)
+    check("1050 series: every matched number's text actually loaded",
+          bool(block), True)
+
+    block2, matched2 = _corpus.get_series_grounding(
+        "JTR Chapters 1, 2, 5, DOD 7000.14-R Vol 9")
+    check("a bib line with no MILPERSMAN mention grounds nothing, not a guess",
+          matched2, [])
+    check("...and hands back no text either", block2, "")
+
+    block3, matched3 = _corpus.get_series_grounding(
+        "See MILPERSMAN 1910-806 specifically")
+    check("a bib line naming one specific article finds exactly that one",
+          matched3, ["1910-806"])
+
+    _, matched4 = _corpus.get_series_grounding("MILPERSMAN 1050 series", max_articles=3)
+    check("the article cap is respected", len(matched4) <= 3, True)
+
+    # A bib line naming two series ("1910 series, 1830 series" — a real PS_TOPICS
+    # line) must not let the first, bigger series starve the second one out of the
+    # cap entirely. Found live 24 Aug 2026: 1910 alone has 20+ articles, more than
+    # the default cap, so a first-come-first-served fill never reached 1830 at all.
+    _, matched5 = _corpus.get_series_grounding(
+        "BUPERSINST 1900.8F, MILPERSMAN 1910 series, 1830 series")
+    check("a second named series isn't starved out by a bigger first one",
+          any(m.startswith("1830") for m in matched5), True)
+
+    # 1300-1400 is one of nine articles corpus.db carries at two revisions — an old,
+    # superseded edition (CH-76, 18 pages) kept alongside the current one (CH-91, 20
+    # pages) because the substitute exam's bibliography is locked to the older dates.
+    # get_article_text() must only ever return the current edition's own text, never
+    # both editions run together.
+    import sqlite3 as _sqlite3
+    _con = _sqlite3.connect(f"file:{_corpus.CORPUS_DB_PATH}?mode=ro", uri=True)
+    _current_chars = sum(
+        len(r[0] or "") for r in _con.execute(
+            "SELECT text FROM pages WHERE article='1300-1400' AND is_current=1"))
+    _all_chars = sum(
+        len(r[0] or "") for r in _con.execute(
+            "SELECT text FROM pages WHERE article='1300-1400'"))
+    check("1300-1400 really does carry two editions in the raw corpus (test is live)",
+          _all_chars > _current_chars, True)
+    _current_text = _corpus.get_article_text("1300-1400", max_chars=10**7)
+    # Within a couple hundred characters of the current edition alone (the small gap
+    # is the "MILPERSMAN 1300-1400" line get_article_text can add) -- nowhere close
+    # to the combined two-edition length, which is what a is_current filter bug would
+    # produce.
+    check("a superseded edition is never handed to the model as current text",
+          abs(len(_current_text) - _current_chars) < 300, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

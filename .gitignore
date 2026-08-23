@@ -8,6 +8,12 @@ __pycache__/
 .backups/
 _to_delete/
 
+# Retired 24 Aug 2026 -- corpus.py reads corpus/corpus.db now, not these. Left on
+# disk rather than force-deleted (the mounted folder won't allow a real unlink from
+# the sandbox); untracked and ignored so they stop showing up as repo clutter.
+corpus/milpersman.txt
+corpus/bupersinst.txt
+
 # Internal working notes — stay on disk, never on the public repo
 HANDOFF_*.md
 PROJECT_BRIEFING_FOR_AIDO.md
