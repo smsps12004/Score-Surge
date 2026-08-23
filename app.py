@@ -918,6 +918,192 @@ def reading_reconciles(paygrade, extracted_data, raw_text, tol=0.75):
     return (abs(printed - computed) <= tol), printed, computed
 
 
+# ── COORDINATE-BASED PARSING — the root-cause fix ─────────────────────────────
+# BREAK_ATTEMPT_2026-07-29.md finding 5: label-then-scan-forward assumes a sheet
+# is linear text. A real sheet is a TABLE — the six FMS labels are column
+# headers, printed once, with a grid of numbers underneath. Flattened text
+# throws away which row and column each number came from, which is how a real,
+# densely tabled sheet hands the PMA value to the SIPG field, or reads the
+# "AVERAGE of candidates advanced in your rate" row instead of the sailor's own.
+#
+# Two confirmed real sheets — the GM sheet worked 29-30 Jul and the BOL "Exam
+# Profile Data" sheet Shawn supplied 23 Aug, two different layouts — agree on
+# three rules, independent of layout:
+#   1. x-position identifies the COLUMN reliably. y position alone does not —
+#      print is not perfectly aligned, so one logical row's values can straddle
+#      more than one y band.
+#   2. The sailor's own row is always the FIRST value in each column, top to
+#      bottom. "AVERAGE of candidates advanced in your rate" is always the row
+#      below it.
+#   3. Both sheets print the FMS columns in the same left-to-right order as the
+#      official chart: Exam Standard Score, PMA, SIPG, Awards, Education, PNA,
+#      Your Final Multiple. Column ORDER, not column LABELS, is what identifies
+#      a field — header text OCRs unreliably ("PMA" came back as "PTAs" on one
+#      real sheet) but left-to-right position does not.
+#
+# PMA and SIPG cells print two numbers — a points figure and a parenthesized
+# RAW figure: "64.00 (4.00)" and "00:20 (0100)". The app's inputs are the raw
+# figures, so this takes the parenthesized one, never the plain one, for those
+# two fields. SIPG's raw figure is a YYMM code ("0600" = 6 years, 0 months),
+# never a plain decimal — confirmed on both real samples.
+#
+# This is deliberately the SECOND opinion, not a replacement. It only overrides
+# the existing label-based read when it RECONCILES — its six values reproduce
+# the sheet's own printed Final Multiple, the same bar reading_reconciles()
+# already holds the label-based read to. A wrong column assignment essentially
+# never happens to reconcile by accident (see reading_reconciles' own docstring
+# for why). If this sheet's layout doesn't match the shape above, or the numbers
+# don't add up, this returns None and the caller keeps today's label-based read
+# — so wiring this in can only ever help, never make a read worse than it
+# already is.
+_PLAIN_CELL = re.compile(r"^\d{1,3}(?:[.:]\d{1,2})?$")
+_PAREN_CELL = re.compile(r"^\((?:\d{1,2}\.\d{1,2}|\d{3,4})\)$")
+_PAREN_X_GAP = 80    # how close a "(4.00)" box must sit to the plain box before it
+_PAREN_Y_GAP = 15    # and how close in the same print line
+_COLUMN_X_GAP = 40   # a real column-to-column gap on both real samples is easily
+                      # 10x this; kept modest on purpose so genuinely separate
+                      # columns are never merged into one
+_MIN_COLUMNS = 7      # the 6 FMS inputs plus Your Final Multiple, to reconcile against
+
+_POSITION_FIELD_ORDER = ["exam_score", "pma", "tir", "awards", "education", "pna", "final_multiple"]
+_POSITION_PAREN_FIELDS = {"pma", "tir"}
+
+
+def _yymm_to_years(digits):
+    """'0600' (6 yrs, 0 mo) -> 6.0. '0106' (1 yr, 6 mo) -> 1.5. None if it isn't
+    a plausible YYMM code (more than 11 months is not a real SIPG figure)."""
+    digits = digits.zfill(4)[-4:]
+    if not digits.isdigit():
+        return None
+    years, months = int(digits[:2]), int(digits[2:])
+    if months > 11:
+        return None
+    return round(years + months / 12.0, 2)
+
+
+def _boxes_from_fitz_words(words):
+    """PyMuPDF's page.get_text('words') tuples -> the common box shape below."""
+    return [{"x0": w[0], "y0": w[1], "x1": w[2], "y1": w[3], "text": w[4]} for w in words]
+
+
+def _boxes_from_tesseract_data(data):
+    """pytesseract.image_to_data(..., output_type=Output.DICT) -> the common
+    box shape below. Empty-text boxes (line/block markers Tesseract emits
+    alongside real words) are dropped."""
+    boxes = []
+    for i in range(len(data.get("text", []))):
+        t = (data["text"][i] or "").strip()
+        if not t:
+            continue
+        x0, y0 = data["left"][i], data["top"][i]
+        boxes.append({"x0": x0, "y0": y0, "x1": x0 + data["width"][i],
+                      "y1": y0 + data["height"][i], "text": t})
+    return boxes
+
+
+def _merge_paren_cells(word_boxes):
+    """Pair each parenthesized figure with the plain number immediately to its
+    left and roughly on the same print line — the two halves of one cell like
+    "64.00 (4.00)", which PDF text extraction and OCR both hand back as two
+    separate word boxes. Returns a list of cells: x0/y0 (of the plain number,
+    which is what column-clustering below sorts on), its own value, and
+    raw_text — the digits inside the parens, still uninterpreted (a field-
+    specific job: a plain decimal for PMA, a YYMM code for SIPG) — or None if
+    this particular number had no paired paren.
+    """
+    boxes = sorted(word_boxes, key=lambda b: (b["y0"], b["x0"]))
+    plain = []
+    for b in boxes:
+        t = b["text"].strip()
+        if _PLAIN_CELL.match(t):
+            plain.append({"x0": b["x0"], "y0": b["y0"], "x1": b["x1"],
+                          "value": float(t.replace(":", ".")), "raw_text": None})
+    for b in boxes:
+        t = b["text"].strip()
+        if not _PAREN_CELL.match(t):
+            continue
+        best = None
+        for cell in plain:
+            if cell["raw_text"] is not None:
+                continue
+            dx = b["x0"] - cell["x1"]
+            dy = abs(b["y0"] - cell["y0"])
+            if 0 <= dx <= _PAREN_X_GAP and dy <= _PAREN_Y_GAP:
+                if best is None or dx < best[0]:
+                    best = (dx, cell)
+        if best:
+            best[1]["raw_text"] = t.strip("()")
+    return plain
+
+
+def _cluster_columns(cells):
+    """Group cells into columns by x-position — the reliable axis on a real
+    sheet (see the module note above). Returns columns left to right, each a
+    list of cells sorted top to bottom, so column[0] is the sailor's own row.
+    """
+    if not cells:
+        return []
+    ordered = sorted(cells, key=lambda c: c["x0"])
+    columns, current = [], [ordered[0]]
+    for prev, c in zip(ordered, ordered[1:]):
+        if c["x0"] - prev["x0"] > _COLUMN_X_GAP:
+            columns.append(current)
+            current = []
+        current.append(c)
+    columns.append(current)
+    for col in columns:
+        col.sort(key=lambda c: c["y0"])
+    return columns
+
+
+def extract_fields_by_position(word_boxes, paygrade, tol=0.75):
+    """Read the six FMS fields from where they sit on the page, not from a
+    label search. See the module note above for the three rules this relies on
+    and why it is only ever trusted when it reconciles against the sheet's own
+    printed Final Multiple. Returns the six fields (a plain dict, same shape as
+    parse_ocr_text's first return value) or None.
+    """
+    if not word_boxes or paygrade not in FMS_RULES:
+        return None
+    columns = [c for c in _cluster_columns(_merge_paren_cells(word_boxes)) if c]
+    if len(columns) < _MIN_COLUMNS:
+        return None
+
+    fields = {}
+    for name, column in zip(_POSITION_FIELD_ORDER, columns):
+        cell = column[0]  # topmost = the sailor's own row; AVERAGE sits below it
+        if name in _POSITION_PAREN_FIELDS:
+            if not cell["raw_text"]:
+                # Both real samples always print a raw figure alongside PMA and
+                # SIPG. No paren here means this isn't the table this function
+                # expects — safer to admit that than guess from the points figure.
+                return None
+            if name == "tir":
+                value = _yymm_to_years(cell["raw_text"])
+            else:
+                try:
+                    value = round(float(cell["raw_text"]), 2)
+                except ValueError:
+                    value = None
+            if value is None:
+                return None
+        else:
+            value = round(cell["value"], 2)
+        fields[name] = value
+
+    printed_final = fields.pop("final_multiple", None)
+    for f, (lo, hi) in FIELD_RANGES.items():
+        v = fields.get(f)
+        if v is None or not (lo <= v <= hi):
+            return None
+
+    total, _ = compute_fms(paygrade, fields["exam_score"], fields["pma"], fields["tir"],
+                            fields["awards"], fields["education"], fields["pna"])
+    if printed_final is None or abs(total - printed_final) > tol:
+        return None
+    return fields
+
+
 # How a paygrade is actually written on a sheet. Navy systems print E6, E-6 and
 # E06 interchangeably, and a sheet often names the rate before the paygrade:
 # "ADVANCEMENT TO PSC (E7)". Matching only a bare "E6" meant detection quietly
@@ -1264,6 +1450,24 @@ def ocr_text(image):
     return text
 
 
+def ocr_words(image):
+    """Word boxes for the coordinate-based parser (see extract_fields_by_position
+    above), read off the SAME preprocessing ocr_text() uses so the two agree on
+    what was actually on the page. One extra Tesseract pass beyond what ocr_text()
+    already runs — real, measurable cost on a phone, spent because it is what
+    makes reading a real table possible at all. If it fails for any reason, the
+    caller just gets no word boxes and falls back to the label-based read, same
+    as it does today.
+    """
+    try:
+        prepared = prepare_for_ocr(image)
+        data = pytesseract.image_to_data(prepared, config=OCR_PRIMARY_CONFIG,
+                                          output_type=pytesseract.Output.DICT)
+        return _boxes_from_tesseract_data(data)
+    except Exception:
+        return []
+
+
 def ocr_engine_ready():
     """Is the tesseract BINARY actually here?
 
@@ -1283,7 +1487,9 @@ def ocr_engine_ready():
 
 
 def extract_text_from_upload(uploaded_file):
-    """Text from a profile sheet, whatever form it arrives in.
+    """Text AND word-position data from a profile sheet, whatever form it
+    arrives in. Returns (raw_text, word_boxes), or None on a hard failure (an
+    error has already been shown to the sailor in that case).
 
     Three shapes, because sailors send all three:
       1. a PDF with a real text layer      -> read it directly
@@ -1294,8 +1500,14 @@ def extract_text_from_upload(uploaded_file):
     layer, so a sheet photographed on a phone and saved as a PDF — which is how a
     real one arrives — came back empty and the sailor was told the document could
     not be read. There is nothing wrong with the document.
+
+    word_boxes feeds extract_fields_by_position() — the coordinate-based reader
+    that only ever overrides the label-based read when it reconciles against the
+    sheet's own printed total, so an empty or wrong word_boxes list here costs
+    nothing: the label-based read (raw_text) is unaffected either way.
     """
     raw_text = ""
+    word_boxes = []
     suffix = os.path.splitext(uploaded_file.name)[1]
     # Browsers are inconsistent about the MIME type they attach, so the filename
     # gets a vote too.
@@ -1315,6 +1527,7 @@ def extract_text_from_upload(uploaded_file):
             doc = fitz.open(tmp_path)
             for page in doc:
                 raw_text += page.get_text()
+                word_boxes += _boxes_from_fitz_words(page.get_text("words"))
 
             # No text layer means it is a picture of a sheet, not a document.
             if not raw_text.strip():
@@ -1326,12 +1539,13 @@ def extract_text_from_upload(uploaded_file):
                         "by hand below — the calculator works exactly the same."
                     )
                     return None
+                word_boxes = []  # the text-layer pass above found nothing to report
                 with st.spinner("This looks like a photo — reading it may take a moment..."):
                     for page in doc:
                         pix = page.get_pixmap(dpi=OCR_DPI)
-                        raw_text += ocr_text(
-                            Image.open(io.BytesIO(pix.tobytes("png")))
-                        )
+                        image = Image.open(io.BytesIO(pix.tobytes("png")))
+                        raw_text += ocr_text(image)
+                        word_boxes += ocr_words(image)
         else:
             if not ocr_engine_ready():
                 st.error(
@@ -1341,7 +1555,9 @@ def extract_text_from_upload(uploaded_file):
                 )
                 return None
             with st.spinner("Reading your photo..."):
-                raw_text = ocr_text(Image.open(tmp_path))
+                image = Image.open(tmp_path)
+                raw_text = ocr_text(image)
+                word_boxes = ocr_words(image)
 
     except Exception as e:
         # Whatever went wrong, a sailor with a working calculator in front of them
@@ -1358,7 +1574,7 @@ def extract_text_from_upload(uploaded_file):
         except OSError:
             pass
 
-    return raw_text
+    return raw_text, word_boxes
 
 
 # ── PS TOPICS ─────────────────────────────────────────────────────────────────
@@ -1599,10 +1815,24 @@ with tab1:
         # None means extract_text_from_upload has already said what went wrong and
         # what to do about it. A second, vaguer error underneath helps nobody.
         _already_explained = _extracted is None
-        raw_text = _extracted or ""
+        raw_text, word_boxes = _extracted if _extracted else ("", [])
+        _used_position_read = False
         if raw_text.strip():
             extracted_data, missing_fields = parse_ocr_text(raw_text)
             detected_paygrade = extract_paygrade(raw_text)
+
+            # Second attempt: read the same six fields by where they SIT on the
+            # page instead of by label search — the fix for a real, densely
+            # tabled sheet handing a label-search the wrong row or column (see
+            # extract_fields_by_position's docstring). Only adopted when it
+            # reconciles against the sheet's own printed total, so this can only
+            # improve on the label-based read above, never make it worse.
+            if detected_paygrade in PAYGRADES:
+                _position_fields = extract_fields_by_position(word_boxes, detected_paygrade)
+                if _position_fields:
+                    extracted_data = {**extracted_data, **_position_fields}
+                    missing_fields = [f for f in missing_fields if f not in _position_fields]
+                    _used_position_read = True
 
             # Apply the sheet's paygrade once per uploaded file. Keyed on the file
             # itself so a later manual change to the dropdown is not overwritten on
@@ -1614,6 +1844,12 @@ with tab1:
 
             FIELD_LABELS = FIELD_TITLES
             found = [FIELD_LABELS[f] for f in extracted_data if f not in missing_fields]
+
+            if _used_position_read:
+                st.caption(
+                    "📐 Read using your sheet's own table layout, not just text search — "
+                    "checked against the total your sheet prints."
+                )
 
             if not missing_fields:
                 st.success("✅ Read all six fields from your profile sheet.")

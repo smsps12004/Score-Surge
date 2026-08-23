@@ -24,6 +24,10 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
  13. That every topic mapped to real MILPERSMAN text actually resolves to it,
      and that a mapped lesson is still barred from stating anything the
      retrieved text doesn't actually say
+ 14. The coordinate-based profile-sheet reader (the root-cause fix): reads a
+     real grid-style sheet's own printed values correctly, refuses to guess
+     when a column doesn't reconcile, and is a true no-op on the NETPDC-form
+     layout that already works
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -33,6 +37,7 @@ import datetime
 import os
 import re
 import sys
+import fitz
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "app.py")
@@ -42,7 +47,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 232
+EXPECTED_TOTAL = 253
 
 
 def skip(reason):
@@ -710,6 +715,118 @@ def main():
           "grounded in the real text of milpersman" in tutor.lower(), True)
     check("downloaded grounded lesson names the article in its caveat",
           "GROUNDED IN THE REAL TEXT OF MILPERSMAN" in tutor, True)
+
+    # ── 14. COORDINATE-BASED PARSING (the root-cause fix, BREAK_ATTEMPT finding 5) ──
+    #
+    # The label-based reader above (sections 1b, 3, 4) is proven against the two real
+    # NETPDC-form sheets, where each FMS field is its own printed row and the value
+    # sits right after its own label — label-then-scan-forward works fine there. The
+    # failure mode this section targets is the OTHER real layout: a header row of
+    # column titles once, then a GRID of candidate rows underneath (the GM sheet
+    # worked 29-30 Jul, and the BOL "Exam Profile Data" sheet Shawn supplied 23 Aug).
+    # Flattened text throws away which row and column a number in that grid belongs
+    # to. extract_fields_by_position() reads the grid by word coordinates instead.
+    #
+    # No real photo of a grid-style sheet is available on disk to OCR end to end in
+    # this environment (test-profile-sheets/ only has the two NETPDC-form PDFs and a
+    # transcription of the BOL sheet's ground-truth values, not the original photo).
+    # So this section proves the coordinate LOGIC itself is correct — reconstructing
+    # both real sheets' actual printed values as word boxes, exactly as fitz or
+    # pytesseract would hand them back — plus proves the new function is a true no-op
+    # on the sheet type that already works, using REAL word boxes read by REAL fitz
+    # off the real NETPDC PDF fixtures. What is NOT proven here, and needs a live
+    # upload to confirm: that pytesseract's *actual* word coordinates off a real
+    # phone photo cluster the way this section's hand-built coordinates assume.
+    print("\n14. COORDINATE-BASED PARSING (root-cause fix for a real grid-style sheet)")
+    yymm = L["_yymm_to_years"]
+    posfields = L["extract_fields_by_position"]
+    fitzboxes = L["_boxes_from_fitz_words"]
+
+    check("YYMM 0600 (6y 0m)", yymm("0600"), 6.0)
+    check("YYMM 0106 (1y 6m)", yymm("0106"), 1.5)
+    check("YYMM 0100 (1y 0m)", yymm("0100"), 1.0)
+    check("YYMM with an impossible month count is rejected, not guessed",
+          yymm("0699"), None)
+
+    def box(text, x0, y0, w=42):
+        return {"x0": x0, "y0": y0, "x1": x0 + w, "y1": y0 + 12, "text": text}
+
+    # Reconstructs the GM sheet (BREAK_ATTEMPT_2026-07-29.md): E6, Exam 69.15 |
+    # PMA 48.00 (3.60) | SIPG 01.20 (0600) | Awards 6 | Edu 0.00 | PNA 4.50, whose
+    # FMS reproduces to 128.85 -- the same real sheet section 1b already checks.
+    gm_boxes = [
+        box("69.15", 100, 100), box("48.00", 300, 100), box("(3.60)", 345, 100),
+        box("01.20", 500, 100), box("(0600)", 545, 100), box("6", 700, 100, 14),
+        box("0.00", 850, 100), box("4.50", 1000, 100), box("128.85", 1150, 100),
+        # AVERAGE-of-candidates row, below the sailor's own -- must be ignored.
+        box("51.00", 100, 140), box("45.00", 300, 140), box("(3.30)", 345, 140),
+        box("00.80", 500, 140), box("(0400)", 545, 140), box("5", 700, 140, 14),
+        box("0.00", 850, 140), box("3.00", 1000, 140), box("120.00", 1150, 140),
+    ]
+    fields_gm = posfields(gm_boxes, "E6") or {}
+    check("GM sheet (grid layout): position read reconciles", bool(fields_gm), True)
+    check("GM sheet: exam_score, takes the sailor's row not the average's",
+          fields_gm.get("exam_score"), 69.15)
+    check("GM sheet: pma, the parenthesized raw figure",
+          fields_gm.get("pma"), 3.60)
+    check("GM sheet: tir, YYMM (0600) converted to 6.0 years",
+          fields_gm.get("tir"), 6.0)
+    check("GM sheet: awards", fields_gm.get("awards"), 6.0)
+    check("GM sheet: education", fields_gm.get("education"), 0.0)
+    check("GM sheet: pna", fields_gm.get("pna"), 4.5)
+
+    # Reconstructs the BOL sheet (test-profile-sheets/BOL_exam_profile_data_real_
+    # 20260823.md): PS3->PS2 is E5, row 49.50 | 64.00 (4.00) | 00:20 (0100) |
+    # 0 | 0.00 | 0.00 | 113.70 | 20.00 (the 8th column, Minimum Multiple Req'd, is
+    # deliberately present here to prove it's ignored, not just absent). Also
+    # exercises a colon as the OCR misread of a decimal point, and Awards printing
+    # as a bare "0" -- the exact real-sheet quirk that had to be fixed in the
+    # label-based reader 23 Aug (commit 03ff425).
+    bol_boxes = [
+        box("49.50", 100, 200), box("64.00", 300, 200), box("(4.00)", 345, 200),
+        box("00:20", 500, 200), box("(0100)", 545, 200), box("0", 700, 200, 10),
+        box("0.00", 850, 200), box("0.00", 1000, 200), box("113.70", 1150, 200),
+        box("20.00", 1300, 200),
+        box("51.22", 100, 240), box("56.55", 300, 240), box("(3.91)", 345, 240),
+        box("00.29", 500, 240), box("(0106)", 545, 240), box("0", 700, 240, 10),
+        box("0.0", 850, 240),
+    ]
+    fields_bol = posfields(bol_boxes, "E5") or {}
+    check("BOL sheet (grid layout): position read reconciles", bool(fields_bol), True)
+    check("BOL sheet: exam_score", fields_bol.get("exam_score"), 49.50)
+    check("BOL sheet: pma, the parenthesized raw figure", fields_bol.get("pma"), 4.00)
+    check("BOL sheet: tir, YYMM (0100) converted to 1.0 years", fields_bol.get("tir"), 1.0)
+    check("BOL sheet: awards read as an exact bare zero, not 'missing'",
+          fields_bol.get("awards"), 0.0)
+    check("BOL sheet: education", fields_bol.get("education"), 0.0)
+    check("BOL sheet: pna", fields_bol.get("pna"), 0.0)
+
+    # Change one cell so the six values no longer reproduce the sheet's own
+    # printed 113.70 -- a stand-in for a column mix-up. Must come back empty,
+    # never a plausible-looking wrong answer.
+    bad_boxes = [b if b["text"] != "0.00" or b["x0"] != 850 else box("4.00", 850, 200)
+                 for b in bol_boxes]
+    check("a column that no longer reconciles is refused, not guessed",
+          posfields(bad_boxes, "E5"), None)
+
+    check("too few columns to be this table shape returns None, not a partial guess",
+          posfields(gm_boxes[:8], "E6"), None)
+
+    # The layout that already works must see NO change. Real word boxes, read by
+    # REAL fitz, off the actual NETPDC-form fixture -- not reconstructed by hand.
+    # That layout never places a parenthesized raw figure next to PMA or SIPG (it
+    # uses separate YOUR VALUE / POINTS / MAX / PEER AVG columns instead), so this
+    # must always come back empty and leave the label-based read as the only one.
+    _mock_pdf = os.path.join(SHEETS, "PROFILE_SHEET_PS2_E6_clean.pdf")
+    if os.path.exists(_mock_pdf):
+        _doc = fitz.open(_mock_pdf)
+        _real_words = []
+        for _page in _doc:
+            _real_words += fitzboxes(_page.get_text("words"))
+        check("NETPDC-form sheet: position reader is a true no-op on this layout",
+              posfields(_real_words, "E6"), None)
+    else:
+        skip("NETPDC-form fixture missing — could not prove the no-op on a real PDF")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
