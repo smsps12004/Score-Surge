@@ -51,7 +51,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 309
+EXPECTED_TOTAL = 339
 
 
 def skip(reason):
@@ -556,40 +556,106 @@ def main():
     #
     # The prompt block is built from app.py as TEXT and executed with dummy values, the
     # same trick the rest of this file uses — no Streamlit, no API call.
-    print("\n10. STUDY GUIDE PROMPT (must not state regulations from memory)")
+    # Rewritten 25 Aug 2026. What this tab is allowed to say now depends on whether the
+    # chosen topic could be grounded, so the check runs the real assembly against the
+    # real corpus for each combination that behaves differently — including the two that
+    # matter most: a topic that CAN be grounded must be allowed to state real values, and
+    # a topic that CANNOT must still be forbidden from stating anything.
+    print("\n10. STUDY GUIDE PROMPT (what it may state depends on what it can prove)")
     src10 = open(APP, encoding="utf-8").read()
-    _a = src10.index("                topic_instruction = (")
+    _a = src10.index('                sg_is_questions = (sg_type == "Practice Questions")')
     _b = src10.index('                with st.spinner("Chief is reviewing your record...")')
     prompt_block = compile("if True:\n" + src10[_a:_b], "app.py-studyguide", "exec")
 
-    for guide_type, wants_carve_out in (("Crash Plan (3-5 days)", False),
-                                        ("Single Subject Deep Dive", False),
-                                        ("Practice Questions", True)):
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import corpus as _corpus_sg
+
+    # The exam question engine, pulled out of app.py as text — the Study Guide's
+    # Practice Questions mode now builds its prompt from these.
+    _eng_a = src10.index("# ── EXAM QUESTION ENGINE")
+    _eng_b = src10.index("# ── END EXAM QUESTION ENGINE")
+    ENGINE_NS = {"re": re, "json": __import__("json")}
+    exec(src10[_eng_a:_eng_b], ENGINE_NS)
+
+    GROUNDABLE = "BUPERSINST 1750.10E, MILPERSMAN 1050 series, NSIPS"   # real PS_TOPICS bib
+    UNGROUNDABLE = "JTR Chapters 1, 2, 5, DOD 7000.14-R Vol 9"          # also a real one
+
+    def sg_build(guide_type, bib):
         ns = {
-            "sg_type": guide_type, "sg_subject": "Military Awards",
-            "sg_rating": "PS", "sg_paygrade": "E7", "sg_gap": 4.0,
-            "strategy": "precision mode",
+            "sg_type": guide_type, "sg_rating": "PS", "sg_paygrade": "E7", "sg_gap": 4.0,
+            "strategy": "precision mode", "corpus": _corpus_sg,
+            "sg_topic": "Leave", "sg_topics": {"Leave": {"bib": bib}},
+            "EXAM_JSON_RULES": ENGINE_NS["EXAM_JSON_RULES"],
+            "grounded_question_rules": ENGINE_NS["grounded_question_rules"],
             # The cycle helpers are the app's own; stub them so this check is about the
             # accuracy rules and not about dates, which section 8 already covers.
             "cycle_authority_line": lambda: "AUTHORITY LINE",
             "cycle_facts_block": lambda: "CYCLE FACTS",
         }
         exec(prompt_block, ns)
-        p = ns["prompt"]
-        tag = guide_type.split(" (")[0]
-        check(f"[{tag}] prompt carries the accuracy rules",
+        return ns
+
+    for guide_type, bib, label in (
+            ("Crash Plan (3-5 days)", GROUNDABLE, "Crash Plan"),
+            ("Single Subject Deep Dive", UNGROUNDABLE, "Deep Dive, no source"),
+            ("Practice Questions", UNGROUNDABLE, "Questions, no source")):
+        p = sg_build(guide_type, bib)["prompt"]
+        check(f"[{label}] prompt carries the accuracy rules",
               "ACCURACY RULES" in p, True)
-        check(f"[{tag}] prompt forbids stating form numbers",
+        check(f"[{label}] prompt forbids stating form numbers",
               "form number" in p, True)
-        check(f"[{tag}] prompt forbids stating article numbers",
+        check(f"[{label}] prompt forbids stating article numbers",
               "instruction or NAVADMIN number" in p, True)
-        check(f"[{tag}] no unrendered placeholder left in the prompt",
+        check(f"[{label}] no unrendered placeholder left in the prompt",
               "{sg_" in p, False)
         # Practice Questions is the one type that cannot obey a blanket no-facts rule,
         # so it gets a narrower rule instead. Every other type must NOT get that
         # carve-out — if it leaks, the no-facts rule is off for a plain study guide.
-        check(f"[{tag}] questions carve-out present only where it belongs",
-              "EXCEPTION FOR THIS GUIDE TYPE" in p, wants_carve_out)
+        check(f"[{label}] questions carve-out present only where it belongs",
+              "EXCEPTION FOR THIS GUIDE TYPE" in p,
+              guide_type == "Practice Questions")
+
+    # A Crash Plan spans the whole bibliography, so it must NOT be grounded in one
+    # topic's articles even when that topic could be — a guide that is one-eighth
+    # grounded reads as fully grounded.
+    crash = sg_build("Crash Plan (3-5 days)", GROUNDABLE)
+    check("a Crash Plan is never grounded in one topic's articles",
+          crash["sg_grounded"], False)
+
+    # The one that can be grounded, and the whole point of the change.
+    dive = sg_build("Single Subject Deep Dive", GROUNDABLE)
+    p = dive["prompt"]
+    check("a Deep Dive on a groundable topic really retrieves real text",
+          dive["sg_grounded"], True)
+    check("...and the real article text is in the prompt",
+          "MILPERSMAN 1050-010" in p, True)
+    check("...and it is allowed to state a value that appears in that text",
+          "MAY state a specific fact" in p, True)
+    check("...and must name the article when it does",
+          "you must name the article number when you do" in p, True)
+    check("...and still may not guess what the text doesn't cover",
+          "do not guess it" in p, True)
+    check("...and still sends the unanswerable question to PS Agent",
+          "PS Agent" in p, True)
+    check("...and the blanket no-facts rule is NOT also present (they contradict)",
+          "NEVER state any of the following" in p, False)
+    check("a grounded Deep Dive builds no question prompt", dive["sgq_prompt"], "")
+
+    # Practice Questions on a groundable topic bypasses the study-guide prompt entirely.
+    sgq = sg_build("Practice Questions", GROUNDABLE)
+    q = sgq["sgq_prompt"]
+    check("grounded Practice Questions build a question prompt", bool(q), True)
+    check("...that carries the real article text", "MILPERSMAN 1050-010" in q, True)
+    check("...and demands a verbatim source_quote",
+          "WORD FOR WORD" in q and '"source_quote"' in q, True)
+    check("...and states that unfindable quotes are discarded", "DISCARDS" in q, True)
+    check("...and asks for spares, since failures are dropped",
+          sgq["sgq_ask"] > sgq["sgq_keep"], True)
+    check("...and carries the cycle guardrails like every other prompt",
+          "AUTHORITY LINE" in q and "CYCLE FACTS" in q, True)
+    check("ungrounded Practice Questions build no question prompt",
+          sg_build("Practice Questions", UNGROUNDABLE)["sgq_prompt"], "")
 
     # ── 11. Every prompt that states Navy facts must carry the guardrails ────
     #
@@ -617,7 +683,7 @@ def main():
         check(f"{name} prompt calls cycle_facts_block()",
               "cycle_facts_block()" in body, True)
 
-    tutor = slab_between("# ── TAB 4: AI TUTOR", "def parse_exam_json")
+    tutor = slab_between("# ── TAB 4: AI TUTOR", "def score_bars")
     check("tutor lesson prompt carries the accuracy rules",
           "ACCURACY RULES" in tutor, True)
     check("tutor forbids naming an approving authority as fact",
@@ -914,8 +980,7 @@ def main():
     print("\n16. MOCK EXAM GROUNDING (no question is shown unless its quote is real)")
 
     import json as _json
-    exam_ns = {"re": re, "json": _json}
-    exec(slab_between("def parse_exam_json", "def score_bars"), exam_ns)
+    exam_ns = ENGINE_NS
     verify_quote = exam_ns["verify_exam_quote"]
     ground_qs = exam_ns["ground_exam_questions"]
     all_grounded = exam_ns["exam_all_grounded"]
@@ -1034,14 +1099,50 @@ def main():
     mock = slab_between("# ── TAB 5: MOCK EXAM", "if len(st.session_state.score_history)")
     check("mock exam retrieves real text off the topic's own bib line",
           "corpus.get_series_grounding(bib_refs)" in mock, True)
-    check("mock exam prompt demands a verbatim source_quote",
-          "source_quote" in mock and "WORD FOR WORD" in mock, True)
     check("generated questions actually go through the gate",
           "ground_exam_questions(parsed, exam_source_block)" in mock, True)
     check("a grounded exam is trimmed back to the number the sailor asked for",
           "parsed[:pq_num]" in mock, True)
     check("the grounded banner does not claim a person checked the answer key",
           "does not mean a Chief has signed off" in mock, True)
+
+    # Both tabs that generate questions must build them from the SAME shared text, or
+    # the gate and the instruction feeding it drift apart and one tab quietly starts
+    # failing every question for a reason nobody can see.
+    check("mock exam builds its JSON schema from the shared constant",
+          "{EXAM_JSON_RULES}" in mock, True)
+    check("mock exam appends the shared source_quote rules",
+          "grounded_question_rules(exam_source_block, pq_ask)" in mock, True)
+    _shared = exam_ns["grounded_question_rules"]("SOURCE TEXT HERE", 7)
+    check("the shared rules demand a verbatim quote",
+          "WORD FOR WORD" in _shared and '"source_quote"' in _shared, True)
+    check("...and say plainly that an unfindable quote is discarded",
+          "DISCARDS" in _shared, True)
+    check("...and actually carry the retrieved text",
+          "SOURCE TEXT HERE" in _shared, True)
+    # Every key parse_exam_json reads must be named in the schema the model is handed.
+    # A renamed key would not raise — it would parse to an empty exam.
+    _schema = exam_ns["EXAM_JSON_RULES"]
+    check("the schema names every key the parser reads",
+          all(f'"{k}"' in _schema for k in
+              ("question", "answer_a", "answer_b", "answer_c", "answer_d",
+               "correct_answer", "explanation", "source_manual", "chapter_section")),
+          True)
+
+    # ── Wiring: the same gate, in the Study Guide's Practice Questions mode ──
+    guide = slab_between("# ── TAB 3: AI STUDY GUIDE", "# ── TAB 4: AI TUTOR")
+    check("study guide retrieves real text off the chosen topic's bib line",
+          "corpus.get_series_grounding(sg_bib)" in guide, True)
+    check("study guide questions go through the same gate",
+          "ground_exam_questions(" in guide, True)
+    check("study guide questions are trimmed to the number it keeps",
+          "sg_rows[:sgq_keep]" in guide, True)
+    check("the topic is a picked list item, not free text",
+          "st.text_input(\"Subject" in guide, False)
+    check("the grounded banner does not claim a person checked the answer key",
+          "Nobody has checked that the right" in guide, True)
+    check("a grounded Deep Dive says on screen that it came from the manual",
+          "Taught from the manual" in guide, True)
 
     # ── 17. READING ORDER (MILPERSMAN's two-column rule tables) ──────────────────
     #
@@ -1074,6 +1175,25 @@ def main():
           "leave commences after the expiration of the member’s normal working "
           "hours, the day of departure from the duty station is a day of duty not "
           "charged as leave." in t90, True)
+
+    # Found live 25 Aug 2026 during the Study Guide run — two more real layouts, both
+    # of which produced honest quotes that could not be found in their own source.
+    #
+    # A table continuing from a previous page starts on a DATA row, not on column
+    # headings. Treating line 0 as headings unconditionally wedged this row's label
+    # into the middle of its own rule.
+    t10 = _corpus.build_source_block(["1050-010"], max_chars_each=2500)[0]
+    check("a rule on a table's continuation page reads as one continuous line",
+          "The account balance of ordinary earned or accrued leave must be reduced "
+          "to 60 days at the end of the fiscal year" in t10, True)
+    check("...so its row label is not left sitting in the middle of it",
+          "of ordinary earned" in t10 and "Leave (cont): (3)" in t10, True)
+    # A centred table title inside the block used to destroy the column separator and
+    # leave the whole table interleaved. It comes back out on its own line now.
+    t70 = _corpus.build_source_block(["1050-070"], max_chars_each=2500)[0]
+    check("a centred table title is kept whole, on its own line",
+          "\n     ELIGIBILITY CRITERIA FOR SPECIAL LEAVE ACCRUAL (Page 1 of 2)\n" in t70,
+          True)
 
     # The other direction, and the more important one: indented prose is not a table.
     t1050 = _corpus.build_source_block(["1910-050"])[0]

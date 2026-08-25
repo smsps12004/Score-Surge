@@ -117,19 +117,26 @@ def get_article_text(number: str, max_chars: int = 4000) -> str:
 # anyone — model or code — is handed it. Cells are detected by the printed layout
 # itself (a run of blank columns that is blank on EVERY line of the block), never by
 # guessing at content, and a block with no such gap is passed through untouched.
-def _column_gaps(lines: list, min_gap: int = 2) -> list:
+def _column_gaps(lines: list, min_gap: int = 2, allowed: int = 0) -> list:
     """(start, end) of every column of blanks running the full height of the block.
 
     Leading indentation and trailing ragged edge are excluded — those are margins, not
     column separators, and treating them as separators would split ordinary prose.
+
+    allowed is how many lines may write straight through a separator and still leave it
+    a separator. It stays 0 (blank on every line) for the first pass, because loosening
+    it in general re-cuts prose that was reading fine. _flatten_block only raises it as
+    a second attempt on a block where the strict pass found no table at all.
     """
     width = max(len(l) for l in lines)
     padded = [l.ljust(width) for l in lines]
+    blank = [sum(1 for p in padded if p[i] == " ") >= len(padded) - allowed
+             for i in range(width)]
     gaps, i = [], 0
     while i < width:
-        if all(p[i] == " " for p in padded):
+        if blank[i]:
             j = i
-            while j < width and all(p[j] == " " for p in padded):
+            while j < width and blank[j]:
                 j += 1
             if i > 0 and j < width and (j - i) >= min_gap:
                 gaps.append((i, j))
@@ -143,10 +150,37 @@ def _flatten_block(lines: list) -> list:
     """One block of lines, re-emitted a table row at a time instead of line by line."""
     if len(lines) < 2:
         return lines
-    gaps = _column_gaps(lines)
-    if not gaps:
-        return lines
     width = max(len(l) for l in lines)
+    gaps = _column_gaps(lines)
+    # Second attempt, and only when the strict pass found nothing. A line that writes
+    # straight through a column separator is not a table row — it is a centred table
+    # title ("ELIGIBILITY CRITERIA FOR SPECIAL LEAVE ACCRUAL (Page 1 of 2)") or a note.
+    # Found live 25 Aug 2026: one such title inside the block destroyed the separator
+    # and the whole table stayed interleaved, which is how two honest quotes out of
+    # 1050-010 and 1050-070 were dropped. Tolerating a few crossings here, then pulling
+    # those lines back out below, recovers the table. Kept as a fallback rather than the
+    # rule because raising the tolerance everywhere re-cut prose that was reading fine.
+    spanning = set()
+    if not gaps:
+        gaps = _column_gaps(lines, allowed=max(1, len(lines) // 6))
+        if not gaps:
+            return lines
+        spanning = {i for i, l in enumerate(lines)
+                    if any(l.ljust(width)[a:b].strip() for a, b in gaps)}
+    if spanning:
+        out, run = [], []
+        for i, line in enumerate(lines):
+            if i in spanning:
+                if run:
+                    out.extend(_flatten_block(run))
+                    run = []
+                out.append(line)
+            else:
+                run.append(line)
+        if run:
+            out.extend(_flatten_block(run))
+        return out
+
     starts = [0] + [g[1] for g in gaps]
     ends = [g[0] for g in gaps] + [width]
     grid = [[l.ljust(width)[s:e].strip() for s, e in zip(starts, ends)] for l in lines]
@@ -174,13 +208,22 @@ def _flatten_block(lines: list) -> list:
     # ("...normal working hours, WHEN ... the day of departure..."), which is exactly
     # the kind of seam that makes an honest quote unfindable. Only an exact repeat of
     # this block's own heading line is removed.
-    if len(grid) >= 3:
+    #
+    # "Line 0 is a heading" only holds when line 0 actually looks like one: every cell
+    # it fills is a few words ("WHEN... / THEN...", "WHEN members are ... / AND ... / THEN ...").
+    # Found live 25 Aug 2026: forcing it unconditionally split the first row of every
+    # table that continues from a previous page, where line 0 is a data row whose second
+    # cell is a full sentence — which is how the 60-day accrual-limit rule in 1050-010
+    # ended up with its row label wedged into the middle of it.
+    heading = bool([c for c in grid[0] if c]) and all(
+        len(c.split()) <= 4 for c in grid[0] if c)
+    if heading and len(grid) >= 3:
         grid = [grid[0]] + [c for c in grid[1:] if c != grid[0]]
 
     rows, current = [], []
     for idx, cells in enumerate(grid):
         filled = [bool(c) for c in cells]
-        new_row = idx == 0 or (idx == 1 and len(grid) >= 3)
+        new_row = idx == 0 or (idx == 1 and heading and len(grid) >= 3)
         if idx > 1 and all(filled) and not all(bool(c) for c in grid[idx - 1]):
             new_row = True
         if new_row and current:
