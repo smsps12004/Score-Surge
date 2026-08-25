@@ -51,7 +51,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 271
+EXPECTED_TOTAL = 309
 
 
 def skip(reason):
@@ -897,6 +897,194 @@ def main():
     # produce.
     check("a superseded edition is never handed to the model as current text",
           abs(len(_current_text) - _current_chars) < 300, True)
+
+    # ── 16. MOCK EXAM GROUNDING (a question must prove itself before it's shown) ──
+    #
+    # Until 25 Aug 2026 Mock Exam questions were written from memory with nothing behind
+    # them. Measured 20 Aug 2026: 5 of 30 safe to hand a sailor, 0 citations traceable.
+    # The fix retrieves the real MILPERSMAN text for the topic's bib line, makes the
+    # model quote the line it used, and drops any question whose quote is not actually
+    # in that text. This section proves the gate really closes — including on the case
+    # that matters most, a quote that reads perfectly and appears nowhere.
+    #
+    # Everything here tests real corpus text, not a fixture. A fixture would prove the
+    # string matching works; only live text proves it works on manual wording, which
+    # arrives wrapped at PDF line breaks and full of punctuation the model normalizes
+    # when it retypes a line.
+    print("\n16. MOCK EXAM GROUNDING (no question is shown unless its quote is real)")
+
+    import json as _json
+    exam_ns = {"re": re, "json": _json}
+    exec(slab_between("def parse_exam_json", "def score_bars"), exam_ns)
+    verify_quote = exam_ns["verify_exam_quote"]
+    ground_qs = exam_ns["ground_exam_questions"]
+    all_grounded = exam_ns["exam_all_grounded"]
+    all_verified = exam_ns["exam_all_verified"]
+    source_line = exam_ns["exam_source_line"]
+    parse_exam = exam_ns["parse_exam_json"]
+
+    # A real source block, built the same way the Mock Exam builds it.
+    exam_block, exam_arts = _corpus.get_series_grounding("MILPERSMAN 1050 series")
+    check("mock exam grounding gets real articles for a real bib line",
+          len(exam_arts) > 1, True)
+
+    # A genuine line out of that text — long enough to clear the floor.
+    real_line = ""
+    for _, _body in exam_ns["_split_source_block"](exam_block):
+        for _ln in _body.splitlines():
+            if len(_ln.split()) >= 15:
+                real_line = _ln.strip()
+                break
+        if real_line:
+            break
+    check("found a real quotable line in the retrieved text (test is live)",
+          bool(real_line), True)
+
+    check("a verbatim quote is traced back to a real article",
+          verify_quote(real_line, exam_block) in exam_arts, True)
+    # The model retypes a line it just read; it does not reproduce the PDF's line
+    # breaks, double spaces or curly punctuation. An honest quote must still pass.
+    check("the same quote still passes after whitespace and punctuation drift",
+          verify_quote("  " + real_line.replace(" ", "\n  ") + ".", exam_block) in exam_arts,
+          True)
+    # The whole point. This reads like manual text and is not in the manual.
+    check("a fabricated quote is not traced to any article",
+          verify_quote(
+              "A member may accrue no more than ninety-nine days of leave under this "
+              "article without the written approval of the commanding officer.",
+              exam_block), "")
+    # Without a length floor, a fragment this short matches nearly any article and a
+    # question resting on nothing would pass the gate.
+    check("a quote too short to prove anything is rejected even though it appears",
+          verify_quote("the member", exam_block), "")
+    check("an empty quote is rejected", verify_quote("", exam_block), "")
+    check("a real quote against an empty source block is rejected",
+          verify_quote(real_line, ""), "")
+
+    # The cases that killed a looser version of this check on 25 Aug 2026. Each of
+    # these is a REAL rule with one thing changed, which is exactly what a wrong answer
+    # key looks like — mostly true, quoting real wording, and false where it counts.
+    # A fragment-tolerant matcher let all three through. Exact matching does not.
+    _real_words = real_line.split()
+    _negated = (real_line.replace(" not ", " ", 1) if " not " in real_line
+                else real_line.replace(" shall ", " shall not ", 1))
+    check("a real rule with a word deleted is rejected",
+          verify_quote(_negated, exam_block) if _negated != real_line else "", "")
+    check("a real rule with two words swapped is rejected",
+          verify_quote(" ".join(_real_words[:4] + [_real_words[5], _real_words[4]]
+                                + _real_words[6:]), exam_block), "")
+    # Both halves genuinely appear in the manual; the sentence they make does not.
+    _other = ""
+    for _, _body in exam_ns["_split_source_block"](exam_block):
+        for _ln in _body.splitlines():
+            if len(_ln.split()) >= 15 and _ln.strip() != real_line:
+                _other = _ln.strip()
+                break
+        if _other:
+            break
+    check("two halves of two different real rules welded together are rejected",
+          verify_quote(" ".join(_real_words[:len(_real_words) // 2]
+                                + _other.split()[len(_other.split()) // 2:]),
+                       exam_block) if _other else "", "")
+
+    good_q = {"question": "q", "correct_answer": "A", "source_quote": real_line,
+              "source_manual": "NAVEDTRA 14257", "chapter_section": "Article 9999-999"}
+    bad_q = {"question": "q", "correct_answer": "B",
+             "source_quote": "A member may accrue no more than ninety-nine days of leave "
+                             "under this article without the written approval of the CO.",
+             "source_manual": "MILPERSMAN", "chapter_section": "Article 1050-010"}
+    kept, dropped = ground_qs([good_q, bad_q], exam_block)
+    check("the unprovable question is dropped, the provable one kept", len(kept), 1)
+    check("...and the drop is reported, not silently swallowed", dropped, 1)
+    check("a kept question is marked grounded", kept[0].get("grounded"), "yes")
+    # The model's own citation used to be the citation shown. Verification found
+    # cancelled articles and wrong references that way, so the code overwrites it with
+    # the article the quote was actually found in.
+    check("the model's invented citation is replaced by where the quote really was",
+          kept[0]["chapter_section"], f"Article {verify_quote(real_line, exam_block)}")
+    check("...and the manual name with it", kept[0]["source_manual"], "MILPERSMAN")
+    check("grounding never mutates the caller's own question dict",
+          good_q.get("grounded"), None)
+
+    # Grounded and verified are different claims and must never collapse into one.
+    check("a grounded set is not reported as human-verified", all_verified(kept), False)
+    check("a grounded set is reported as grounded", all_grounded(kept), True)
+    check("one ungrounded question makes the whole set ungrounded",
+          all_grounded(kept + [bad_q]), False)
+    check("an empty set is not grounded", all_grounded([]), False)
+
+    # Three states on screen, three different lines under the answer.
+    line_grounded = source_line(kept[0])
+    line_verified = source_line({**kept[0], "verified": "yes"})
+    line_plain = source_line({"source_manual": "MILPERSMAN", "chapter_section": "1050-010"})
+    check("a grounded question's source line says it was matched to the manual",
+          "matched against the real manual text" in line_grounded, True)
+    check("...and does not call itself verified", "Verified source" in line_grounded, False)
+    check("a bank question still reads as verified", "Verified source" in line_verified, True)
+    check("an ungrounded question still reads as an unverified lead",
+          "Unverified lead" in line_plain, True)
+
+    check("the exam parser carries source_quote through to the gate",
+          parse_exam(_json.dumps([{
+              "question": "Q", "answer_a": "a", "answer_b": "b", "answer_c": "c",
+              "answer_d": "d", "correct_answer": "A", "source_quote": "hello there",
+          }]))[0]["source_quote"], "hello there")
+
+    # ── Wiring: the gate has to actually be in the Mock Exam path ────────────
+    mock = slab_between("# ── TAB 5: MOCK EXAM", "if len(st.session_state.score_history)")
+    check("mock exam retrieves real text off the topic's own bib line",
+          "corpus.get_series_grounding(bib_refs)" in mock, True)
+    check("mock exam prompt demands a verbatim source_quote",
+          "source_quote" in mock and "WORD FOR WORD" in mock, True)
+    check("generated questions actually go through the gate",
+          "ground_exam_questions(parsed, exam_source_block)" in mock, True)
+    check("a grounded exam is trimmed back to the number the sailor asked for",
+          "parsed[:pq_num]" in mock, True)
+    check("the grounded banner does not claim a person checked the answer key",
+          "does not mean a Chief has signed off" in mock, True)
+
+    # ── 17. READING ORDER (MILPERSMAN's two-column rule tables) ──────────────────
+    #
+    # Found live 25 Aug 2026, and it had been quietly true since the corpus shipped:
+    # most MILPERSMAN rules are printed as a WHEN/THEN table, and corpus.db stores the
+    # printed layout, so the two halves of a rule sit side by side on one line rather
+    # than one after the other. Read flat, "member is hospitalized or SIQ / chargeable
+    # leave will terminate" becomes "member is hospitalized or chargeable leave will
+    # terminate SIQ". The model had been coping with that and reassembling the rules
+    # correctly, which is why it went unnoticed until the Mock Exam started demanding
+    # verbatim quotes and every honest quote failed to appear in its own source.
+    #
+    # corpus.flatten_columns() puts the text back into reading order. The risk it
+    # introduces is the opposite one — mistaking ordinary indented prose for a table
+    # and scrambling it — so both directions are checked here, against real articles.
+    print("\n17. READING ORDER (two-column MILPERSMAN tables read as rows, prose left alone)")
+
+    t50 = _corpus.build_source_block(["1050-050"])[0]
+    check("a WHEN/THEN rule reads as one continuous line",
+          "member is hospitalized or SIQ, chargeable leave will terminate the day "
+          "preceding and recommence the day following such status." in t50, True)
+    check("a rule whose halves wrap to different depths is still whole",
+          "personnel are hospitalized or placed on SIQ status by a civilian physician "
+          "while on leave, these personnel shall not be charged leave" in t50, True)
+    check("the table's column headings stay out of the first rule",
+          "WHEN... personnel are hospitalized" in t50, False)
+
+    t90 = _corpus.build_source_block(["1050-090"])[0]
+    check("a table's headings reprinted mid-page don't split a rule",
+          "leave commences after the expiration of the member’s normal working "
+          "hours, the day of departure from the duty station is a day of duty not "
+          "charged as leave." in t90, True)
+
+    # The other direction, and the more important one: indented prose is not a table.
+    t1050 = _corpus.build_source_block(["1910-050"])[0]
+    check("ordinary indented prose is passed through untouched",
+          "eligibility for involuntary separation pay (ISP). Service" in t1050, True)
+    check("text with no columns at all comes back unchanged",
+          _corpus.flatten_columns("one line\n\ntwo words here\nand more"),
+          "one line\n\ntwo words here\nand more")
+    check("a single line is never treated as a table",
+          _corpus.flatten_columns("Responsible    OPNAV (N130)"),
+          "Responsible    OPNAV (N130)")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

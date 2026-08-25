@@ -3005,6 +3005,10 @@ def parse_exam_json(raw: str) -> list:
             "explanation": str(row.get("explanation") or "").strip(),
             "source_manual": str(row.get("source_manual") or "").strip(),
             "chapter_section": str(row.get("chapter_section") or "").strip(),
+            # Only present on a grounded exam: the verbatim line from the real
+            # MILPERSMAN text that proves the keyed answer. Carried through here
+            # untouched; ground_exam_questions() is what decides whether it's real.
+            "source_quote": str(row.get("source_quote") or "").strip(),
         }
         # A question missing an option, or keyed to an answer that isn't one of the
         # four, cannot be graded. Drop it rather than show a sailor something unanswerable.
@@ -3024,6 +3028,109 @@ def parse_exam_json(raw: str) -> list:
     return clean
 
 
+# ── MOCK EXAM GROUNDING: PROVE THE QUESTION BEFORE SHOWING IT ────────────────────
+#
+# Until 25 Aug 2026 every Mock Exam question was written by the model from memory, with
+# no manual in front of it. Measured 20 Aug 2026: of 30 questions generated that way,
+# only 5 were safe to hand a sailor, and not one citation could be traced to a real
+# article. That is the most unreliable AI surface in this app, and it is the one a
+# sailor is most likely to mistake for truth — a wrong answer wearing a uniform.
+#
+# The fix mirrors what was done for the Tutor on 24 Aug: retrieve the real text for the
+# topic's own bibliography line first, write the questions FROM that text, and then —
+# this is the new part — make the model quote the line it used, and have the code check
+# that quote is really there before the question is ever shown.
+#
+# The check below is a plain string match, deliberately. No human reads the questions
+# (Shawn's standing decision, 24 Aug: the business cannot run on his review time) and no
+# second AI judges them either — an AI grading an AI is another opinion, not evidence.
+# A quote either appears in the retrieved manual text or it does not, and a question
+# whose quote does not appear is dropped instead of shown.
+#
+# What this proves and what it does not: it proves the sailor is reading a real rule
+# from the real manual, and that the citation under it is the article the quote was
+# actually found in — the code names it, not the model. It does NOT prove the model
+# picked the right rule for the question or keyed the right letter. That is a real
+# remaining gap, and the UI wording is written to claim only what was actually checked.
+# The word floor, and why the match is exact rather than fuzzy.
+#
+# Measured 25 Aug 2026 on a real generation run: the first version of this check threw
+# away 5 of 7 questions, and all five turned out to be quoting the manual CORRECTLY.
+# The cause was reading order, not honesty — most MILPERSMAN rules are printed as a
+# two-column WHEN/THEN table and corpus.db stores the printed layout, so the two halves
+# of a rule sat side by side rather than one after the other and no honest quote of one
+# could ever appear as a continuous string. That is fixed at the source now
+# (corpus.flatten_columns), which is why this can stay an exact match.
+#
+# A looser, fragment-tolerant match was tried in between and dropped after measuring it:
+# it let through a real rule with the word "not" deleted, and two halves of two
+# different real rules welded together. Both read perfectly and both are false. An
+# exact match rejects all of them.
+EXAM_QUOTE_MIN_WORDS = 15
+# build_source_block() writes each article as "--- MILPERSMAN 1050-010 — TITLE ---".
+_EXAM_SOURCE_SPLIT_RE = re.compile(r"\n?--- MILPERSMAN (\S+) —[^\n]*---\n")
+
+
+def _normalize_quote(text: str) -> str:
+    """Words and digits only, lowercased, single-spaced.
+
+    Both sides of the comparison go through this. Real manual text arrives wrapped at
+    PDF line breaks and studded with curly quotes, section symbols and hard spaces; a
+    model retyping a line it just read normalizes that punctuation without meaning to.
+    Comparing raw text would fail honest quotes constantly, and a check that cries wolf
+    gets loosened until it means nothing. Same words, same order, is the bar.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _split_source_block(source_block: str) -> list:
+    """[(article_number, that article's text), ...] out of a built source block."""
+    parts = _EXAM_SOURCE_SPLIT_RE.split(source_block or "")
+    return [(parts[i], parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+
+
+def verify_exam_quote(quote: str, source_block: str) -> str:
+    """Which real article a question's quote came from — "" if it came from nowhere.
+
+    Returns the MILPERSMAN article number when the quote can be reproduced from the
+    retrieved text, "" when it cannot. "" is the signal to drop the question.
+
+    The length floor is not padding. Without it "the member" is found in every article
+    ever written, and a question could pass this check while resting on nothing — the
+    exact failure mode this function exists to catch.
+    """
+    q = _normalize_quote(quote)
+    if len(q.split()) < EXAM_QUOTE_MIN_WORDS:
+        return ""
+    for number, body in _split_source_block(source_block):
+        if f" {q} " in f" {_normalize_quote(body)} ":
+            return number
+    return ""
+
+
+def ground_exam_questions(questions: list, source_block: str):
+    """Keep only the questions whose quote is really in the manual. Returns (kept, dropped).
+
+    Also overwrites the citation. The model used to type source_manual and
+    chapter_section from memory, which is how questions ended up citing cancelled
+    articles and the wrong reference entirely. Here the code names the article the quote
+    was actually found in, so the reference under a question is an observation rather
+    than a claim.
+    """
+    kept, dropped = [], 0
+    for row in questions or []:
+        number = verify_exam_quote(row.get("source_quote", ""), source_block)
+        if not number:
+            dropped += 1
+            continue
+        q = dict(row)
+        q["grounded"] = "yes"
+        q["source_manual"] = "MILPERSMAN"
+        q["chapter_section"] = f"Article {number}"
+        kept.append(q)
+    return kept, dropped
+
+
 def exam_source_line(q: dict) -> str:
     """The reference under an answer.
 
@@ -3038,6 +3145,11 @@ def exam_source_line(q: dict) -> str:
         return "⚠️ No reference given — treat this one with caution."
     if str(q.get("verified", "")).strip().lower() in ("yes", "true", "1"):
         return f"📖 Verified source: {ref}"
+    # Middle tier. Not a person's sign-off, so it must not read like one — but the
+    # article number here was found by the code inside the retrieved text, not typed
+    # from memory, so it is not the same thing as an unverified lead either.
+    if str(q.get("grounded", "")).strip().lower() in ("yes", "true", "1"):
+        return f"📗 Quoted from {ref} — the wording was matched against the real manual text."
     return f"🔎 Unverified lead: {ref} — confirm in your bib before you trust it."
 
 
@@ -3045,6 +3157,18 @@ def exam_all_verified(questions: list) -> bool:
     """True only if every question came from the verified bank."""
     return bool(questions) and all(
         str(q.get("verified", "")).strip().lower() in ("yes", "true", "1")
+        for q in questions
+    )
+
+
+def exam_all_grounded(questions: list) -> bool:
+    """True only if every question was written from, and quote-matched to, real text.
+
+    Deliberately separate from exam_all_verified(): a question can be grounded without
+    a person ever having read it, and the two must never be messaged as the same thing.
+    """
+    return bool(questions) and all(
+        str(q.get("grounded", "")).strip().lower() in ("yes", "true", "1")
         for q in questions
     )
 
@@ -3136,12 +3260,24 @@ with tab5:
             if pq_topic not in pq_topics:
                 pq_topic = list(pq_topics.keys())[0]
             bib_refs = pq_topics[pq_topic]["bib"]
+
+            # Same retrieval the Tutor uses: every current MILPERSMAN article in the
+            # hundred-series this topic's own bibliography line already names. A topic
+            # governed by a manual not in the corpus yet (JTR, most of the FMR) comes
+            # back empty and falls through to the memory-written exam, unchanged.
+            exam_source_block, exam_articles = corpus.get_series_grounding(bib_refs)
+            exam_grounded = bool(exam_source_block)
+            # Ask for a couple of spares when grounded, because a question whose quote
+            # cannot be found gets dropped and a sailor who asked for 5 should still
+            # get 5. Trimmed back to pq_num after verification.
+            pq_ask = pq_num + 2 if exam_grounded else pq_num
+
             pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
 {cycle_authority_line()}
 
 {cycle_facts_block()}
 
-Write exactly {pq_num} NWAE-style multiple choice questions for:
+Write exactly {pq_ask} NWAE-style multiple choice questions for:
 - Topic: {pq_topic}
 - Rating / Paygrade: {pq_rating} advancing to {pq_paygrade}
 - Governing References: {bib_refs}
@@ -3180,27 +3316,94 @@ Rules:
   ID-card manual as the authority for a pay or allowance transaction.
 - No fluff."""
 
+            if exam_grounded:
+                pq_prompt += f"""
+
+=== SOURCE TEXT — THESE RULES OVERRIDE EVERYTHING ABOVE ===
+
+Below is the ACTUAL, REAL text of the MILPERSMAN article(s) that govern this topic —
+pulled from the manual itself, not from memory.
+
+{exam_source_block}
+
+Write every question from the text above and nothing else. If a fact is not in that
+text, it does not go in a question, an option, or an explanation — not even a fact you
+are confident is true. If the text above does not support {pq_ask} good questions, write
+fewer.
+
+Each JSON object must carry ONE ADDITIONAL key:
+
+  "source_quote": "One continuous passage copied WORD FOR WORD out of the text above,
+                   at least 15 words long, that on its own shows the keyed answer is
+                   the correct one."
+
+Rules for source_quote, which matter more than anything else here:
+- Copy it exactly. Do not paraphrase it, do not tidy it, do not correct its typos, and
+  do not stitch two separate passages together into one quote.
+- It must come from the article your question is actually about.
+- The app checks this quote against the source text above by direct string match and
+  DISCARDS any question whose quote is not found there. A question built on a passage
+  you composed yourself will never reach the sailor.
+
+Do not worry about source_manual and chapter_section — the app replaces both with the
+article the quote was actually found in. Fill them in as best you can and move on."""
+            else:
+                pq_prompt += """
+
+=== ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+
+You do not have the manuals in front of you for this topic. You are writing from memory,
+and a sailor will carry what you say into a closed-book exam. Measured 20 August 2026:
+of 30 questions written this way, only 5 were safe to hand a sailor, and not one
+citation could be traced to a real article. The bad ones read exactly like the good ones.
+
+So write questions on the SHAPE of the rule — what the process is, who is involved, how
+it flows, what the exam is really testing — rather than on a specific number you cannot
+check. Where a question cannot work without a value, name the manual and omit the
+article number rather than inventing one."""
+
             with st.spinner("Chief is writing your exam..."):
                 try:
                     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
-                        model="claude-opus-4-5", max_tokens=4000,
+                        # A grounded set is two questions longer and every question
+                        # carries a quote, so 4000 truncates the JSON mid-array and the
+                        # whole exam parses to nothing.
+                        model="claude-opus-4-5",
+                        max_tokens=6000 if exam_grounded else 4000,
                         messages=[{"role": "user", "content": pq_prompt}]
                     )
                     parsed = parse_exam_json(message.content[0].text)
+                    dropped = 0
+                    if parsed and exam_grounded:
+                        # The gate. Anything whose quote isn't really in the retrieved
+                        # text is discarded here, before a sailor can ever see it.
+                        parsed, dropped = ground_exam_questions(parsed, exam_source_block)
+                        parsed = parsed[:pq_num]
                     if not parsed:
-                        st.error("Chief's exam came back in a format the app couldn't read. "
-                                 "Hit Generate Mock Exam again.")
+                        if exam_grounded and dropped:
+                            st.error(
+                                "Chief wrote questions the app couldn't trace back to the "
+                                "manual text, so none of them were shown. That's the check "
+                                "doing its job. Hit Generate Mock Exam again."
+                            )
+                        else:
+                            st.error("Chief's exam came back in a format the app couldn't read. "
+                                     "Hit Generate Mock Exam again.")
                     else:
                         st.session_state.exam_questions = parsed
                         st.session_state.exam_topic = pq_topic
                         st.session_state.exam_rating = pq_rating
                         # Clear anything left over from a previous sitting, including the
                         # old free-text format, so a new exam never opens pre-graded.
-                        for stale in ("exam_result", "exam_blank_warning", "practice_questions"):
+                        for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                                      "exam_short_by"):
                             st.session_state.pop(stale, None)
                         for i in range(50):
                             st.session_state.pop(f"exam_pick_{i}", None)
+                        # Set AFTER the clear-out above, or this exam's own count is the
+                        # thing that gets wiped.
+                        st.session_state.exam_short_by = max(0, pq_num - len(parsed))
                 except Exception as e:
                     st.error("Error: " + str(e))
 
@@ -3232,6 +3435,29 @@ Rules:
                 # a graded exam.
                 feedback = ""
                 missed = [r["question"] for r in rows if not r["is_right"]]
+                # How much the Chief is allowed to lean on this answer key depends on
+                # where the key came from. Three states, three different things to say.
+                if exam_all_verified(exam_qs):
+                    key_caveat = ""
+                elif exam_all_grounded(exam_qs):
+                    key_caveat = (
+                        "\n\nIMPORTANT: these questions were written from the real MILPERSMAN "
+                        "text and each one's quoted rule was matched back to that text, so the "
+                        "subject matter is sound — but no person has checked that the correct "
+                        "letter was keyed. Teach the rule behind anything they missed, and name "
+                        "the article shown under the question as where to confirm it. Do not "
+                        "tell them they do not know their job on the strength of an unchecked key."
+                    )
+                else:
+                    key_caveat = (
+                        "\n\nIMPORTANT: these questions were AI-generated and have NOT been "
+                        "verified against the official manuals — the answer key itself may be "
+                        "wrong. Verification has caught cancelled article numbers and wrong "
+                        "references. So point the sailor at the governing manual to confirm "
+                        "what they missed. Do not tell them they do not know their job over a "
+                        "question you cannot vouch for. Stay direct, but aim them at the "
+                        "reference rather than judging them on this key."
+                    )
                 try:
                     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     fb_prompt = (
@@ -3242,14 +3468,7 @@ Rules:
                            else "They answered every question correctly.")
                         + "\n\nTwo to four sentences. Be honest and specific about what to "
                           "study next. No fluff, no praise they did not earn."
-                        + ("" if exam_all_verified(exam_qs) else
-                           "\n\nIMPORTANT: these questions were AI-generated and have NOT been "
-                           "verified against the official manuals — the answer key itself may be "
-                           "wrong. Verification has caught cancelled article numbers and wrong "
-                           "references. So point the sailor at the governing manual to confirm "
-                           "what they missed. Do not tell them they do not know their job over a "
-                           "question you cannot vouch for. Stay direct, but aim them at the "
-                           "reference rather than judging them on this key.")
+                        + key_caveat
                     )
                     fb = client.messages.create(
                         model="claude-opus-4-5", max_tokens=400,
@@ -3289,7 +3508,28 @@ Rules:
                 st.subheader("📝 Your Mock Exam")
                 st.caption(f"{len(exam_qs)} questions · {exam_topic} · "
                            "answers stay hidden until you submit.")
-                if not exam_all_verified(exam_qs):
+                # Three honest states, and they must not be allowed to blur into each
+                # other: a person signed this off / the machine proved the wording is
+                # real / neither. The middle one is new as of 25 Aug 2026.
+                if exam_all_verified(exam_qs):
+                    pass
+                elif exam_all_grounded(exam_qs):
+                    st.info(
+                        "**Written from the manual, and checked.** Every question here was "
+                        "written from the real text of the MILPERSMAN articles for this topic, "
+                        "and the app matched each one's quoted line back to that text before "
+                        "showing it to you — anything it couldn't match was thrown out. "
+                        "That means the rule under each question is really in the manual. "
+                        "It does not mean a Chief has signed off on the answer key, so if one "
+                        "looks wrong, check the article named under it."
+                    )
+                    short_by = st.session_state.get("exam_short_by") or 0
+                    if short_by:
+                        st.caption(
+                            f"{short_by} question{'s' if short_by > 1 else ''} didn't survive "
+                            "that check and were dropped, so this set is a little short."
+                        )
+                else:
                     st.warning(
                         "**Unverified practice questions.** These are written by AI from the "
                         "NWAE bibliography and have not been checked against the official "
@@ -3352,7 +3592,17 @@ Rules:
                 else:
                     st.error(f"{verdict} · Below standard. This topic needs real study time.")
 
-                if not exam_all_verified(exam_result["rows"]):
+                if exam_all_verified(exam_result["rows"]):
+                    pass
+                elif exam_all_grounded(exam_result["rows"]):
+                    st.info(
+                        "**The rules behind these questions are real; the answer key is still "
+                        "AI's.** Each question was written from the actual MILPERSMAN text and "
+                        "its quoted line was matched back to that text. Nobody has checked that "
+                        "the right letter was keyed. If you're confident an answer marked wrong "
+                        "was actually right, open the article named under it and settle it there."
+                    )
+                else:
                     st.warning(
                         "**This score is practice, not truth.** These questions were "
                         "AI-generated and have not been verified against the official manuals. "
@@ -3428,7 +3678,8 @@ Rules:
                     )
                 with col_again:
                     if st.button("🔄 Take Another Exam", width="stretch"):
-                        for stale in ("exam_questions", "exam_result", "exam_blank_warning"):
+                        for stale in ("exam_questions", "exam_result", "exam_blank_warning",
+                                      "exam_short_by"):
                             st.session_state.pop(stale, None)
                         for i in range(50):
                             st.session_state.pop(f"exam_pick_{i}", None)

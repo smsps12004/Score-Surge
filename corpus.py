@@ -94,6 +94,130 @@ def get_article_text(number: str, max_chars: int = 4000) -> str:
     return text
 
 
+# ── READING ORDER: MILPERSMAN IS FULL OF TWO-COLUMN TABLES ───────────────────────
+#
+# Found live 25 Aug 2026, while measuring the new Mock Exam quote check against a real
+# generation run. Most MILPERSMAN rules are printed as a "WHEN... / THEN..." table, and
+# the text stored in corpus.db keeps the printed layout — the two cells of a row sit
+# side by side on the same physical line, padded apart with spaces:
+#
+#     member is hospitalized or      chargeable leave will terminate
+#     SIQ,                           the day preceding and recommence
+#                                    the day following such status.
+#
+# Read as flat text, that is "member is hospitalized or chargeable leave will terminate
+# SIQ, the day preceding and..." — the two columns interleaved into nonsense. The model
+# was in fact reading it correctly and reassembling the real rule, which is why nobody
+# noticed: it only showed up when the Mock Exam started asking for a VERBATIM quote and
+# every honest quote failed to appear in the text it was quoting from. 5 of 7 questions
+# in the first real run were dropped, and all five turned out to be quoting the rule
+# correctly.
+#
+# So the fix belongs here, not in the checker: put the text into reading order before
+# anyone — model or code — is handed it. Cells are detected by the printed layout
+# itself (a run of blank columns that is blank on EVERY line of the block), never by
+# guessing at content, and a block with no such gap is passed through untouched.
+def _column_gaps(lines: list, min_gap: int = 2) -> list:
+    """(start, end) of every column of blanks running the full height of the block.
+
+    Leading indentation and trailing ragged edge are excluded — those are margins, not
+    column separators, and treating them as separators would split ordinary prose.
+    """
+    width = max(len(l) for l in lines)
+    padded = [l.ljust(width) for l in lines]
+    gaps, i = [], 0
+    while i < width:
+        if all(p[i] == " " for p in padded):
+            j = i
+            while j < width and all(p[j] == " " for p in padded):
+                j += 1
+            if i > 0 and j < width and (j - i) >= min_gap:
+                gaps.append((i, j))
+            i = j
+        else:
+            i += 1
+    return gaps
+
+
+def _flatten_block(lines: list) -> list:
+    """One block of lines, re-emitted a table row at a time instead of line by line."""
+    if len(lines) < 2:
+        return lines
+    gaps = _column_gaps(lines)
+    if not gaps:
+        return lines
+    width = max(len(l) for l in lines)
+    starts = [0] + [g[1] for g in gaps]
+    ends = [g[0] for g in gaps] + [width]
+    grid = [[l.ljust(width)[s:e].strip() for s, e in zip(starts, ends)] for l in lines]
+    # Two lines that both fill more than one cell is what makes this a table. One line
+    # with something out to the right of a gap is a heading with a value beside it, and
+    # is left alone.
+    if sum(1 for cells in grid if sum(1 for c in cells if c) > 1) < 2:
+        return lines
+
+    # Where one table row ends and the next begins, using only the printed layout.
+    #
+    # A row's cells wrap over several lines, and they rarely wrap to the same depth —
+    # so the tail of a row has content in some columns and blanks in the others. The
+    # next row is the first line after that which fills EVERY column again. Checked
+    # against two real MILPERSMAN tables (1050-050's WHEN/THEN hospitalization rules
+    # and 1050-090's day-of-departure rules, which wrap to different depths): this
+    # finds every real row boundary in both.
+    #
+    # Line 0 of a block is its column headings ("WHEN ... / THEN ..."), so it is always
+    # its own row. Where a table continues across a page break there is no heading and
+    # this costs the first row of the continuation — a question quoting that one row is
+    # dropped, which is the safe direction to be wrong in.
+    # A table that runs over a page break reprints its column headings partway down.
+    # Left in, those headings land in the middle of whichever row they interrupt
+    # ("...normal working hours, WHEN ... the day of departure..."), which is exactly
+    # the kind of seam that makes an honest quote unfindable. Only an exact repeat of
+    # this block's own heading line is removed.
+    if len(grid) >= 3:
+        grid = [grid[0]] + [c for c in grid[1:] if c != grid[0]]
+
+    rows, current = [], []
+    for idx, cells in enumerate(grid):
+        filled = [bool(c) for c in cells]
+        new_row = idx == 0 or (idx == 1 and len(grid) >= 3)
+        if idx > 1 and all(filled) and not all(bool(c) for c in grid[idx - 1]):
+            new_row = True
+        if new_row and current:
+            rows.append(current)
+            current = []
+        current.append(cells)
+    if current:
+        rows.append(current)
+
+    out = []
+    for row in rows:
+        columns = []
+        for col in range(len(starts)):
+            joined = " ".join(cells[col] for cells in row if cells[col]).strip()
+            if joined:
+                columns.append(joined)
+        if columns:
+            out.append(" ".join(columns))
+    return out
+
+
+def flatten_columns(text: str) -> str:
+    """An article's text in the order a person would read it off the printed page."""
+    out, block = [], []
+    for line in (text or "").splitlines():
+        if line.strip():
+            block.append(line)
+        else:
+            if block:
+                out.extend(_flatten_block(block))
+                block = []
+            out.append("")
+    if block:
+        out.extend(_flatten_block(block))
+    return "\n".join(out)
+
+
 def build_source_block(article_numbers: list, max_chars_each: int = 4000):
     """The real text for a lesson's mapped articles, plus which ones actually loaded.
 
@@ -108,6 +232,8 @@ def build_source_block(article_numbers: list, max_chars_each: int = 4000):
         if not text:
             continue
         title = text.splitlines()[1].strip() if len(text.splitlines()) > 1 else ""
+        # Reading order, not printed order — see _column_gaps() above for why.
+        text = flatten_columns(text)
         parts.append(f"--- MILPERSMAN {number} — {title} ---\n{text}")
         numbers.append(number)
     return "\n\n".join(parts), numbers
