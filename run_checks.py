@@ -51,7 +51,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 339
+EXPECTED_TOTAL = 359
 
 
 def skip(reason):
@@ -1205,6 +1205,86 @@ def main():
     check("a single line is never treated as a table",
           _corpus.flatten_columns("Responsible    OPNAV (N130)"),
           "Responsible    OPNAV (N130)")
+
+    # ── 18. FOUND IN THE LIVE APP, 25 Aug 2026 ──────────────────────────────────
+    #
+    # Four of these came from opening score-surge.streamlit.app in a browser and
+    # actually using it, after every check in this file was already passing. A test
+    # suite that reads app.py cannot see a pre-filled input box, a tab hidden behind a
+    # scroll arrow, or a "Fork" button. This section pins what was fixed so it stays
+    # fixed.
+    print("\n18. LIVE-APP FIXES (things no code-reading check could have caught)")
+
+    src18 = open(APP, encoding="utf-8").read()
+
+    # (a) The closed-book rule. A generated question that says "According to MILPERSMAN
+    # 1050-050..." is easier than the real NWAE, so the score it returns is inflated —
+    # and a sailor uses that score to judge whether their FMS gap is closeable. Seen
+    # live in a real generated exam: two of three questions named their article.
+    _schema18 = ENGINE_NS["EXAM_JSON_RULES"]
+    check("generated questions may not name the article in the stem",
+          "NEVER name an article" in _schema18, True)
+    check("...and the rule says why, not just what",
+          "closed book" in _schema18, True)
+    check("...and it reaches the Mock Exam prompt",
+          "{EXAM_JSON_RULES}" in mock, True)
+    check("...and the Study Guide's question prompt too",
+          "{EXAM_JSON_RULES}" in guide, True)
+
+    # (b) The calculator no longer opens on invented scores. DEFAULT_VALUES stays as
+    # the UPLOAD path's labelled placeholder; BLANK_VALUES is what an untouched form
+    # starts on.
+    BLANK = L["BLANK_VALUES"]
+    check("a fresh form starts on nothing, not on plausible numbers",
+          sorted(set(BLANK.values())), [0.0])
+    check("...for every field the FMS uses", sorted(BLANK), sorted(DEFAULT_VALUES))
+    check("...and the form actually seeds from it",
+          "extracted_data = BLANK_VALUES.copy()" in src18, True)
+    check("the upload path's labelled placeholder is untouched",
+          DEFAULT_VALUES["exam_score"], 42.0)
+    check("no sailor's name is invented either",
+          'st.text_input(\n            "Sailor Name / Rate", value="",' in src18, True)
+
+    # (c) Every tab has to be reachable on a phone. At phone width the long labels ran
+    # past the edge and three of the seven — including Mock Exam and Planner, two of
+    # the things the Chief tier is sold on — sat behind a ~12px scroll arrow.
+    _tabs_src = src18[src18.index("tab1, tab2, tab3"):]
+    _tabs_src = _tabs_src[:_tabs_src.index("])")]
+    _labels = re.findall(r'"([^"]+)"', _tabs_src)
+    check("all seven tabs are still there", len(_labels), 7)
+    # Emoji + one short word. The longest label is what decides whether the strip fits.
+    check("every tab label is short enough to fit a phone",
+          max(len(l) for l in _labels) <= 12, True)
+    check("...and none of them lost its icon",
+          all(len(l.split(" ", 1)) == 2 for l in _labels), True)
+
+    # (d) A locked-out sailor can get back in. There was no path at all before this.
+    _auth = src18[src18.index("def show_auth_page"):src18.index("# ── STRIPE SUCCESS CALLBACK")]
+    check("the login page offers a password reset", "Forgot your password?" in _auth, True)
+    check("reset asks Supabase to send the mail", "reset_password_email" in _auth, True)
+    # A code, not a link: Supabase's recovery link returns the token in the URL's #
+    # fragment, which the browser never sends to the server — and Streamlit only runs
+    # on the server, so a link-based reset would silently do nothing.
+    check("reset is code-based, which Streamlit can actually complete",
+          "verify_otp" in _auth, True)
+    check("...and sets the new password through the auth client",
+          'update_user({"password"' in _auth, True)
+    check("the new password is confirmed before it is set",
+          "Those two passwords don't match." in _auth, True)
+    check("reset enforces the same minimum length as signup",
+          _auth.count("at least 6 characters"), 2)
+    # A login page must not confirm to a stranger whether an address is registered.
+    check("reset does not reveal whether the email exists",
+          "If **{st.session_state.get('pw_reset_email', 'that address')}** has" in _auth,
+          True)
+
+    # (e) The app stops handing out its own source.
+    _cfg_path = os.path.join(HERE, ".streamlit", "config.toml")
+    if os.path.exists(_cfg_path):
+        _cfg = open(_cfg_path, encoding="utf-8").read()
+        check("the Fork / GitHub toolbar is turned off", "toolbarMode" in _cfg, True)
+    else:
+        skip("no .streamlit/config.toml staged — toolbar setting not checked")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

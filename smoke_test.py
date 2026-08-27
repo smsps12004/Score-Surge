@@ -222,6 +222,35 @@ def main():
     check("...and is flagged as untrustworthy on screen, not shown as clean",
           any("don't add up" in e.value for e in at.error), True)
 
+    # ── 8. THE LOGGED-OUT PAGE ───────────────────────────────────────────────
+    #
+    # Every check above runs PAST the login gate, because build_app() fakes a session.
+    # Which meant the one screen a locked-out sailor can actually reach had never been
+    # rendered by an automated check at all. That gap mattered on 25 Aug 2026: the
+    # Forgot Password flow was added and it lives entirely on this screen. A crash
+    # here locks out every user of the app, including the ones who still remember
+    # their password.
+    print("\n8. LOGGED-OUT PAGE (the only screen a locked-out sailor can reach)")
+    at = build_app()
+    at.session_state["user"] = None
+    at.run()
+    for exc in at.exception:
+        print(f"  EXCEPTION: {str(exc.value)[:300]}")
+    check("the login page renders with no uncaught exception", len(at.exception), 0)
+
+    _blob = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    _labels = [t.label for t in at.text_input]
+    # The heading itself is an expander label, which AppTest doesn't surface as text —
+    # so assert on the copy inside it, which only renders if the flow is really there.
+    check("...and offers a way back in for a forgotten password",
+          "six-digit code" in _blob, True)
+    # The reset widgets live inside an expander, so they are in the tree even while
+    # it is collapsed. If the email field is missing, the flow is unreachable.
+    check("...with somewhere to enter the account email",
+          any("signed up with" in l for l in _labels), True)
+    check("...and the login form is still intact underneath",
+          _labels.count("Password") >= 1, True)
+
     print("\n" + "=" * 68)
     if FAIL:
         print(f"{len(FAIL)} SMOKE CHECK(S) FAILED — the app is broken for users:")

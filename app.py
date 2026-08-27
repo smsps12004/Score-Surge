@@ -333,6 +333,93 @@ def show_auth_page():
                 except Exception:
                     st.error("Login failed — check your email and password.")
 
+        # ── FORGOT PASSWORD ──────────────────────────────────────────────────
+        #
+        # Until 25 Aug 2026 there was no way back in. Log In and Create Account,
+        # nothing else — so a sailor who forgot their password was locked out of a
+        # product they were paying for, permanently, with no self-service path and
+        # no way for Shawn to help without going into the database by hand.
+        #
+        # A CODE, not a link. Supabase's recovery link hands the token back in the
+        # URL's # fragment, which a browser never sends to the server — and Streamlit
+        # only ever runs on the server, so the app cannot see it. The link would land
+        # the sailor right back on this login page none the wiser. The e-mailed
+        # six-digit code goes through verify_otp() instead, which is a plain server
+        # call and works exactly the same on a phone as on a laptop.
+        #
+        # Nothing here ever learns the sailor's password: they type the new one, the
+        # Supabase client hashes and stores it, and it is never logged or echoed.
+        st.divider()
+        with st.expander("🔑 Forgot your password?"):
+            if not st.session_state.get("pw_reset_sent"):
+                st.caption(
+                    "We'll email you a six-digit code. Enter it below with your new "
+                    "password and you're back in."
+                )
+                with st.form("pw_reset_request"):
+                    reset_email = st.text_input("The email you signed up with")
+                    reset_send = st.form_submit_button("Email me a reset code",
+                                                       width="stretch")
+                if reset_send:
+                    if not reset_email.strip():
+                        st.error("Enter your email address first.")
+                    else:
+                        try:
+                            supabase.auth.reset_password_email(reset_email.strip())
+                        except Exception:
+                            # Deliberately swallowed. Whether an address is registered
+                            # is not something a login page should confirm to whoever
+                            # is typing into it, so the message below is the same
+                            # either way.
+                            pass
+                        st.session_state.pw_reset_sent = True
+                        st.session_state.pw_reset_email = reset_email.strip()
+                        st.rerun()
+            else:
+                st.info(
+                    f"If **{st.session_state.get('pw_reset_email', 'that address')}** has "
+                    "an account, a six-digit code is on its way. Check your spam folder — "
+                    "the code expires after about an hour."
+                )
+                with st.form("pw_reset_confirm"):
+                    reset_code = st.text_input("Six-digit code from the email")
+                    new_pw = st.text_input("New password", type="password")
+                    new_pw2 = st.text_input("Confirm new password", type="password")
+                    reset_confirm = st.form_submit_button("Set my new password",
+                                                          width="stretch")
+                if reset_confirm:
+                    if not reset_code.strip():
+                        st.error("Enter the six-digit code from your email.")
+                    elif new_pw != new_pw2:
+                        st.error("Those two passwords don't match.")
+                    elif len(new_pw) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    else:
+                        try:
+                            supabase.auth.verify_otp({
+                                "email": st.session_state.get("pw_reset_email", ""),
+                                "token": reset_code.strip(),
+                                "type": "recovery",
+                            })
+                            supabase.auth.update_user({"password": new_pw})
+                            for _k in ("pw_reset_sent", "pw_reset_email"):
+                                st.session_state.pop(_k, None)
+                            st.success(
+                                "Password changed. Log in above with your new password."
+                            )
+                        except Exception:
+                            # The two real causes are a wrong code and an expired one,
+                            # and the sailor cannot tell them apart from the outside —
+                            # so say both rather than a bare "failed".
+                            st.error(
+                                "That code didn't work. It may be mistyped or expired — "
+                                "start again below and we'll send a fresh one."
+                            )
+                if st.button("Start over / send a new code"):
+                    for _k in ("pw_reset_sent", "pw_reset_email"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+
     with tab_signup:
         st.subheader("Start your free 3-day trial.")
         st.caption("Full access for 3 days. No credit card required.")
@@ -761,6 +848,22 @@ DEFAULT_VALUES = {
     "education": 0.0,
     "pna": 0.0,
 }
+
+# What the form starts on when NOTHING was uploaded.
+#
+# It used to start on DEFAULT_VALUES — exam 42.00, PMA 3.80, SIPG 3.00, awards 2.00,
+# under the name "SailorX". Those are invented numbers, and they sit in the sailor's own
+# input boxes looking exactly like numbers that were read off something. Found live in
+# the browser 25 Aug 2026: open the calculator, fill in the two figures you happen to
+# know, press Calculate, and you get a confident FMS built partly on values nobody ever
+# gave it, with nothing on screen saying so. That is the same failure as a misread
+# profile sheet, just with a friendlier face.
+#
+# DEFAULT_VALUES stays exactly as it was — it is the UPLOAD path's placeholder for a
+# field the parser could not read, and that path already labels those fields "❌ not
+# found — placeholder" and names them on screen. A placeholder you are told about is
+# honest; the same number with no upload and no label is not.
+BLANK_VALUES = {k: 0.0 for k in DEFAULT_VALUES}
 
 # Widest plausible range for each field across every paygrade. A number scraped
 # from the sheet that falls outside its field's range is not that field's value —
@@ -1810,14 +1913,20 @@ Rules:
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
+# Short labels on purpose. Found live in the browser 25 Aug 2026: at phone width the
+# full names ran past the edge and Mock Exam, Planner and Profile sat behind a ~12px
+# scroll arrow most people never notice — three of the seven tabs, including two of the
+# ones the Chief tier is sold on. Shawn uses this app from a phone and so do his
+# sailors, so the tab strip has to fit a phone, not a laptop. The emoji carries the
+# recognition and the word carries the meaning; nothing is renamed beyond trimming.
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "🏠 FMS Calculator",
-    "📋 Advancement Info",
-    "📖 Study Guide",
-    "🎓 AI Tutor",
-    "🎯 Mock Exam",
-    "📅 Advancement Planner",
-    "👤 My Profile",
+    "🏠 FMS",
+    "📋 Info",
+    "📖 Study",
+    "🎓 Tutor",
+    "🎯 Exam",
+    "📅 Planner",
+    "👤 Profile",
 ])
 
 # ── TAB 1: FMS CALCULATOR ─────────────────────────────────────────────────────
@@ -1829,7 +1938,8 @@ with tab1:
         help="The app will try to read your scores automatically. You can always edit them below.",
     )
 
-    extracted_data = DEFAULT_VALUES.copy()
+    # Blank until a sheet is actually read — see BLANK_VALUES for why.
+    extracted_data = BLANK_VALUES.copy()
     detected_paygrade = None
     # Held past the upload block: the paygrade cross-check below needs the sheet's
     # own wording, and it runs after the dropdown, not before it.
@@ -2014,17 +2124,19 @@ with tab1:
         )
 
     with st.form("fms_form"):
-        sailor_name = st.text_input("Sailor Name / Rate", value="SailorX")
+        sailor_name = st.text_input(
+            "Sailor Name / Rate", value="",
+            placeholder="e.g. PS2 Smith — optional, only used on your printout",
+        )
         col1, col2 = st.columns(2)
         with col1:
             exam_score = st.number_input("Exam Standard Score", min_value=0.0, max_value=80.0,
                                          value=safe_value(extracted_data["exam_score"], 0.0, 80.0,
-                                                          DEFAULT_VALUES["exam_score"]), step=0.5)
+                                                          0.0), step=0.5)
             pma = st.number_input(
                 f"{pma_label} (max {pma_cap:.2f})",
                 min_value=0.0, max_value=pma_cap,
-                value=safe_value(extracted_data["pma"], 0.0, pma_cap,
-                                 min(DEFAULT_VALUES["pma"], pma_cap)), step=0.01,
+                value=safe_value(extracted_data["pma"], 0.0, pma_cap, 0.0), step=0.01,
                 help=("Average of your eval promotion recommendation values (4.00, 3.80, "
                       "3.60, 3.40 or 2.00). Tops out at 4.00."
                       if pma_cap == 4.00 else
@@ -2033,7 +2145,7 @@ with tab1:
             )
             tir = st.number_input(
                 "Service in Paygrade / Time in Rate (Years)", min_value=0.0, max_value=30.0,
-                value=safe_value(extracted_data["tir"], 0.0, 30.0, DEFAULT_VALUES["tir"]), step=0.5,
+                value=safe_value(extracted_data["tir"], 0.0, 30.0, 0.0), step=0.5,
                 disabled=is_e7,
                 help="Your profile sheet calls this Service in Paygrade (SIPG); the FMS chart "
                      "calls it Time in Rate. Same number. Points = years / 5, capped at "
@@ -2056,7 +2168,7 @@ with tab1:
             )
             pna = st.number_input(
                 "PNA Points (max 9)", min_value=0.0, max_value=9.0,
-                value=safe_value(extracted_data["pna"], 0.0, 9.0, DEFAULT_VALUES["pna"]), step=0.5,
+                value=safe_value(extracted_data["pna"], 0.0, 9.0, 0.0), step=0.5,
                 disabled=is_e7,
                 help="Top 25% of candidates earn these. Last 3 exam cycles only.",
             )
@@ -2683,6 +2795,13 @@ Rules:
   current, name the manual and omit a specific article rather than inventing one.
 - Prefer the governing publication for the subject matter. Do not cite an eligibility or
   ID-card manual as the authority for a pay or allowance transaction.
+- NEVER name an article, chapter, instruction or NAVADMIN number inside the question
+  text or inside any of the four options. The real NWAE is closed book and does not tell
+  a sailor where to look. "According to MILPERSMAN 1050-050, how is leave charged..." is
+  an easier question than the one they will actually sit, so the score it returns is
+  higher than the truth — and a sailor uses that score to decide whether their FMS gap is
+  closeable. The reference belongs in source_manual and chapter_section, which the app
+  shows underneath the answer AFTER they have committed to one. Never in the stem.
 - No fluff."""
 
 

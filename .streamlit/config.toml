@@ -7,3 +7,10 @@ backgroundColor = "#142b50"
 secondaryBackgroundColor = "#1d3a66"
 textColor = "#f0e6d2"
 font = "sans serif"
+
+[client]
+# Hides Streamlit Cloud's "Fork" button and GitHub link from the app header.
+# Found live in the browser 25 Aug 2026: a paying sailor was one click from forking
+# the whole product -- source, prompts, FMS logic and the bundled MILPERSMAN corpus.
+# "minimal" keeps the app's own menu items and drops the platform's.
+toolbarMode = "minimal"
