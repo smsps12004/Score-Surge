@@ -90,7 +90,22 @@ def get_article_text(number: str, max_chars: int = 4000) -> str:
     else:
         text = f"MILPERSMAN {number}\n{title}\n\n{body}".strip()
     if len(text) > max_chars:
-        text = text[:max_chars].rsplit("\n", 1)[0] + "\n...[article continues]"
+        # Cut at a PARAGRAPH break, not just a line break. Cutting on the nearest
+        # newline still lands mid-sentence, because manual text wraps every 60-odd
+        # characters — and a sentence that stops halfway is one the model finishes
+        # from memory. Measured live 25 Aug 2026: a Mock Exam question quoted
+        # "...must agree to serve for 3 years in the Ready Reserve" where the supplied
+        # text stopped at "...in the Ready". The gate correctly threw the question
+        # away, but the sailor lost a good question to a ragged edge.
+        # A SENTENCE end, not a paragraph break. Backing up to the last blank line was
+        # tried first and rejected the same day: on 1050-010 the nearest blank line was
+        # 700 characters earlier, which threw away the 60-day ordinary accrual limit —
+        # trading a ragged edge for a missing rule is a bad trade. A sentence boundary
+        # is almost always within a line or two of the cap, so it costs nothing.
+        cut = text[:max_chars]
+        end = max(cut.rfind(". "), cut.rfind(".\n"))
+        cut = cut[:end + 1] if end > max_chars * 0.85 else cut.rsplit("\n", 1)[0]
+        text = cut.rstrip() + "\n...[article continues]"
     return text
 
 
@@ -320,6 +335,28 @@ _ARTICLE_RE = re.compile(r"MILPERSMAN\s+(\d{4}-\d{2,4})\b", re.IGNORECASE)
 _BARE_SERIES_RE = re.compile(r"\b(\d{4})\s+series\b", re.IGNORECASE)
 
 
+def _spread(articles: list, want: int) -> list:
+    """Sample evenly across a series instead of taking the first few.
+
+    A series is pulled in article-number order and then capped, so before 28 Aug 2026
+    "MILPERSMAN 1050 series" always meant the numerically-lowest eight. That was
+    tolerable when the corpus held twenty Leave articles. The rebuild recovered the
+    twenty pre-CH ones the parser had been dropping, which are all low-numbered — so
+    the cap filled entirely with 1050-080 through 1050-084 and the topic silently
+    stopped reaching Separation Leave, EML or anything above 1050-085.
+
+    Spreading costs nothing (same article count, same prompt size) and means a topic's
+    grounding spans its whole series rather than one end of it. It is still
+    deterministic: the same topic yields the same articles every time, so a sailor
+    generating several exams on one topic sees the same source pool. Rotating that
+    pool per generation is a real improvement and is not done here.
+    """
+    if len(articles) <= want or want <= 0:
+        return articles
+    step = len(articles) / want
+    return [articles[min(int(i * step), len(articles) - 1)] for i in range(want)]
+
+
 def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 2500):
     """Pull real text for every article a topic's own bibliography line points to.
 
@@ -358,7 +395,7 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
             ).fetchall()
         except sqlite3.Error:
             rows = []
-        per_series.append([r[0] for r in rows])
+        per_series.append(_spread(([r[0] for r in rows]), max_articles))
 
     # Interleave round-robin across series instead of filling from the first series
     # named — a bib line like "MILPERSMAN 1910 series, 1830 series" names both
