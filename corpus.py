@@ -21,6 +21,7 @@ rewrite.
 """
 
 import os
+import random
 import re
 import sqlite3
 import functools
@@ -346,15 +347,22 @@ def _spread(articles: list, want: int) -> list:
     stopped reaching Separation Leave, EML or anything above 1050-085.
 
     Spreading costs nothing (same article count, same prompt size) and means a topic's
-    grounding spans its whole series rather than one end of it. It is still
-    deterministic: the same topic yields the same articles every time, so a sailor
-    generating several exams on one topic sees the same source pool. Rotating that
-    pool per generation is a real improvement and is not done here.
+    grounding spans its whole series rather than one end of it. As of 3 Sep 2026 each
+    slice of the series also draws a random article instead of always the same one, so
+    a sailor generating several exams on one topic sees a rotating source pool instead
+    of the identical handful every time — still evenly spread across the series, just
+    not the same pick within each slice.
     """
     if len(articles) <= want or want <= 0:
         return articles
     step = len(articles) / want
-    return [articles[min(int(i * step), len(articles) - 1)] for i in range(want)]
+    result = []
+    for i in range(want):
+        lo = int(i * step)
+        hi = int((i + 1) * step) if i < want - 1 else len(articles)
+        hi = max(hi, lo + 1)
+        result.append(articles[random.randrange(lo, min(hi, len(articles)))])
+    return result
 
 
 def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 2500):

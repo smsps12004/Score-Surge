@@ -8,6 +8,7 @@ import time
 import tempfile
 import os
 import datetime
+import hashlib
 from fpdf import FPDF
 import anthropic
 import stripe
@@ -2909,6 +2910,174 @@ def exam_all_grounded(questions: list) -> bool:
     )
 
 
+# ── CHALLENGE BUTTON ──────────────────────────────────────────────────────────
+#
+# A sailor-flagged question, AI-checked first. Questions here are never stored with
+# a stable database id -- Mock Exam and Practice Questions are generated fresh each
+# session -- so a challenge is keyed on a hash of the question's own content instead
+# of a row id. That also means "confirms-error" cannot auto-unverify a bank row the
+# way a real question-bank integration eventually could: there is no live bank row
+# to flip. What it CAN do today is re-pull the real article text (the same method
+# the quote gate already uses) and log a priority flag an admin sees on their next
+# pass through Score Surge DB's audit -- see audit_sample.py.
+CHALLENGE_DAILY_LIMIT = 3
+
+
+def _question_hash(q: dict) -> str:
+    """A stable id for one question's content, so the same question challenged twice
+    by the same sailor is recognizable even though nothing gave it a database row."""
+    basis = "|".join([
+        (q.get("question") or "").strip().lower(),
+        (q.get("correct_answer") or "").strip().upper(),
+        (q.get("source_manual") or "").strip().lower(),
+        (q.get("chapter_section") or "").strip().lower(),
+    ])
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _challenges_used_today(sailor_id: str) -> int:
+    """How many challenges this sailor has already submitted today.
+
+    Fails OPEN (returns 0) on a lookup error rather than blocking a sailor who
+    hasn't actually hit the limit -- a rare extra challenge on a network blip costs
+    less than a hard block that isn't real.
+    """
+    try:
+        today = datetime.date.today().isoformat()
+        res = (
+            supabase.table("challenges")
+            .select("challenge_id", count="exact")
+            .eq("sailor_id", sailor_id)
+            .gte("created_at", today)
+            .execute()
+        )
+        return res.count or 0
+    except Exception:
+        return 0
+
+
+def _already_challenged(sailor_id: str, question_hash: str) -> bool:
+    """True if this sailor already has any challenge on file for this exact question."""
+    try:
+        res = (
+            supabase.table("challenges")
+            .select("challenge_id")
+            .eq("sailor_id", sailor_id)
+            .eq("question_id", question_hash)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
+def run_challenge(question_row: dict, reason: str) -> dict:
+    """AI research pass on a sailor's challenge: re-pull the real article text (same
+    method the quote gate uses) and check the sailor's stated reason against it.
+
+    Returns {"verdict": "upholds" | "confirms-error" | "inconclusive", "reasoning": str}.
+    Never raises -- a failure here becomes an honest "inconclusive", not a crash.
+    """
+    ref = question_row.get("chapter_section") or ""
+    number_match = re.search(r"(\d{4}-\d{2,4})", ref)
+    real_text = corpus.get_article_text(number_match.group(1)) if number_match else ""
+
+    if not real_text:
+        return {
+            "verdict": "inconclusive",
+            "reasoning": (
+                "This question isn't tied to a specific, current MILPERSMAN article "
+                "we can automatically re-pull and check, so it's been queued for "
+                "manual review instead of an automatic verdict."
+            ),
+        }
+
+    flat_text = corpus.flatten_columns(real_text)
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        prompt = (
+            "A sailor is challenging a Navy advancement practice exam question. Decide "
+            "whether their stated reason holds up against the real MILPERSMAN text "
+            "below. Return ONLY a JSON object, no markdown fences: "
+            '{"verdict": "upholds" | "confirms-error" | "inconclusive", '
+            '"reasoning": "2-4 sentences, plain English, quoting or citing the text"}\n\n'
+            "- \"upholds\" — the question and keyed answer are correct; the sailor's "
+            "stated reason does not hold up against the text.\n"
+            "- \"confirms-error\" — the sailor is right: the text shows the keyed "
+            "answer, the question, or the citation is actually wrong.\n"
+            "- \"inconclusive\" — the text doesn't clearly settle it either way.\n\n"
+            f"QUESTION: {question_row.get('question')}\n"
+            f"A) {question_row.get('answer_a')}\nB) {question_row.get('answer_b')}\n"
+            f"C) {question_row.get('answer_c')}\nD) {question_row.get('answer_d')}\n"
+            f"KEYED ANSWER: {question_row.get('correct_answer')}\n"
+            f"SAILOR'S REASON FOR CHALLENGING: {reason}\n\n"
+            f"REAL TEXT ({ref}):\n{flat_text}"
+        )
+        msg = client.messages.create(
+            model="claude-opus-4-5", max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = re.sub(r"^```(?:json)?|```$", "", msg.content[0].text.strip(),
+                      flags=re.MULTILINE).strip()
+        parsed = json.loads(raw)
+        verdict = parsed.get("verdict", "inconclusive")
+        if verdict not in ("upholds", "confirms-error", "inconclusive"):
+            verdict = "inconclusive"
+        return {"verdict": verdict, "reasoning": (parsed.get("reasoning") or "").strip()}
+    except Exception as e:
+        return {
+            "verdict": "inconclusive",
+            "reasoning": f"Automatic check failed ({type(e).__name__}) — queued for manual review.",
+        }
+
+
+def render_challenge_button(row: dict, key_suffix):
+    """The 'Challenge this question' control under one graded question."""
+    q_hash = _question_hash(row)
+    with st.expander("🚩 Challenge this question"):
+        if not st.session_state.user:
+            st.caption("Log in to challenge a question.")
+            return
+        sailor_id = st.session_state.user.id
+        if _already_challenged(sailor_id, q_hash):
+            st.caption("You've already challenged this question — check back after the next review pass.")
+            return
+
+        reason = st.text_area(
+            "Why do you think this question is wrong?",
+            key=f"challenge_reason_{key_suffix}",
+            placeholder="Required — be specific about what you think is wrong and why.",
+        )
+        if st.button("Submit Challenge", key=f"challenge_submit_{key_suffix}"):
+            if not reason.strip():
+                st.error("A reason is required.")
+                return
+            if _challenges_used_today(sailor_id) >= CHALLENGE_DAILY_LIMIT:
+                st.error(f"You've hit today's limit of {CHALLENGE_DAILY_LIMIT} challenges. Try again tomorrow.")
+                return
+            with st.spinner("Checking against the real text..."):
+                verdict_result = run_challenge(row, reason.strip())
+            status = {"upholds": "resolved", "confirms-error": "priority",
+                      "inconclusive": "flagged"}[verdict_result["verdict"]]
+            try:
+                supabase.table("challenges").insert({
+                    "question_id": q_hash,
+                    "sailor_id": sailor_id,
+                    "reason_text": reason.strip(),
+                    "ai_verdict": verdict_result["verdict"],
+                    "ai_reasoning": verdict_result["reasoning"],
+                    "status": status,
+                }).execute()
+            except Exception as e:
+                st.caption(f"⚠️ Verdict below, but the challenge record couldn't be saved ({type(e).__name__}).")
+            if verdict_result["verdict"] == "confirms-error":
+                st.success(f"**You were right.** {verdict_result['reasoning']}")
+            elif verdict_result["verdict"] == "upholds":
+                st.info(f"**The question stands.** {verdict_result['reasoning']}")
+            else:
+                st.warning(f"**Inconclusive.** {verdict_result['reasoning']}")
+
+
 # ── END EXAM QUESTION ENGINE ─────────────────────────────────────────────────────
 
 
@@ -3207,6 +3376,12 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                 file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
                                 mime="text/plain", width="stretch",
                             )
+                            if sg_rows:
+                                st.markdown("**See something wrong above?**")
+                                for sgq_i, sgq_row in enumerate(sg_rows):
+                                    st.caption(f"Q{sgq_i + 1}. {sgq_row['question'][:80]}"
+                                               + ("…" if len(sgq_row['question']) > 80 else ""))
+                                    render_challenge_button(sgq_row, key_suffix=f"sgq_{sgq_i}")
                     except Exception as e:
                         st.error("Something went wrong: " + str(e))
 
@@ -3933,6 +4108,7 @@ article number rather than inventing one."""
                     src = exam_source_line(r)
                     if src:
                         st.caption(src)
+                    render_challenge_button(r, key_suffix=f"exam_{i}")
                     st.divider()
 
                 if exam_result.get("feedback"):
@@ -4238,3 +4414,24 @@ with tab7:
                 width="stretch",
             ):
                 st.info(f"Head to the AI Tutor tab and select **{_rec_topic[:60]}** to start your lesson!")
+
+st.divider()
+st.caption(
+    "**Educational Use Disclaimer**  \n"
+    "This study guide and its practice questions are AI-generated educational aids "
+    "intended to help you prepare for Navy advancement and qualification "
+    "examinations. They are not official Navy or Department of Defense publications "
+    "and are not endorsed by the Navy, DoD, or any examination authority. While "
+    "reasonable effort is made to ground content in official sources (MILPERSMAN, "
+    "BUPERSINST, and related instructions), AI-generated content may contain errors, "
+    "omissions, or outdated information, and source manuals are revised and "
+    "superseded over time. This tool may not always reflect the most current "
+    "revision. This material does not guarantee any specific exam outcome, score, "
+    "or advancement result. You are solely responsible for verifying study content "
+    "against the official, current version of the governing instruction, and for "
+    "your own exam preparation and performance. To the fullest extent permitted by "
+    "law, Strategic Sailor disclaims all warranties, express or implied, regarding "
+    "the accuracy, completeness, or reliability of this content, and is not liable "
+    "for any exam failure, delayed advancement, or other loss or damage arising "
+    "from use of this tool."
+)
