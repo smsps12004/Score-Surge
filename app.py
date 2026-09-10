@@ -1509,6 +1509,15 @@ OCR_PRIMARY_CONFIG = "--psm 6"
 OCR_FALLBACK_CONFIG = "--psm 11"
 
 
+# A profile sheet is one page. Nothing sailors upload legitimately needs more
+# than a couple, and without this cap a multi-page PDF gets every page rendered
+# at OCR_DPI and run through up to three Tesseract passes each -- on a large
+# scan that is enough memory/CPU to crash the whole app (which logs every
+# connected sailor out, not just the one who uploaded it). Two pages, not one,
+# to tolerate a stray cover or blank page ahead of the real sheet.
+MAX_OCR_PAGES = 2
+
+
 def prepare_for_ocr(image):
     """Grayscale, enlarge to a readable size, lift contrast, sharpen."""
     img = image.convert("L")
@@ -1628,7 +1637,7 @@ def extract_text_from_upload(uploaded_file):
                          "Upload a photo instead, or enter your scores by hand below.")
                 return None
             doc = fitz.open(tmp_path)
-            for page in doc:
+            for page in list(doc)[:MAX_OCR_PAGES]:
                 raw_text += page.get_text()
                 word_boxes += _boxes_from_fitz_words(page.get_text("words"))
 
@@ -1644,7 +1653,7 @@ def extract_text_from_upload(uploaded_file):
                     return None
                 word_boxes = []  # the text-layer pass above found nothing to report
                 with st.spinner("This looks like a photo — reading it may take a moment..."):
-                    for page in doc:
+                    for page in list(doc)[:MAX_OCR_PAGES]:
                         pix = page.get_pixmap(dpi=OCR_DPI)
                         image = Image.open(io.BytesIO(pix.tobytes("png")))
                         raw_text += ocr_text(image)
@@ -1944,6 +1953,16 @@ with tab1:
     # Held past the upload block: the paygrade cross-check below needs the sheet's
     # own wording, and it runs after the dropdown, not before it.
     raw_text = ""
+
+    MAX_UPLOAD_MB = 15
+    if uploaded_file is not None and uploaded_file.size > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(
+            f"That file is {uploaded_file.size / (1024 * 1024):.1f}MB, which is too "
+            f"large to read automatically (needs to be under {MAX_UPLOAD_MB}MB). A single "
+            "clear photo of your sheet is usually 1-5MB -- try retaking it, or just enter "
+            "your scores by hand below."
+        )
+        uploaded_file = None
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
