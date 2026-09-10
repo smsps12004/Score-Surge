@@ -49,42 +49,71 @@ function customerIdOf(value: unknown): string | null {
 
 /** A paid checkout: grant the tier AND record the Stripe customer id.
  *
- * Matched on email, because at this point the profile has no customer id yet —
- * this is the event that puts one there. Every later subscription event matches
- * on that id instead, which is stable and cannot drift the way an email can.
+ * Matched on the account that actually started checkout — `session.metadata.
+ * user_id`, set by app.py's create_checkout_session() — whenever that binding
+ * is present. This is the same account-binding model validated_checkout() in
+ * app.py uses for the browser-return path; this webhook is the PRIMARY
+ * fulfillment path (it fires even if the sailor's browser never makes it back
+ * to the app), so it needs the same guarantee: a payment can only ever
+ * upgrade the account that paid for it — never "whichever profile happens to
+ * have this email," which breaks the moment two profiles share one (see
+ * NEXT_SESSION.md's open item about duplicate app accounts).
+ *
+ * Falls back to matching on email only for sessions with no user_id in
+ * metadata — i.e. any checkout created before this binding shipped. Those
+ * still need a fulfillment path.
  *
  * Zero rows matched here is a real failure: money came in and nobody was
  * upgraded. It returns 500 so Stripe retries and the problem is visible in the
  * dashboard instead of showing green while a paying sailor sits locked out.
+ * More than one row matched is also logged loudly — for a user_id match that
+ * should be structurally impossible; for an email match it means two profiles
+ * share an email and both just got upgraded off one payment.
  */
 async function grantFromCheckout(
-  email: string,
+  userId: string | null,
+  email: string | null,
   customerId: string | null,
   tier: string,
 ): Promise<Response> {
   const patch: Record<string, string> = { tier };
   if (customerId) patch.stripe_customer_id = customerId;
 
-  const { data, error } = await supabase
-    .from("profiles")
-    .update(patch)
-    .eq("email", email)
-    .select("id");
+  let match = supabase.from("profiles").update(patch);
+  if (userId) {
+    match = match.eq("id", userId);
+  } else if (email) {
+    match = match.eq("email", email);
+  } else {
+    console.error("Checkout session has neither an account binding nor an email — cannot fulfill.");
+    return new Response("No account identifier on session", { status: 400 });
+  }
+  const { data, error } = await match.select("id");
 
   if (error) {
     console.error("Failed to update profile tier:", error);
     return new Response("Database error", { status: 500 });
   }
 
+  const identifier = userId ? `user_id ${userId}` : `email ${email}`;
+
   if (!data || data.length === 0) {
     console.error(
-      `PAID BUT NOT UPGRADED — no profile matched email ${email} ` +
+      `PAID BUT NOT UPGRADED — no profile matched ${identifier} ` +
         `(customer ${customerId ?? "unknown"}, tier ${tier})`,
     );
     return new Response("No matching profile for paid checkout", { status: 500 });
   }
 
-  console.log(`Updated tier to '${tier}' for ${email}`);
+  if (data.length > 1) {
+    console.error(
+      `PAID CHECKOUT MATCHED ${data.length} PROFILES on ${identifier} — granted ` +
+        `'${tier}' to all of them. A user_id match should never do this; an email ` +
+        `match doing this means two profiles share that email and need manual cleanup.`,
+    );
+  }
+
+  console.log(`Updated tier to '${tier}' for ${identifier}`);
   return new Response("OK", { status: 200 });
 }
 
@@ -155,10 +184,11 @@ Deno.serve(async (req: Request) => {
       { expand: ["line_items"] },
     );
 
+    const userId = session.metadata?.user_id ?? null;
     const email =
       session.customer_details?.email ?? session.customer_email ?? null;
-    if (!email) {
-      console.error("No customer email found on session:", session.id);
+    if (!userId && !email) {
+      console.error("No account binding or customer email found on session:", session.id);
       return new Response("No customer email", { status: 400 });
     }
 
@@ -174,7 +204,7 @@ Deno.serve(async (req: Request) => {
       return new Response("Unknown price ID", { status: 200 });
     }
 
-    return await grantFromCheckout(email, customerIdOf(session.customer), tier);
+    return await grantFromCheckout(userId, email, customerIdOf(session.customer), tier);
   }
 
   // ── A subscription changed or ended ────────────────────────────────────────

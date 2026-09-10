@@ -78,6 +78,17 @@ def main():
           len([w for w in at.warning if "tier required" in w.value]), 0)
     check("all seven tabs are present", len(at.tabs), 7)
 
+    for label in ("Your Current FMS", "Your Current or Expected FMS"):
+        [n for n in at.number_input if n.label == label][0].set_value(138.5)
+    at.run()
+    check("planner and BBA accept an FMS above 100", len(at.exception), 0)
+    check("both retain the actual FMS", [n.value for n in at.number_input if n.label in ("Your Current FMS", "Your Current or Expected FMS")], [138.5, 138.5])
+    # Default E5 target with E6 date is invalid and must never call the AI.
+    with patch("anthropic.Anthropic", side_effect=AssertionError("unexpected AI call")) as ai:
+        [b for b in at.button if b.label == "Build My Personalized Study Plan"][0].click().run()
+    check("mismatched planner paygrade/date does not call AI", ai.call_count, 0)
+    check("mismatched planner paygrade/date explains the problem", any("exam date matching" in e.value for e in at.error), True)
+
     print("\n2. PAYGRADE MUST BE CHOSEN BEFORE SCORING")
     # Regression guard: defaulting this to E5 silently mis-scored E6 sheets.
     pg = at.selectbox[0]
@@ -141,8 +152,11 @@ def main():
         paid = lambda: len([c for c in at.caption if "Opens Stripe" in c.value])
         check("no checkout link before the tap", paid(), 0)
 
-        # Tapping one Upgrade button is worth exactly one Stripe call.
+        # No billing consent means no checkout even after tapping Upgrade.
         upgrades[0].click().run()
+        check("checkout is blocked without recurring-billing consent", len(stripe_calls), 0)
+        [c for c in at.checkbox if "renews monthly" in c.label][0].check()
+        [b for b in at.button if "Upgrade to" in b.label][0].click().run()
         check("no exception after tapping Upgrade", len(at.exception), 0)
         check("tapping Upgrade creates exactly one session", len(stripe_calls), 1)
         check("checkout link appears after the tap", paid() >= 1, True)
@@ -175,10 +189,18 @@ def main():
 
     def upload(name, data, mime, patcher):
         at = build_app()
+        from streamlit.runtime.uploaded_file_manager import UploadedFile, UploadedFileRec
+        from streamlit.proto.Common_pb2 import FileURLs
+        file = UploadedFile(UploadedFileRec("test-upload", name, mime, data), FileURLs())
+        original_run = at.run
+        def run_with_upload(*args, **kwargs):
+            file.seek(0)
+            def uploader(label, *a, **kw):
+                return file if "Navy Profile Sheet" in label else None
+            with patch("streamlit.file_uploader", side_effect=uploader), patcher:
+                return original_run(*args, **kwargs)
+        at.run = run_with_upload
         at.run()
-        at.file_uploader[0].set_value((name, data, mime))
-        with patcher:
-            at.run()
         return at
 
     at = upload("sheet.png", _png, "image/png",
@@ -221,6 +243,20 @@ def main():
           len(at.exception), 0)
     check("...and is flagged as untrustworthy on screen, not shown as clean",
           any("don't add up" in e.value for e in at.error), True)
+
+    calc = [b for b in at.button if "Calculate My FMS" in b.label][0]
+    calc.click()
+    at.run()
+    check("unconfirmed uploaded values cannot produce an FMS",
+          any(m.label == "Final Multiple Score" for m in at.metric), False)
+    check("blocked calculation explains the correction requirement",
+          any("confirmation box" in e.value for e in at.error), True)
+    at.checkbox[0].check()
+    [b for b in at.button if "Calculate My FMS" in b.label][0].click()
+    at.run()
+    check("reviewed upload can calculate after explicit confirmation",
+          any(m.label == "Final Multiple Score" for m in at.metric), True)
+    check("reviewed upload renders without exception", len(at.exception), 0)
 
     # ── 8. THE LOGGED-OUT PAGE ───────────────────────────────────────────────
     #

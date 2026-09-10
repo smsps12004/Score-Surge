@@ -13,6 +13,7 @@ from fpdf import FPDF
 import anthropic
 import stripe
 import corpus
+from launch_safety import EDUCATIONAL_NOTICE, DATA_NOTICE, SUPPORT_EMAIL, validated_checkout, challenge_record
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -229,7 +230,10 @@ def get_app_base_url() -> str:
         return st.secrets.get("APP_URL", "http://localhost:8501")
 
 
-def create_checkout_session(tier: str, user_email: str):
+def create_checkout_session(tier: str, user_email: str, billing_consent: bool = False):
+    if not billing_consent:
+        st.error("Confirm recurring billing before continuing to checkout.")
+        return None
     price_id = STRIPE_PRICE_IDS[tier]
     base = get_app_base_url()
     try:
@@ -238,6 +242,8 @@ def create_checkout_session(tier: str, user_email: str):
             mode="subscription",
             customer_email=user_email,
             client_reference_id=tier,
+            metadata={"user_id": str(st.session_state.user.id), "billing_disclosure_version": "2026-09-07", "recurring_billing_consent": "accepted"},
+            subscription_data={"metadata": {"user_id": str(st.session_state.user.id)}},
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=f"{base}/?stripe_success=true&session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{base}/",
@@ -261,6 +267,8 @@ def upgrade_banner(required_tier: str, where: str):
     """
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
+    st.caption(f"Billing or cancellation help: {SUPPORT_EMAIL}")
+    st.caption("Monthly subscription; renews automatically until canceled. Review the price and billing terms at Stripe checkout. Manage or cancel from My Profile. AI-generated study material can contain errors; advancement is not guaranteed.")
 
     if not st.session_state.get("user"):
         st.info("Log in to upgrade your plan.")
@@ -269,6 +277,10 @@ def upgrade_banner(required_tier: str, where: str):
     # Keyed on the tier, not the call site: the same tier is the same checkout, so
     # tapping Upgrade on one locked tab is worth one Stripe call, not five.
     url_key = f"_checkout_url_{required_tier}"
+    billing_consent = st.checkbox(
+        f"I understand {label} costs {price}, renews monthly until I cancel, and does not guarantee advancement.",
+        key=f"billing_consent_{required_tier}_{where}",
+    )
     if st.button(
         f"⬆️ Upgrade to {label} — {price}",
         key=f"upgrade_{required_tier}_{where}",
@@ -276,10 +288,10 @@ def upgrade_banner(required_tier: str, where: str):
     ):
         with st.spinner("Opening secure checkout..."):
             st.session_state[url_key] = create_checkout_session(
-                required_tier, st.session_state.user.email
+                required_tier, st.session_state.user.email, billing_consent=billing_consent
             )
 
-    if st.session_state.get(url_key):
+    if billing_consent and st.session_state.get(url_key):
         st.link_button(
             f"✅ Continue to secure checkout — {label}",
             url=st.session_state[url_key],
@@ -305,7 +317,11 @@ def load_score_history(user_id: str) -> list:
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
-    st.markdown("Your Navy advancement engine. Calculate your FMS, study smarter, and advance.")
+    st.markdown("Navy advancement exam preparation: FMS estimates, study tools and practice questions.")
+    with st.expander("Before you use Score Surge: accuracy and data"):
+        st.write(EDUCATIONAL_NOTICE)
+        st.write(DATA_NOTICE)
+        st.write(f"Support: {SUPPORT_EMAIL}")
     st.divider()
 
     tab_login, tab_signup = st.tabs(["Log In", "Create Account"])
@@ -489,25 +505,17 @@ if _qp.get("stripe_success") == "true" and st.session_state.user:
     _sid = _qp.get("session_id", "")
     if _sid:
         try:
-            _cs = stripe.checkout.Session.retrieve(_sid)
-            if _cs.payment_status in ("paid", "no_payment_required"):
-                _new_tier = _cs.client_reference_id
-                if _new_tier in TIER_ORDER:
-                    _patch = {"tier": _new_tier}
-                    # Record the Stripe customer id on the way past. The webhook
-                    # normally does this, but if it is the one that failed and
-                    # this fallback is what granted access, an unlinked profile
-                    # would never hear about a later cancellation. Whichever
-                    # path gets here first, the link gets made.
-                    _cust = getattr(_cs, "customer", None)
-                    _cust_id = _cust if isinstance(_cust, str) else getattr(_cust, "id", None)
-                    if _cust_id:
-                        _patch["stripe_customer_id"] = _cust_id
-                    supabase.table("profiles").update(_patch).eq(
-                        "id", st.session_state.user.id
-                    ).execute()
-                    st.session_state.tier = _new_tier
+            _cs = stripe.checkout.Session.retrieve(_sid, expand=["subscription"])
+            _patch = validated_checkout(_cs.to_dict(), st.session_state.user.id, PRICE_TO_TIER)
+            if _patch:
+                _updated = supabase.table("profiles").update(_patch).eq(
+                    "id", st.session_state.user.id
+                ).execute()
+                if _updated.data:
+                    st.session_state.tier = _patch["tier"]
                     st.session_state._payment_success = True
+            else:
+                st.session_state["_checkout_notice"] = "This checkout could not be verified for this account. Sign in with the account used to subscribe. If you were charged, do not pay again; contact support."
         except Exception as _e:
             # Bare `except Exception: pass` here meant a sailor could pay, land
             # back on the app, and have the grant fail silently with nothing
@@ -631,9 +639,9 @@ CYCLE = {
     "pma_window_e5": "1 June 2025 to 31 August 2026",
 }
 
-# FY27 CPO board exam. `announced` flips to True with a real date once the
+# FY28 CPO board exam. `announced` flips to True with a real date once the
 # NAVADMIN is published; until then the app calls it an estimate and says so.
-CPO_EXAM = {"fy": 27, "est_date": datetime.date(2027, 2, 1), "announced": False}
+CPO_EXAM = {"fy": 28, "est_date": datetime.date(2027, 2, 1), "announced": False}
 
 
 def _fmt_date(d):
@@ -998,11 +1006,11 @@ def extract_final_multiple(raw_text):
     )
 
 
-def reading_reconciles(paygrade, extracted_data, raw_text, tol=0.75):
+def reading_reconciles(paygrade, extracted_data, raw_text, tol=0.02):
     """Does the sheet's OWN printed Final Multiple match what got parsed?
 
     Returns (reconciled, printed, computed):
-      reconciled is True  -> the read matches the sheet's own total. Trust it.
+      reconciled is True  -> the total matches within tolerance; fields still need review.
       reconciled is False -> it does NOT match. Something in the read is wrong, even
                              though every individual field may look plausible on its
                              own — this is exactly the failure a column mix-up on a
@@ -1160,7 +1168,7 @@ def _cluster_columns(cells):
     return columns
 
 
-def extract_fields_by_position(word_boxes, paygrade, tol=0.75):
+def extract_fields_by_position(word_boxes, paygrade, tol=0.02):
     """Read the six FMS fields from where they sit on the page, not from a
     label search. See the module note above for the three rules this relies on
     and why it is only ever trusted when it reconciles against the sheet's own
@@ -1509,6 +1517,14 @@ OCR_TARGET_WIDTH = 2200
 OCR_PRIMARY_CONFIG = "--psm 6"
 OCR_FALLBACK_CONFIG = "--psm 11"
 
+# A profile sheet is one page. Nothing sailors upload legitimately needs more
+# than a couple, and without this cap a multi-page PDF gets every page rendered
+# at OCR_DPI and run through up to three Tesseract passes each -- on a large
+# scan that is enough memory/CPU to crash the whole app (which logs every
+# connected sailor out, not just the one who uploaded it). Two pages, not one,
+# to tolerate a stray cover or blank page ahead of the real sheet.
+MAX_OCR_PAGES = 2
+
 
 def prepare_for_ocr(image):
     """Grayscale, enlarge to a readable size, lift contrast, sharpen."""
@@ -1629,7 +1645,7 @@ def extract_text_from_upload(uploaded_file):
                          "Upload a photo instead, or enter your scores by hand below.")
                 return None
             doc = fitz.open(tmp_path)
-            for page in doc:
+            for page in list(doc)[:MAX_OCR_PAGES]:
                 raw_text += page.get_text()
                 word_boxes += _boxes_from_fitz_words(page.get_text("words"))
 
@@ -1645,7 +1661,7 @@ def extract_text_from_upload(uploaded_file):
                     return None
                 word_boxes = []  # the text-layer pass above found nothing to report
                 with st.spinner("This looks like a photo — reading it may take a moment..."):
-                    for page in doc:
+                    for page in list(doc)[:MAX_OCR_PAGES]:
                         pix = page.get_pixmap(dpi=OCR_DPI)
                         image = Image.open(io.BytesIO(pix.tobytes("png")))
                         raw_text += ocr_text(image)
@@ -1754,6 +1770,106 @@ PS_TOPICS = {
     },
 }
 
+# YN's own topic map, built 7 Sep 2026 the same way PS's was: real chapters from the
+# rating's own training manual (NAVEDTRA 15009C, Yeoman — 6 chapters, page-indexed into
+# corpus.db as yn_pages, see build_yn_corpus.py in Score Surge DB), cross-checked
+# against YN's actual current Navy COOL bibliography (all 4 variants — E5/E6, Regular/
+# Substitute — fetched and read 7 Sep 2026; see bibliography_YN_Sept2026.md in Score
+# Surge DB for the full reference-by-reference table this was built from).
+#
+# Topic names follow NAVEDTRA 15009C's own 6 chapters — that's the Navy's own
+# organization of what a Yeoman studies, not an invented grouping — and every "bib"
+# line only names a reference this session actually confirmed governs that chapter's
+# content, never a guess. Every "MILPERSMAN NNNN series" mention below is a series
+# genuinely cited on a current YN bibliography (E5 and/or E6) and already fully in
+# corpus.db, so it starts auto-grounding through corpus.get_series_grounding() the
+# same day this ships — no separate engineering step needed for those. The DoD
+# 7000.14-R Vol 7A / Vol 9 and NAVEDTRA 15009C citations are equally real and
+# equally confirmed, but corpus.get_series_grounding() only knows how to retrieve
+# from the MILPERSMAN pages table today — those sources are named here for honest
+# attribution and are the next grounding-engine work, not yet wired to retrieve text.
+# Three MILPERSMAN articles genuinely cited on a current YN bib have no corpus.db row
+# at all yet (1070-290, 1300-100, 1300-202) — real Gate 0 gaps, left out of every bib
+# line below rather than cited as if they were sourced.
+YN_TOPICS = {
+    "E6 - Navy Yeoman Fundamentals": {
+        "subtopics": ["Office Procedures & Customer Service", "Career Path & Flag/Staff Support",
+                      "Protocol & Social Usage"],
+        "bib": "NAVEDTRA 15009C Ch 1, OPNAVINST 1000.16L, OPNAVINST 1160.6C"
+    },
+    "E6 - Correspondence & Records Management": {
+        "subtopics": ["Naval Correspondence", "Files & Records Management",
+                      "Reports & Forms Management Programs"],
+        "bib": "NAVEDTRA 15009C Ch 2, MILPERSMAN 1000-021, SECNAV M-5216.5, SECNAV M-5210.1, "
+               "OPNAV M-5215.1, OPNAVINST 5215.17A"
+    },
+    "E6 - Evaluations & Awards": {
+        "subtopics": ["EVAL/FITREP Processing", "Military Awards Processing",
+                      "Awards Submission to OMPF"],
+        "bib": "NAVEDTRA 15009C Ch 2, 3, MILPERSMAN 1770 series, BUPERSINST 1610.10H, "
+               "SECNAVINST 1650.1J, SECNAV M-1650.1"
+    },
+    "E6 - Pay & Personnel Administration (CPPA)": {
+        "subtopics": ["Pay & Allowances", "Electronic Service Record (ESR) & OMPF",
+                      "Receipts, Transfers & Advancement Processing"],
+        "bib": "NAVEDTRA 15009C Ch 3, DoD 7000.14-R Vol 7A Ch 1, 10, 18, 25, 26, 27, 29, "
+               "DFAS-CL DJMS MMPA Guide, MILPERSMAN 1070 series, 1300 series, 1320 series, 1600 series"
+    },
+    "E6 - Separations Processing": {
+        "subtopics": ["Separation Documentation", "Discharge Characterization & Fleet Reserve"],
+        "bib": "NAVEDTRA 15009C Ch 3, MILPERSMAN 1910 series, 1800 series, BUPERSINST 1900.8F"
+    },
+    "E6 - Legal & Disciplinary Processing": {
+        "subtopics": ["Non-Judicial Punishment (NJP)", "Administrative Investigations & Unauthorized Absence"],
+        "bib": "NAVEDTRA 15009C Ch 4, MCM 2024 Edition, JAGINST 5800.7G"
+    },
+    "E6 - Travel Processing": {
+        "subtopics": ["Travel Orders & Allowances", "PCS & Separation Travel"],
+        "bib": "NAVEDTRA 15009C Ch 5, JOINT TRAVEL REGULATIONS Ch 1, 2, 5, DoD 7000.14-R Vol 9 Ch 5, 8"
+    },
+    "E6 - Security Administration": {
+        "subtopics": ["Personnel Security Clearances", "Classified Material Control & Physical Security"],
+        "bib": "NAVEDTRA 15009C Ch 6, DODM 5200.01, DODI 5200.48, SECNAVINST 5510.30C, SECNAVINST 5510.36B"
+    },
+    "E5 - Navy Yeoman Fundamentals": {
+        "subtopics": ["Office Procedures & Customer Service", "Career Path & Flag/Staff Support",
+                      "Protocol & Social Usage"],
+        "bib": "NAVEDTRA 15009C Ch 1, OPNAVINST 1000.16L"
+    },
+    "E5 - Correspondence & Records Management": {
+        "subtopics": ["Naval Correspondence", "Files & Records Management",
+                      "Reports & Forms Management Programs"],
+        "bib": "NAVEDTRA 15009C Ch 2, SECNAV M-5216.5, SECNAV M-5210.1, SECNAV M-5210.2, "
+               "OPNAV M-5215.1, OPNAVINST 5215.17A"
+    },
+    "E5 - Evaluations & Awards": {
+        "subtopics": ["EVAL/FITREP Processing", "Military Awards Processing"],
+        "bib": "NAVEDTRA 15009C Ch 2, 3, BUPERSINST 1610.10H, SECNAVINST 1650.1J, SECNAV M-1650.1"
+    },
+    "E5 - Pay & Personnel Administration (CPPA)": {
+        "subtopics": ["Pay & Allowances", "Electronic Service Record (ESR) & OMPF",
+                      "Receipts, Transfers & Advancement Processing"],
+        "bib": "NAVEDTRA 15009C Ch 3, DoD 7000.14-R Vol 7A Ch 1, 10, 18, 25, 32, "
+               "MILPERSMAN 1070 series, 1300 series, 1320 series, 1600 series"
+    },
+    "E5 - Separations Processing": {
+        "subtopics": ["Separation Documentation", "Discharge Characterization & Fleet Reserve"],
+        "bib": "NAVEDTRA 15009C Ch 3, MILPERSMAN 1910 series, 1800 series, BUPERSINST 1900.8F"
+    },
+    "E5 - Legal & Disciplinary Processing": {
+        "subtopics": ["Non-Judicial Punishment (NJP)", "Administrative Investigations & Unauthorized Absence"],
+        "bib": "NAVEDTRA 15009C Ch 4, MCM 2024 Edition, JAGINST 5800.7G"
+    },
+    "E5 - Travel Processing": {
+        "subtopics": ["Travel Orders & Allowances", "PCS & Separation Travel"],
+        "bib": "NAVEDTRA 15009C Ch 5, JOINT TRAVEL REGULATIONS Ch 5, DoD 7000.14-R Vol 9 Ch 6, 8"
+    },
+    "E5 - Security Administration": {
+        "subtopics": ["Personnel Security Clearances", "Classified Material Control & Physical Security"],
+        "bib": "NAVEDTRA 15009C Ch 6, DODM 5200.01, ICPG 704.2, SECNAVINST 5510.30C, SECNAVINST 5510.36B"
+    },
+}
+
 # ── TUTOR GROUNDING — a hand-picked override on top of automatic retrieval ───────
 # Score Surge grounds the Tutor from corpus.db (see corpus.py) — every current
 # MILPERSMAN article, page-resolved. As of 24 Aug 2026, Shawn's standing call:
@@ -1804,7 +1920,7 @@ TOPIC_ARTICLE_MAP = {
 }
 
 # ── RATE / TOPIC HELPERS ──────────────────────────────────────────────────────
-RATINGS = ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"]
+RATINGS = ["PS", "YN", "NC"]
 PAYGRADES = ["E5", "E6", "E7"]  # No E4 NWAE — advancement to E4 is not exam-based.
 
 # Placeholder shown until the sailor picks a paygrade. Not a valid selection.
@@ -1826,10 +1942,14 @@ UNSET_RULES = {
 }
 
 
-def _split_ps_topics():
-    """Reshape PS_TOPICS from {'E6 - Topic': {...}} into {'E6': {'Topic': {...}}}."""
+def _split_topics(topics: dict) -> dict:
+    """Reshape a *_TOPICS dict from {'E6 - Topic': {...}} into {'E6': {'Topic': {...}}}.
+
+    Generalized 7 Sep 2026 from the PS-only _split_ps_topics() so YN's topic map (and
+    any future rating's) reshapes the same way without a copy-pasted function per rating.
+    """
     out = {}
-    for key, val in PS_TOPICS.items():
+    for key, val in topics.items():
         pg, _, name = key.partition(" - ")
         if not name:
             pg, name = "E6", key
@@ -1837,7 +1957,27 @@ def _split_ps_topics():
     return out
 
 
-PS_TOPICS_BY_PAYGRADE = _split_ps_topics()
+PS_TOPICS_BY_PAYGRADE = _split_topics(PS_TOPICS)
+YN_TOPICS_BY_PAYGRADE = _split_topics(YN_TOPICS)
+
+# Every rating with a real, curated topic map (as opposed to the AI-invented one
+# get_rate_topics() falls back to). Add a rating here the same day its *_TOPICS dict
+# ships — this single dict is what get_rate_topics() and every "is this curated or
+# AI-generated" caption check below reads, so there is exactly one place to update.
+CURATED_TOPICS_BY_RATING = {
+    "PS": PS_TOPICS_BY_PAYGRADE,
+    "YN": YN_TOPICS_BY_PAYGRADE,
+}
+
+
+def is_curated(rating: str, paygrade: str) -> bool:
+    """True if this rating/paygrade has a real, hand-built topic map on disk.
+
+    False means get_rate_topics() is about to ask the AI to invent the topic list —
+    the caller's signal to show the "verify against your official bib" caption.
+    """
+    return paygrade in CURATED_TOPICS_BY_RATING.get(rating, {})
+
 
 # Last-resort topics if the API call fails. Keeps the tab usable instead of dead.
 GENERIC_TOPICS = {
@@ -1862,13 +2002,13 @@ GENERIC_TOPICS = {
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_rate_topics(rating: str, paygrade: str) -> dict:
-    """Curated topics for PS. AI-generated + cached for every other rate.
+    """Curated topics for PS and YN. AI-generated + cached for every other rate.
 
     Cached for 24h per (rating, paygrade), so each combo costs at most one API
     call per day per running app instance.
     """
-    if rating == "PS" and paygrade in PS_TOPICS_BY_PAYGRADE:
-        return PS_TOPICS_BY_PAYGRADE[paygrade]
+    if is_curated(rating, paygrade):
+        return CURATED_TOPICS_BY_RATING[rating][paygrade]
 
     prompt = f"""List the major exam topic areas on the Navy-wide advancement exam (NWAE)
 for a {rating} advancing to {paygrade}, based on the official NWAE bibliography for that rate.
@@ -1946,6 +2086,16 @@ with tab1:
     # own wording, and it runs after the dropdown, not before it.
     raw_text = ""
 
+    MAX_UPLOAD_MB = 15
+    if uploaded_file is not None and uploaded_file.size > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(
+            f"That file is {uploaded_file.size / (1024 * 1024):.1f}MB, which is too "
+            f"large to read automatically (needs to be under {MAX_UPLOAD_MB}MB). A single "
+            "clear photo of your sheet is usually 1-5MB -- try retaking it, or just enter "
+            "your scores by hand below."
+        )
+        uploaded_file = None
+
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
             _extracted = extract_text_from_upload(uploaded_file)
@@ -1974,7 +2124,7 @@ with tab1:
             # Apply the sheet's paygrade once per uploaded file. Keyed on the file
             # itself so a later manual change to the dropdown is not overwritten on
             # every rerun — the sailor always gets the last word.
-            file_id = f"{uploaded_file.name}:{uploaded_file.size}"
+            file_id = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
             if detected_paygrade in PAYGRADES and st.session_state.get("_pg_src") != file_id:
                 st.session_state["fms_paygrade"] = detected_paygrade
                 st.session_state["_pg_src"] = file_id
@@ -1989,7 +2139,7 @@ with tab1:
                 )
 
             if not missing_fields:
-                st.success("✅ Read all six fields from your profile sheet.")
+                st.info("Found values for all six fields. Check them against your own row before calculating.")
             else:
                 st.warning(
                     "⚠️ Read " + str(len(found)) + " of 6 fields. **Could not find: "
@@ -2003,9 +2153,8 @@ with tab1:
             # individually plausible numbers that are still wrong — a value from the
             # wrong column, or the AVERAGE-of-candidates row instead of the sailor's
             # own — and "6 of 6 fields found" above would look identical either way.
-            # This is the check that a bad read cannot pass by accident, because it is
-            # not asking "does each number look right," it's asking "do these six
-            # numbers add up to the total the sheet already claims."
+            # A matching total is supporting evidence, not proof: offsetting errors
+            # can cancel out. The sailor must still review each field.
             if detected_paygrade in PAYGRADES:
                 _reconciled, _printed, _computed = reading_reconciles(
                     detected_paygrade, extracted_data, raw_text)
@@ -2020,11 +2169,11 @@ with tab1:
                 elif _reconciled is True:
                     st.caption(
                         f"✓ Checked against your sheet's own total: it prints "
-                        f"**{_printed}**, and these six numbers compute to the same "
-                        f"figure. The read matches."
+                        f"**{_printed:.2f}**, and the calculated total is **{_computed:.2f}** "
+                        f"(within 0.02 points). This checks the total, not each individual field."
                     )
-                # _reconciled is None: the sheet never printed a Final Multiple to
-                # check against. That's not a failed check — there's nothing to say.
+                else:
+                    st.warning("The printed Final Multiple could not be read. These values have not been cross-checked against your sheet's total.")
 
             if detected_paygrade in PAYGRADES:
                 _exam_rate, _ = extract_exam_rate(raw_text)
@@ -2178,6 +2327,13 @@ with tab1:
                 "E7 FMS is exam standard score + RSCA PMA only. Awards, PNA, service in "
                 "paygrade and education do not add points, so those fields are greyed out."
             )
+        upload_confirmed = uploaded_file is None
+        if uploaded_file is not None:
+            upload_key = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+            upload_confirmed = st.checkbox(
+                "I checked the target paygrade and every score against my own profile sheet, and corrected any missing or misread values.",
+                key=f"fms_confirm_{upload_key}_{paygrade}",
+            )
         submitted = st.form_submit_button(
             "📊 Calculate My FMS" if paygrade_chosen else "📊 Select a paygrade above to calculate",
             width="stretch", disabled=not paygrade_chosen,
@@ -2186,7 +2342,9 @@ with tab1:
     # paygrade_chosen is re-checked here, not just on the button: a disabled button
     # is a UI courtesy, not a guarantee, and scoring under a guessed paygrade is the
     # exact failure this is here to prevent.
-    if submitted and paygrade_chosen:
+    if submitted and paygrade_chosen and not upload_confirmed:
+        st.error("Check and correct every field against your sheet, then select the confirmation box before calculating.")
+    if submitted and paygrade_chosen and upload_confirmed:
         education = {"None (0 pts)": 0.0,
                      "Associate's — AA/AS (2 pts)": 2.0,
                      "Bachelor's or above (4 pts)": 4.0}[education]
@@ -2396,7 +2554,7 @@ with tab2:
         _pg = sailor_paygrade()
 
         # ── The sailor's own exam, front and centre ──────────────────────────
-        # This tab used to show ILDC, the E6 exam, the E5 exam and the FY27 CPO
+        # This tab used to show ILDC, the E6 exam, the E5 exam and the FY28 CPO
         # estimate all at once, and leave the sailor to work out which two lines
         # were theirs. The app already knows what they are competing for.
         if _pg == "E5":
@@ -2536,7 +2694,7 @@ billet application, and what to do if you passed but weren't selected.
     st.divider()
 
     # Prominent for the sailors it belongs to, one tap down for everyone else.
-    # An E5 does not need the FY27 CPO estimate competing with their own exam date.
+    # An E5 does not need the FY28 CPO estimate competing with their own exam date.
     _cpo_title = f"⭐ CPO / E7 Exam Watch — FY{CPO_EXAM['fy']}"
     if _pg_now == "E7":
         st.subheader(_cpo_title)
@@ -2629,7 +2787,7 @@ def parse_exam_json(raw: str) -> list:
             "answer_b": str(row.get("answer_b") or "").strip(),
             "answer_c": str(row.get("answer_c") or "").strip(),
             "answer_d": str(row.get("answer_d") or "").strip(),
-            "correct_answer": str(row.get("correct_answer") or "").strip().upper()[:1],
+            "correct_answer": str(row.get("correct_answer") or "").strip().upper(),
             "explanation": str(row.get("explanation") or "").strip(),
             "source_manual": str(row.get("source_manual") or "").strip(),
             "chapter_section": str(row.get("chapter_section") or "").strip(),
@@ -2987,8 +3145,8 @@ def run_challenge(question_row: dict, reason: str) -> dict:
             "verdict": "inconclusive",
             "reasoning": (
                 "This question isn't tied to a specific, current MILPERSMAN article "
-                "we can automatically re-pull and check, so it's been queued for "
-                "manual review instead of an automatic verdict."
+                "we can automatically re-pull and check. The automatic check is "
+                "inconclusive; no human review has occurred."
             ),
         }
 
@@ -3027,7 +3185,7 @@ def run_challenge(question_row: dict, reason: str) -> dict:
     except Exception as e:
         return {
             "verdict": "inconclusive",
-            "reasoning": f"Automatic check failed ({type(e).__name__}) — queued for manual review.",
+            "reasoning": f"Automatic check failed ({type(e).__name__}) — no human review has occurred.",
         }
 
 
@@ -3057,23 +3215,23 @@ def render_challenge_button(row: dict, key_suffix):
                 return
             with st.spinner("Checking against the real text..."):
                 verdict_result = run_challenge(row, reason.strip())
-            status = {"upholds": "resolved", "confirms-error": "priority",
-                      "inconclusive": "flagged"}[verdict_result["verdict"]]
+            evidence, status = challenge_record(row, reason, verdict_result["verdict"])
             try:
                 supabase.table("challenges").insert({
                     "question_id": q_hash,
                     "sailor_id": sailor_id,
-                    "reason_text": reason.strip(),
+                    "reason_text": evidence,
                     "ai_verdict": verdict_result["verdict"],
                     "ai_reasoning": verdict_result["reasoning"],
                     "status": status,
                 }).execute()
+                st.caption("Challenge and question snapshot saved for review. The result below is an AI opinion, not a human decision; no completion date is promised.")
             except Exception as e:
-                st.caption(f"⚠️ Verdict below, but the challenge record couldn't be saved ({type(e).__name__}).")
+                st.error("Your challenge could not be saved. The AI opinion below has not been submitted for review.")
             if verdict_result["verdict"] == "confirms-error":
-                st.success(f"**You were right.** {verdict_result['reasoning']}")
+                st.warning(f"**AI check suggests an error — unverified.** {verdict_result['reasoning']}")
             elif verdict_result["verdict"] == "upholds":
-                st.info(f"**The question stands.** {verdict_result['reasoning']}")
+                st.info(f"**AI check supports the existing answer — unverified.** {verdict_result['reasoning']}")
             else:
                 st.warning(f"**Inconclusive.** {verdict_result['reasoning']}")
 
@@ -3102,7 +3260,7 @@ with tab3:
         with st.spinner(f"Loading {sg_rating} {sg_paygrade} topics..."):
             sg_topics = get_rate_topics(sg_rating, sg_paygrade)
 
-        if not (sg_rating == "PS" and sg_paygrade in PS_TOPICS_BY_PAYGRADE):
+        if not is_curated(sg_rating, sg_paygrade):
             st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
                        "Verify against your official bib before test day.")
 
@@ -3352,13 +3510,12 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                 )
                             elif sg_is_deep_dive and sg_grounded:
                                 st.info(
-                                    "**Taught from the manual.** This deep dive was written "
-                                    "from the real text of "
+                                    "**AI draft with source excerpts supplied.** This deep dive used "
+                                    "excerpts from "
                                     f"{', '.join('MILPERSMAN ' + a for a in sg_articles[:3])}"
-                                    f"{' and others' if len(sg_articles) > 3 else ''}, so the "
-                                    "numbers and deadlines in it come from the manual rather "
-                                    "than from memory. Anything the Chief says isn't in that "
-                                    "text, he'll send you to PS Agent for."
+                                    f"{' and others' if len(sg_articles) > 3 else ''}. "
+                                    "The answer has not been independently verified. Check factual claims, "
+                                    "numbers and deadlines against the applicable official publication."
                                 )
                             else:
                                 # A plan written from memory. The prompt forbids it from
@@ -3404,7 +3561,7 @@ with tab4:
         with st.spinner(f"Loading {tutor_rating} {tutor_paygrade} topics..."):
             tutor_topics = get_rate_topics(tutor_rating, tutor_paygrade)
 
-        if not (tutor_rating == "PS" and tutor_paygrade in PS_TOPICS_BY_PAYGRADE):
+        if not is_curated(tutor_rating, tutor_paygrade):
             st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
                        "Verify against your official bib before test day.")
 
@@ -3563,11 +3720,10 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                         # practice question does. Say plainly, every time, whether this
                         # one is backed by real manual text or written from memory.
                         if grounded:
-                            st.success(
-                                f"**This lesson is grounded in the real text of MILPERSMAN "
-                                f"{', '.join(grounded_articles)}.** Specific facts stated "
-                                "below are pulled from that text, with the article named, "
-                                "not recalled from memory."
+                            st.info(
+                                f"**AI draft with MILPERSMAN {', '.join(grounded_articles)} excerpts supplied.** "
+                                "The answer has not been independently verified. Check factual claims "
+                                "against the applicable official publication before relying on them."
                             )
                         else:
                             st.warning(
@@ -3590,10 +3746,9 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                         # has to carry its own caveat.
                         if grounded:
                             caveat = (
-                                f"GROUNDED IN THE REAL TEXT OF MILPERSMAN {', '.join(grounded_articles)}.\n"
-                                "Specific facts below are pulled from that text, with the\n"
-                                "article named. Anything the Chief could not find in that\n"
-                                "text, he sent you to PS Agent for instead.\n"
+                                f"AI DRAFT WITH MILPERSMAN {', '.join(grounded_articles)} EXCERPTS SUPPLIED.\n"
+                                "Not independently verified. Confirm factual claims in the applicable\n"
+                                "official publication before relying on this lesson.\n"
                             )
                         else:
                             caveat = (
@@ -3781,7 +3936,7 @@ with tab5:
         with st.spinner(f"Loading {pq_rating} {pq_paygrade} topics..."):
             pq_topics = get_rate_topics(pq_rating, pq_paygrade)
 
-        if not (pq_rating == "PS" and pq_paygrade in PS_TOPICS_BY_PAYGRADE):
+        if not is_curated(pq_rating, pq_paygrade):
             st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
                        "Verify against your official bib before test day.")
 
@@ -4183,13 +4338,13 @@ with tab6:
             col1, col2 = st.columns(2)
             with col1:
                 plan_rating = st.selectbox("Your Rating",
-                    ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                    RATINGS,
                     key="plan_rating")
                 plan_paygrade = st.selectbox("Target Paygrade",
                     ["E5", "E6"], key="plan_paygrade")
             with col2:
                 plan_fms = st.number_input("Your Current FMS",
-                    min_value=0.0, max_value=100.0, value=45.0, step=0.1,
+                    min_value=0.0, max_value=max(r["fms_max"] for r in FMS_RULES.values()), value=0.0, step=0.1,
                     key="plan_fms")
                 plan_exam = st.selectbox("Your Exam Date",
                     [f"{CYCLE['exam_e6']:%B} {CYCLE['exam_e6'].day}, "
@@ -4205,7 +4360,11 @@ with tab6:
             plan_submit = st.form_submit_button(
                 "Build My Personalized Study Plan", width="stretch")
 
-        if plan_submit:
+        plan_date = CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"]
+        plan_valid = plan_date >= datetime.date.today() and plan_paygrade in plan_exam and plan_fms <= FMS_RULES[plan_paygrade]["fms_max"]
+        if plan_submit and not plan_valid:
+            st.error("Choose an exam date matching your target paygrade that has not passed, and an FMS within that paygrade's maximum. If the listed date has passed, current cycle dates need to be updated before building a plan.")
+        if plan_submit and plan_valid:
             exam_date = (CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"])
             days_left = (exam_date - datetime.date.today()).days
             days_left = max(days_left, 1)
@@ -4274,10 +4433,10 @@ Use this to get personalized strategy on:
             col1, col2 = st.columns(2)
             with col1:
                 bba_rating = st.selectbox("Your Rating",
-                    ["PS", "YN", "IT", "BM", "MM", "EM", "HM", "MA"],
+                    RATINGS,
                     key="bba_rating")
                 bba_fms = st.number_input("Your Current or Expected FMS",
-                    min_value=0.0, max_value=100.0, value=50.0, step=0.1,
+                    min_value=0.0, max_value=max(r["fms_max"] for r in FMS_RULES.values()), value=0.0, step=0.1,
                     key="bba_fms")
             with col2:
                 bba_situation = st.selectbox("Your Situation", [
@@ -4296,9 +4455,13 @@ Use this to get personalized strategy on:
                 "Get My BBA Strategy", width="stretch")
 
         if bba_submit:
-            bba_prompt = f"""You are a senior Navy Personnel Specialist (PS) Chief
-with 20 years of service and deep expertise in the Billet-Based Advancement
-(BBA) system, A2P, and CA2P processes.
+            bba_prompt = f"""You are an AI study and career-planning assistant.
+No current official BBA, A2P or CA2P policy has been supplied for this answer.
+Do not claim military service or professional credentials. Do not invent eligibility
+rules, deadlines, selection criteria, milestones, or policy citations. Explain that
+these must be checked with the sailor's command career counselor or ESO using current
+official guidance. Provide a preparation checklist and questions for that discussion.
+Do not infer selection likelihood from FMS alone.
 
 You are advising a {bba_rating} sailor on BBA strategy.
 
@@ -4308,19 +4471,12 @@ Sailor's profile:
 - Situation: {bba_situation}
 - Their question/details: {bba_question}
 
-Provide specific, actionable BBA strategy guidance:
-1. Honest assessment of their situation (one sentence)
-2. Exactly what they should do RIGHT NOW (this week)
-3. How to strengthen their billet application profile
-   (record, NEC, quals, eval marks, geography flexibility)
-4. What the A2P/CA2P selection process actually looks at
-5. Specific next steps with a rough timeline
-6. One thing most sailors get wrong about BBA that this sailor
-   should avoid
-
-Be direct. Be specific to {bba_rating} rate where possible.
-Reference NSIPS, MyNavyHR, and relevant milestones where applicable.
-This sailor is counting on you — give them the real talk."""
+Provide a clearly labeled preliminary planning checklist:
+1. Summarize the sailor's question without judging competitiveness.
+2. List records and information to bring to their command career counselor or ESO.
+3. Suggest questions to confirm eligibility, available billets and current deadlines.
+4. Explain which details cannot be established from the information supplied.
+Avoid presenting unverified policy or timelines as facts."""
 
             with st.spinner("Chief is reviewing your BBA situation..."):
                 try:
@@ -4329,7 +4485,8 @@ This sailor is counting on you — give them the real talk."""
                         model="claude-opus-4-5", max_tokens=2000,
                         messages=[{"role": "user", "content": bba_prompt}]
                     )
-                    bba_advice = message.content[0].text
+                    bba_caveat = "AI PLANNING DRAFT — current BBA/A2P/CA2P rules have not been verified. Confirm eligibility, deadlines and selection requirements with your command career counselor or ESO before acting."
+                    bba_advice = bba_caveat + "\n\n" + message.content[0].text
                     st.subheader("⚓ Your BBA Strategy")
                     st.markdown(bba_advice)
                     st.download_button(
@@ -4346,7 +4503,29 @@ This sailor is counting on you — give them the real talk."""
 # ── TAB 7: MY PROFILE ─────────────────────────────────────────────────────────
 with tab7:
     st.subheader("👤 My Profile")
+    if st.session_state.get("_checkout_notice"):
+        st.warning(st.session_state["_checkout_notice"])
+    st.markdown("#### Subscription and billing")
+    st.markdown(f"Billing, cancellation or content-error help: [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})")
+    st.caption("Manage payment details, invoices and cancellation in Stripe. Cancellation options depend on the subscription's billing terms.")
+    if st.button("Manage subscription / cancel", key="manage_subscription"):
+        try:
+            profile_rows = supabase.table("profiles").select("stripe_customer_id").eq("id", st.session_state.user.id).execute().data or []
+            customer_id = profile_rows[0].get("stripe_customer_id") if len(profile_rows) == 1 else None
+            if not customer_id:
+                st.info("No billing account is linked to this login. If you have been charged, contact support before subscribing again.")
+            else:
+                customer = stripe.Customer.retrieve(customer_id).to_dict()
+                if customer.get("deleted") or (customer.get("email") or "").strip().casefold() != (st.session_state.user.email or "").strip().casefold():
+                    raise ValueError("Billing account ownership could not be confirmed")
+                portal = stripe.billing_portal.Session.create(customer=customer_id, return_url=get_app_base_url())
+                st.link_button("Open secure billing management", url=portal.url, width="stretch")
+        except Exception:
+            st.error("Billing management could not be opened. Contact support for help with cancellation; do not start another subscription.")
     st.caption("Your personal score history, weak spots, and what to study next.")
+    with st.expander("Accuracy and data use"):
+        st.write(EDUCATIONAL_NOTICE)
+        st.write(DATA_NOTICE)
 
     _score_hist = st.session_state.get("score_history", [])
 
@@ -4416,22 +4595,5 @@ with tab7:
                 st.info(f"Head to the AI Tutor tab and select **{_rec_topic[:60]}** to start your lesson!")
 
 st.divider()
-st.caption(
-    "**Educational Use Disclaimer**  \n"
-    "This study guide and its practice questions are AI-generated educational aids "
-    "intended to help you prepare for Navy advancement and qualification "
-    "examinations. They are not official Navy or Department of Defense publications "
-    "and are not endorsed by the Navy, DoD, or any examination authority. While "
-    "reasonable effort is made to ground content in official sources (MILPERSMAN, "
-    "BUPERSINST, and related instructions), AI-generated content may contain errors, "
-    "omissions, or outdated information, and source manuals are revised and "
-    "superseded over time. This tool may not always reflect the most current "
-    "revision. This material does not guarantee any specific exam outcome, score, "
-    "or advancement result. You are solely responsible for verifying study content "
-    "against the official, current version of the governing instruction, and for "
-    "your own exam preparation and performance. To the fullest extent permitted by "
-    "law, Strategic Sailor disclaims all warranties, express or implied, regarding "
-    "the accuracy, completeness, or reliability of this content, and is not liable "
-    "for any exam failure, delayed advancement, or other loss or damage arising "
-    "from use of this tool."
-)
+st.caption("**Educational Use Disclaimer**  \n" + EDUCATIONAL_NOTICE)
+st.caption(f"Questions, cancellation or content-error reports: {SUPPORT_EMAIL}")

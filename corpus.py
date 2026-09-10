@@ -377,7 +377,7 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
     just a lid on prompt size, since a lesson grounded in twelve articles doesn't
     teach any better than one grounded in eight.
     """
-    if not bib:
+    if not bib or max_articles <= 0:
         return "", []
     con = _connect()
     if con is None:
@@ -409,9 +409,10 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
     # named — a bib line like "MILPERSMAN 1910 series, 1830 series" names both
     # deliberately, and 1910 alone runs past most caps, which would otherwise starve
     # 1830 out of the lesson entirely even though the bib line asked for it too.
-    numbers = list(explicit_articles)
-    i = 0
-    while len(numbers) < max_articles and any(per_series):
+    numbers = list(dict.fromkeys(explicit_articles))
+    for i in range(max((len(items) for items in per_series), default=0)):
+        if len(numbers) >= max_articles:
+            break
         for series_articles in per_series:
             if i < len(series_articles):
                 article = series_articles[i]
@@ -419,7 +420,6 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
                     numbers.append(article)
                 if len(numbers) >= max_articles:
                     break
-        i += 1
 
     numbers = numbers[:max_articles]
     return build_source_block(numbers, max_chars_each=max_chars_each)

@@ -796,10 +796,10 @@ def main():
           "Base them only on what is in the text above" in tutor, True)
     check("grounded follow-up may cite the source text, unlike memory mode",
           "You MAY state a specific fact if, and only" in tutor, True)
-    check("on-screen banner says when a lesson is grounded",
-          "grounded in the real text of milpersman" in tutor.lower(), True)
+    check("on-screen banner discloses source-supplied AI draft",
+          "ai draft with milpersman" in tutor.lower(), True)
     check("downloaded grounded lesson names the article in its caveat",
-          "GROUNDED IN THE REAL TEXT OF MILPERSMAN" in tutor, True)
+          "AI DRAFT WITH MILPERSMAN" in tutor, True)
 
     # ── 14. COORDINATE-BASED PARSING (the root-cause fix, BREAK_ATTEMPT finding 5) ──
     #
@@ -1159,8 +1159,8 @@ def main():
           "st.text_input(\"Subject" in guide, False)
     check("the grounded banner does not claim a person checked the answer key",
           "Nobody has checked that the right" in guide, True)
-    check("a grounded Deep Dive says on screen that it came from the manual",
-          "Taught from the manual" in guide, True)
+    check("a grounded Deep Dive discloses source-supplied AI draft",
+          "AI draft with source excerpts supplied" in guide, True)
 
     # ── 17. READING ORDER (MILPERSMAN's two-column rule tables) ──────────────────
     #
@@ -1375,9 +1375,9 @@ def main():
     check("a sailor can't re-challenge a question they already have a verdict on",
           "_already_challenged(sailor_id, q_hash)" in _challenge_src, True)
     check("a confirmed error is queued as priority, not silently applied",
-          '"confirms-error": "priority"' in _challenge_src, True)
+          "challenge_record(row, reason, verdict_result" in _challenge_src, True)
     check("the sailor always sees the verdict and the reasoning, win or lose",
-          '["reasoning"]' in _challenge_src and "st.success" in _challenge_src
+          '["reasoning"]' in _challenge_src and "AI check suggests an error" in _challenge_src
           and "st.info" in _challenge_src, True)
     check("logged in the Exam tab's per-question review",
           "render_challenge_button(r, key_suffix=" in src18, True)
