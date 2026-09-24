@@ -32,6 +32,11 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
      articles from a topic's own bibliography line, stays empty for a
      non-MILPERSMAN topic, respects the article cap, and never serves a
      superseded edition as current text
+ 19. The verified question bank (question_bank.py): loads the shipped CSV,
+     resolves the one topic-name mismatch between the source bank and Score
+     Surge's own topics, stays empty for a rating/paygrade/topic it has no
+     coverage for, never hands back a partial set, and is actually wired into
+     both Mock Exam and the Study Guide's Practice Questions mode
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -51,7 +56,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 359
+EXPECTED_TOTAL = 374
 
 
 def skip(reason):
@@ -570,6 +575,7 @@ def main():
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     import corpus as _corpus_sg
+    import question_bank as _qb_sg
 
     # The exam question engine, pulled out of app.py as text — the Study Guide's
     # Practice Questions mode now builds its prompt from these.
@@ -586,6 +592,7 @@ def main():
             "sg_type": guide_type, "sg_rating": "PS", "sg_paygrade": "E7", "sg_gap": 4.0,
             "strategy": "precision mode", "corpus": _corpus_sg,
             "sg_topic": "Leave", "sg_topics": {"Leave": {"bib": bib}},
+            "question_bank": _qb_sg,
             "EXAM_JSON_RULES": ENGINE_NS["EXAM_JSON_RULES"],
             "grounded_question_rules": ENGINE_NS["grounded_question_rules"],
             # The cycle helpers are the app's own; stub them so this check is about the
@@ -1285,6 +1292,59 @@ def main():
         check("the Fork / GitHub toolbar is turned off", "toolbarMode" in _cfg, True)
     else:
         skip("no .streamlit/config.toml staged — toolbar setting not checked")
+
+
+    # ── 19. VERIFIED QUESTION BANK (question_bank.py) ────────────────────────────
+    #
+    # Score Surge DB's separately-verified bank, shipped as data/ps_question_bank.csv
+    # and wired into Mock Exam and Study Guide Practice Questions on 21 Sep 2026. Every
+    # count below is checked against the shipped file itself, not a fixture, so a stale
+    # or corrupted copy of the CSV fails this section rather than silently serving
+    # fewer questions than it claims to.
+    print("\n19. VERIFIED QUESTION BANK (question_bank.py)")
+    import question_bank as _qb
+    _qb._load.cache_clear()
+
+    check("the shipped CSV loads", _qb.bank_available(), True)
+    check("E6 Transfers Management & Processing has its real count",
+          _qb.bank_count("PS", "E6", "Transfers Management & Processing"), 190)
+    check("MILPAY, Disbursing & Receipts remaps to MILPAY Processing",
+          _qb.bank_count("PS", "E6", "MILPAY Processing"), 201)
+    check("...and does NOT also land in Disbursing Operations",
+          _qb.bank_count("PS", "E6", "Disbursing Operations"), 0)
+    check("...or Receipts Management & Processing",
+          _qb.bank_count("PS", "E6", "Receipts Management & Processing"), 0)
+    check("a rating the bank doesn't cover gets nothing",
+          _qb.bank_count("YN", "E6", "Transfers Management & Processing"), 0)
+    check("a paygrade Score Surge has no curated topics for gets nothing",
+          _qb.bank_count("PS", "E7", "Transfers Management & Processing"), 0)
+
+    _full = _qb.get_bank_questions("PS", "E6", "Transfers Management & Processing", 5)
+    check("a request the bank can fill returns exactly that many", len(_full), 5)
+    check("...every one shaped for the exam engine",
+          all({"question", "answer_a", "answer_b", "answer_c", "answer_d",
+               "correct_answer", "explanation", "source_manual", "chapter_section",
+               "source_quote"} <= set(q.keys()) for q in _full), True)
+    check("...and marked verified, not merely grounded",
+          all(q.get("verified") == "yes" for q in _full), True)
+    check("a request bigger than the pool returns nothing rather than a partial set",
+          _qb.get_bank_questions("PS", "E6", "Travel & Transportation Processing", 1), [])
+
+    _r1 = _qb.get_bank_questions("PS", "E6", "Education Services", 3)
+    _r1[0]["question"] = "MUTATED"
+    _r2 = _qb.get_bank_questions("PS", "E6", "Education Services", 3)
+    check("handing out a question never lets the caller mutate the shared pool",
+          any(q["question"] == "MUTATED" for q in _r2), False)
+
+    src19 = open(APP, encoding="utf-8").read()
+    check("Mock Exam checks the bank before ever calling the AI",
+          "bank_rows = (question_bank.get_bank_questions(pq_rating, pq_paygrade, pq_topic, pq_num)"
+          in src19, True)
+    check("Study Guide Practice Questions checks the bank too",
+          "sg_bank_rows = (question_bank.get_bank_questions(sg_rating, sg_paygrade, sg_topic, sgq_keep)"
+          in src19, True)
+    check("a bank-sourced study guide set is labeled by its real tier, not the grounded one",
+          "if exam_all_verified(sg_rows):" in src19, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

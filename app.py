@@ -12,6 +12,7 @@ from fpdf import FPDF
 import anthropic
 import stripe
 import corpus
+import question_bank
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -3130,6 +3131,13 @@ one that guesses the number — and it cannot be wrong.{sg_questions_carve_out i
                 # Spares are asked for because anything failing the gate is dropped.
                 sgq_ask, sgq_keep = 10, 8
                 sgq_prompt = ""
+                # Verified bank first -- same rule as Mock Exam. Doesn't require
+                # sg_grounded: the bank's own topics (MILPAY Processing above all) are
+                # often ones corpus.db can't ground today because their governing
+                # manual isn't MILPERSMAN, so this actually reaches topics the live
+                # AI path here never could.
+                sg_bank_rows = (question_bank.get_bank_questions(sg_rating, sg_paygrade, sg_topic, sgq_keep)
+                                if sg_is_questions and sg_rating == "PS" else [])
                 if sg_is_questions and sg_grounded:
                     sgq_prompt = f"""You are a senior {sg_rating} Chief Petty Officer writing practice questions for a Navy {sg_rating} {sg_paygrade} advancement exam.
 {cycle_authority_line()}
@@ -3147,7 +3155,10 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                     try:
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         sg_rows, sg_dropped = [], 0
-                        if sgq_prompt:
+                        if sg_bank_rows:
+                            sg_rows = sg_bank_rows
+                            guide_text = render_questions_markdown(sg_rows)
+                        elif sgq_prompt:
                             message = client.messages.create(
                                 model="claude-opus-4-5", max_tokens=6000,
                                 messages=[{"role": "user", "content": sgq_prompt}]
@@ -3176,15 +3187,25 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                             # a Deep Dive taught from real text / a plan written from memory,
                             # which is forbidden from stating any fact at all.
                             if sg_rows:
-                                st.info(
-                                    "**Written from the manual, and checked.** Every question "
-                                    "here came from the real text of the MILPERSMAN articles "
-                                    "for this topic, and the app matched each one's quoted line "
-                                    "back to that text before showing it — anything it couldn't "
-                                    "match was thrown out. Nobody has checked that the right "
-                                    "letter was keyed, so if one looks wrong, open the article "
-                                    "named under it."
-                                )
+                                if exam_all_verified(sg_rows):
+                                    st.success(
+                                        "**From the verified question bank.** Every question "
+                                        "here already passed the same three checks the rest of "
+                                        "the bank does: its quoted line is real text pulled from "
+                                        "the actual manual, and a separate AI review confirmed "
+                                        "the quote actually proves the keyed answer — not just "
+                                        "that the wording is real."
+                                    )
+                                else:
+                                    st.info(
+                                        "**Written from the manual, and checked.** Every question "
+                                        "here came from the real text of the MILPERSMAN articles "
+                                        "for this topic, and the app matched each one's quoted line "
+                                        "back to that text before showing it — anything it couldn't "
+                                        "match was thrown out. Nobody has checked that the right "
+                                        "letter was keyed, so if one looks wrong, open the article "
+                                        "named under it."
+                                    )
                                 short_by = max(0, sgq_keep - len(sg_rows))
                                 if short_by:
                                     st.caption(
@@ -3642,18 +3663,38 @@ with tab5:
                 pq_topic = list(pq_topics.keys())[0]
             bib_refs = pq_topics[pq_topic]["bib"]
 
-            # Same retrieval the Tutor uses: every current MILPERSMAN article in the
-            # hundred-series this topic's own bibliography line already names. A topic
-            # governed by a manual not in the corpus yet (JTR, most of the FMR) comes
-            # back empty and falls through to the memory-written exam, unchanged.
-            exam_source_block, exam_articles = corpus.get_series_grounding(bib_refs)
-            exam_grounded = bool(exam_source_block)
-            # Ask for a couple of spares when grounded, because a question whose quote
-            # cannot be found gets dropped and a sailor who asked for 5 should still
-            # get 5. Trimmed back to pq_num after verification.
-            pq_ask = pq_num + 2 if exam_grounded else pq_num
+            # Verified bank first. Only PS has one right now, and only for the topics
+            # it actually covers -- get_bank_questions() returns [] the moment it can't
+            # fill the whole request, which sends this straight to the else branch below
+            # and the app behaves exactly as it did before this existed.
+            bank_rows = (question_bank.get_bank_questions(pq_rating, pq_paygrade, pq_topic, pq_num)
+                         if pq_rating == "PS" else [])
 
-            pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
+            if bank_rows:
+                st.session_state.exam_questions = bank_rows
+                st.session_state.exam_topic = pq_topic
+                st.session_state.exam_rating = pq_rating
+                for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                              "exam_short_by"):
+                    st.session_state.pop(stale, None)
+                for i in range(50):
+                    st.session_state.pop(f"exam_pick_{i}", None)
+                # Every question already came from the verified bank -- nothing was
+                # asked for that wasn't delivered.
+                st.session_state.exam_short_by = 0
+            else:
+                # Same retrieval the Tutor uses: every current MILPERSMAN article in the
+                # hundred-series this topic's own bibliography line already names. A topic
+                # governed by a manual not in the corpus yet (JTR, most of the FMR) comes
+                # back empty and falls through to the memory-written exam, unchanged.
+                exam_source_block, exam_articles = corpus.get_series_grounding(bib_refs)
+                exam_grounded = bool(exam_source_block)
+                # Ask for a couple of spares when grounded, because a question whose quote
+                # cannot be found gets dropped and a sailor who asked for 5 should still
+                # get 5. Trimmed back to pq_num after verification.
+                pq_ask = pq_num + 2 if exam_grounded else pq_num
+
+                pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
 {cycle_authority_line()}
 
 {cycle_facts_block()}
@@ -3665,10 +3706,10 @@ Write exactly {pq_ask} NWAE-style multiple choice questions for:
 
 {EXAM_JSON_RULES}"""
 
-            if exam_grounded:
-                pq_prompt += grounded_question_rules(exam_source_block, pq_ask)
-            else:
-                pq_prompt += """
+                if exam_grounded:
+                    pq_prompt += grounded_question_rules(exam_source_block, pq_ask)
+                else:
+                    pq_prompt += """
 
 === ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
 
@@ -3682,50 +3723,50 @@ it flows, what the exam is really testing — rather than on a specific number y
 check. Where a question cannot work without a value, name the manual and omit the
 article number rather than inventing one."""
 
-            with st.spinner("Chief is writing your exam..."):
-                try:
-                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                    message = client.messages.create(
-                        # A grounded set is two questions longer and every question
-                        # carries a quote, so 4000 truncates the JSON mid-array and the
-                        # whole exam parses to nothing.
-                        model="claude-opus-4-5",
-                        max_tokens=6000 if exam_grounded else 4000,
-                        messages=[{"role": "user", "content": pq_prompt}]
-                    )
-                    parsed = parse_exam_json(message.content[0].text)
-                    dropped = 0
-                    if parsed and exam_grounded:
-                        # The gate. Anything whose quote isn't really in the retrieved
-                        # text is discarded here, before a sailor can ever see it.
-                        parsed, dropped = ground_exam_questions(parsed, exam_source_block)
-                        parsed = parsed[:pq_num]
-                    if not parsed:
-                        if exam_grounded and dropped:
-                            st.error(
-                                "Chief wrote questions the app couldn't trace back to the "
-                                "manual text, so none of them were shown. That's the check "
-                                "doing its job. Hit Generate Mock Exam again."
-                            )
+                with st.spinner("Chief is writing your exam..."):
+                    try:
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                        message = client.messages.create(
+                            # A grounded set is two questions longer and every question
+                            # carries a quote, so 4000 truncates the JSON mid-array and the
+                            # whole exam parses to nothing.
+                            model="claude-opus-4-5",
+                            max_tokens=6000 if exam_grounded else 4000,
+                            messages=[{"role": "user", "content": pq_prompt}]
+                        )
+                        parsed = parse_exam_json(message.content[0].text)
+                        dropped = 0
+                        if parsed and exam_grounded:
+                            # The gate. Anything whose quote isn't really in the retrieved
+                            # text is discarded here, before a sailor can ever see it.
+                            parsed, dropped = ground_exam_questions(parsed, exam_source_block)
+                            parsed = parsed[:pq_num]
+                        if not parsed:
+                            if exam_grounded and dropped:
+                                st.error(
+                                    "Chief wrote questions the app couldn't trace back to the "
+                                    "manual text, so none of them were shown. That's the check "
+                                    "doing its job. Hit Generate Mock Exam again."
+                                )
+                            else:
+                                st.error("Chief's exam came back in a format the app couldn't read. "
+                                         "Hit Generate Mock Exam again.")
                         else:
-                            st.error("Chief's exam came back in a format the app couldn't read. "
-                                     "Hit Generate Mock Exam again.")
-                    else:
-                        st.session_state.exam_questions = parsed
-                        st.session_state.exam_topic = pq_topic
-                        st.session_state.exam_rating = pq_rating
-                        # Clear anything left over from a previous sitting, including the
-                        # old free-text format, so a new exam never opens pre-graded.
-                        for stale in ("exam_result", "exam_blank_warning", "practice_questions",
-                                      "exam_short_by"):
-                            st.session_state.pop(stale, None)
-                        for i in range(50):
-                            st.session_state.pop(f"exam_pick_{i}", None)
-                        # Set AFTER the clear-out above, or this exam's own count is the
-                        # thing that gets wiped.
-                        st.session_state.exam_short_by = max(0, pq_num - len(parsed))
-                except Exception as e:
-                    st.error("Error: " + str(e))
+                            st.session_state.exam_questions = parsed
+                            st.session_state.exam_topic = pq_topic
+                            st.session_state.exam_rating = pq_rating
+                            # Clear anything left over from a previous sitting, including the
+                            # old free-text format, so a new exam never opens pre-graded.
+                            for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                                          "exam_short_by"):
+                                st.session_state.pop(stale, None)
+                            for i in range(50):
+                                st.session_state.pop(f"exam_pick_{i}", None)
+                            # Set AFTER the clear-out above, or this exam's own count is the
+                            # thing that gets wiped.
+                            st.session_state.exam_short_by = max(0, pq_num - len(parsed))
+                    except Exception as e:
+                        st.error("Error: " + str(e))
 
         exam_qs = st.session_state.get("exam_questions") or []
         if exam_qs:
