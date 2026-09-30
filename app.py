@@ -15,6 +15,7 @@ import stripe
 import corpus
 from launch_safety import EDUCATIONAL_NOTICE, DATA_NOTICE, SUPPORT_EMAIL, validated_checkout, challenge_record
 import question_bank
+import account_locks as locks
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -318,6 +319,11 @@ def load_score_history(user_id: str) -> list:
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
+    if st.session_state.get("_signed_out_elsewhere"):
+        st.warning(
+            "You were signed out because this account signed in on another device. "
+            "Each Score Surge account is for one sailor, one device at a time."
+        )
     st.markdown("Navy advancement exam preparation: FMS estimates, study tools and practice questions.")
     with st.expander("Before you use Score Surge: accuracy and data"):
         st.write(EDUCATIONAL_NOTICE)
@@ -347,6 +353,9 @@ def show_auth_page():
                     st.session_state.access_token = res.session.access_token
                     st.session_state.refresh_token = res.session.refresh_token
                     st.session_state.tier = get_user_tier(res.user.id, res.user.email or "")
+                    # One login at a time: this device becomes the active one, and any
+                    # other device signed in to this account is signed out within a minute.
+                    locks.claim_session(supabase, res.user.id, st.session_state)
                     st.rerun()
                 except Exception:
                     st.error("Login failed — check your email and password.")
@@ -493,6 +502,7 @@ def show_auth_page():
                                 }).execute()
                             except Exception:
                                 pass
+                        locks.claim_session(supabase, res.user.id, st.session_state)
                         st.rerun()
                     else:
                         st.info("Check your email to confirm your account, then log in.")
@@ -535,6 +545,106 @@ if not st.session_state.tier:
     st.session_state.tier = get_user_tier(
         st.session_state.user.id, getattr(st.session_state.user, "email", "") or ""
     )
+
+# ── ACCOUNT LOCKS (account_locks.py, 30 Sep 2026) ─────────────────────────────
+# One login at a time. A sailor already signed in before this shipped has no
+# token yet, so they get one now rather than being signed out.
+if not st.session_state.get("_active_session"):
+    locks.claim_session(supabase, st.session_state.user.id, st.session_state)
+elif not locks.session_still_active(supabase, st.session_state.user.id, st.session_state):
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+    st.session_state.clear()
+    st.session_state["_signed_out_elsewhere"] = True
+    st.rerun()
+
+# Rating lock. Read once per login; "?" means the read failed, so this render
+# falls back to the full list rather than nagging a sailor who already chose.
+if "locked_rating" not in st.session_state:
+    _r, _r_at = locks.load_rating(supabase, st.session_state.user.id)
+    if _r != "?":
+        st.session_state.locked_rating = _r
+        st.session_state.rating_set_at = _r_at
+
+if st.session_state.get("locked_rating", "?") is None:
+    st.title("⚓ Welcome to Score Surge")
+    st.subheader("First, pick your rating")
+    st.write(
+        "Your account is set up for one rating. Everything in the app — study guides, "
+        "the tutor, mock exams — will be built for the rating you choose here."
+    )
+    _pick = st.radio("Your rating", locks.RATING_CHOICES, horizontal=True, key="first_rating_pick")
+    st.caption(
+        f"You can change it yourself once every {locks.RATING_CHANGE_DAYS} days from My Profile. "
+        f"If you convert ratings sooner, email {SUPPORT_EMAIL}."
+    )
+    if st.button(f"Lock in {_pick}", width="stretch"):
+        if locks.save_rating(supabase, st.session_state.user.id, _pick):
+            st.session_state.locked_rating = _pick
+            st.session_state.rating_set_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            st.rerun()
+        else:
+            st.error("That didn't save. Try again in a moment.")
+    st.stop()
+
+
+def rating_select(label, key):
+    """A rating menu fixed to the sailor's locked rating.
+
+    Every tab that asks "Your Rating" goes through here, so the lock can't be
+    missed on one of them. Falls back to the full list only when the rating
+    couldn't be read this render.
+    """
+    locked = st.session_state.get("locked_rating")
+    if locked in RATINGS:
+        return st.selectbox(label, [locked], key=key, disabled=True,
+                            help="Your account's rating. Change it from My Profile.")
+    return st.selectbox(label, RATINGS, key=key)
+
+
+# Monthly limits. Read at most once a minute (and right after anything is spent),
+# so a sailor tapping through a mock exam isn't making a database call per tap.
+def current_usage():
+    cached = st.session_state.get("_usage")
+    if cached is None or time.time() - st.session_state.get("_usage_at", 0) > 60:
+        cached = locks.get_usage(supabase)
+        st.session_state._usage = cached
+        st.session_state._usage_at = time.time()
+    return cached
+
+
+class LimitReached(Exception):
+    """Raised inside a generation block when the month's limit is used up."""
+
+
+def require_ai(uses_ai=True):
+    if uses_ai and not locks.has_left(current_usage(), "ai"):
+        raise LimitReached(locks.limit_message("ai", st.session_state.tier))
+
+
+def spend(kind):
+    locks.consume(supabase, kind)
+    st.session_state.pop("_usage", None)
+
+
+def usage_caption(kind="ai"):
+    line = locks.usage_line(current_usage(), kind)
+    if line:
+        st.caption(line)
+
+
+def counted_download(label, data, file_name, mime="text/plain", key=None):
+    """A download that counts against the monthly limit and carries the sailor's email."""
+    if not locks.has_left(current_usage(), "download"):
+        st.info(locks.limit_message("download", st.session_state.tier))
+        return
+    email = getattr(st.session_state.user, "email", "") or ""
+    st.download_button(label, data=locks.stamp_text(data, email), file_name=file_name,
+                       mime=mime, width="stretch", key=key,
+                       on_click=spend, args=("download",))
+    usage_caption("download")
 
 if st.session_state.user and "score_history_loaded" not in st.session_state:
     raw = load_score_history(st.session_state.user.id)
@@ -3263,7 +3373,7 @@ with tab3:
         # already use.
         colA, colB = st.columns(2)
         with colA:
-            sg_rating = st.selectbox("Your Rating", RATINGS, key="sg_rating")
+            sg_rating = rating_select("Your Rating", key="sg_rating")
         with colB:
             sg_paygrade = st.selectbox("Your Paygrade", PAYGRADES, key="sg_paygrade")
 
@@ -3470,6 +3580,7 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
 
                 with st.spinner("Chief is reviewing your record..."):
                     try:
+                        require_ai(not sg_bank_rows)
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         sg_rows, sg_dropped = [], 0
                         if sg_bank_rows:
@@ -3498,6 +3609,8 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                 "doing its job. Hit Generate My Study Guide again."
                             )
                         else:
+                            if not sg_bank_rows:
+                                spend("ai")
                             st.subheader("📋 Your Personalized Study Guide")
                             # Four honest states, and they must not blur together: questions
                             # proved against real text / questions with nothing behind them /
@@ -3558,10 +3671,9 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                     "numbers, deadlines and form numbers against your bibliography."
                                 )
                             st.markdown(guide_text)
-                            st.download_button(
-                                "📥 Download Study Guide", data=guide_text,
-                                file_name=f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
-                                mime="text/plain", width="stretch",
+                            counted_download(
+                                "📥 Download Study Guide", guide_text,
+                                f"StudyGuide_{sg_rating}_{sg_paygrade}.txt",
                             )
                             if sg_rows:
                                 st.markdown("**See something wrong above?**")
@@ -3569,6 +3681,8 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                     st.caption(f"Q{sgq_i + 1}. {sgq_row['question'][:80]}"
                                                + ("…" if len(sgq_row['question']) > 80 else ""))
                                     render_challenge_button(sgq_row, key_suffix=f"sgq_{sgq_i}")
+                    except LimitReached as e:
+                        st.warning(str(e))
                     except Exception as e:
                         st.error("Something went wrong: " + str(e))
 
@@ -3583,7 +3697,7 @@ with tab4:
     else:
         col1, col2 = st.columns(2)
         with col1:
-            tutor_rating = st.selectbox("Your Rating", RATINGS, key="tutor_rating")
+            tutor_rating = rating_select("Your Rating", key="tutor_rating")
         with col2:
             tutor_paygrade = st.selectbox("Your Paygrade", PAYGRADES,
                                           index=PAYGRADES.index("E5"), key="tutor_paygrade")
@@ -3738,12 +3852,15 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
 
                 with st.spinner("Chief is preparing your lesson..."):
                     try:
+                        require_ai()
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         message = client.messages.create(
                             model="claude-opus-4-5", max_tokens=2000,
                             messages=[{"role": "user", "content": lesson_prompt}]
                         )
                         lesson = message.content[0].text
+                        spend("ai")
+                        st.session_state._tutor_followups = 0
                         st.subheader(f"📚 Lesson: {tutor_subtopic}")
                         # The Tutor is the only tab that hands a sailor free-form Navy
                         # instruction, and a lesson reads with far more authority than a
@@ -3796,11 +3913,12 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                             + caveat
                             + "=" * 66 + "\n\n" + lesson
                         )
-                        st.download_button(
-                            "📥 Download This Lesson", data=lesson_file,
-                            file_name=f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
-                            mime="text/plain", width="stretch",
+                        counted_download(
+                            "📥 Download This Lesson", lesson_file,
+                            f"Lesson_{tutor_subtopic.replace(' ', '_')}.txt",
                         )
+                    except LimitReached as e:
+                        st.warning(str(e))
                     except Exception as e:
                         st.error("Error: " + str(e))
 
@@ -3813,6 +3931,10 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                 if sailor_question:
                     with st.spinner("Chief is thinking..."):
                         try:
+                            if st.session_state.get("_tutor_followups", 0) >= locks.TUTOR_FOLLOWUPS_PER_LESSON:
+                                raise LimitReached(
+                                    f"That's {locks.TUTOR_FOLLOWUPS_PER_LESSON} questions on this lesson. "
+                                    "Start a new lesson to keep asking the Chief.")
                             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                             history = st.session_state.tutor_history.copy()
                             # Two things go wrong in a follow-up that do not go wrong in the
@@ -3889,8 +4011,11 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                                 {"role": "user", "content": sailor_question})
                             st.session_state.tutor_history.append(
                                 {"role": "assistant", "content": answer})
+                            st.session_state._tutor_followups = st.session_state.get("_tutor_followups", 0) + 1
                             st.markdown("**Chief says:**")
                             st.markdown(answer)
+                        except LimitReached as e:
+                            st.warning(str(e))
                         except Exception as e:
                             st.error("Error: " + str(e))
 
@@ -3958,7 +4083,7 @@ with tab5:
     else:
         colA, colB = st.columns(2)
         with colA:
-            pq_rating = st.selectbox("Your Rating", RATINGS, key="pq_rating")
+            pq_rating = rating_select("Your Rating", key="pq_rating")
         with colB:
             pq_paygrade = st.selectbox("Your Paygrade", PAYGRADES,
                                        index=PAYGRADES.index("E5"), key="pq_paygrade")
@@ -4045,6 +4170,7 @@ article number rather than inventing one."""
 
                 with st.spinner("Chief is writing your exam..."):
                     try:
+                        require_ai()
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                         message = client.messages.create(
                             # A grounded set is two questions longer and every question
@@ -4072,6 +4198,7 @@ article number rather than inventing one."""
                                 st.error("Chief's exam came back in a format the app couldn't read. "
                                          "Hit Generate Mock Exam again.")
                         else:
+                            spend("ai")
                             st.session_state.exam_questions = parsed
                             st.session_state.exam_topic = pq_topic
                             st.session_state.exam_rating = pq_rating
@@ -4085,6 +4212,8 @@ article number rather than inventing one."""
                             # Set AFTER the clear-out above, or this exam's own count is the
                             # thing that gets wiped.
                             st.session_state.exam_short_by = max(0, pq_num - len(parsed))
+                    except LimitReached as e:
+                        st.warning(str(e))
                     except Exception as e:
                         st.error("Error: " + str(e))
 
@@ -4352,12 +4481,8 @@ article number rather than inventing one."""
 
                 col_dl, col_again = st.columns(2)
                 with col_dl:
-                    st.download_button(
-                        "📥 Download Results",
-                        data="\n".join(download_lines),
-                        file_name="PracticeResults.txt", mime="text/plain",
-                        width="stretch",
-                    )
+                    counted_download("📥 Download Results", "\n".join(download_lines),
+                                     "PracticeResults.txt", key="dl_practice_results")
                 with col_again:
                     if st.button("🔄 Take Another Exam", width="stretch"):
                         for stale in ("exam_questions", "exam_result", "exam_blank_warning",
@@ -4387,9 +4512,7 @@ with tab6:
         with st.form("planner_form"):
             col1, col2 = st.columns(2)
             with col1:
-                plan_rating = st.selectbox("Your Rating",
-                    RATINGS,
-                    key="plan_rating")
+                plan_rating = rating_select("Your Rating", key="plan_rating")
                 plan_paygrade = st.selectbox("Target Paygrade",
                     ["E5", "E6"], key="plan_paygrade")
             with col2:
@@ -4445,21 +4568,20 @@ No fluff. Every line earns its place."""
 
             with st.spinner("Chief is building your study plan..."):
                 try:
+                    require_ai()
                     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
                         model="claude-opus-4-5", max_tokens=2500,
                         messages=[{"role": "user", "content": planner_prompt}]
                     )
                     plan_text = message.content[0].text
+                    spend("ai")
                     st.subheader("📅 Your Personalized Study Plan")
                     st.markdown(plan_text)
-                    st.download_button(
-                        "📥 Download My Study Plan",
-                        data=plan_text,
-                        file_name=f"StudyPlan_{plan_rating}_{plan_paygrade}.txt",
-                        mime="text/plain",
-                        width="stretch",
-                    )
+                    counted_download("📥 Download My Study Plan", plan_text,
+                                     f"StudyPlan_{plan_rating}_{plan_paygrade}.txt")
+                except LimitReached as e:
+                    st.warning(str(e))
                 except Exception as e:
                     st.error("Error building plan: " + str(e))
 
@@ -4482,9 +4604,7 @@ Use this to get personalized strategy on:
         with st.form("bba_hub_form"):
             col1, col2 = st.columns(2)
             with col1:
-                bba_rating = st.selectbox("Your Rating",
-                    RATINGS,
-                    key="bba_rating")
+                bba_rating = rating_select("Your Rating", key="bba_rating")
                 bba_fms = st.number_input("Your Current or Expected FMS",
                     min_value=0.0, max_value=max(r["fms_max"] for r in FMS_RULES.values()), value=0.0, step=0.1,
                     key="bba_fms")
@@ -4530,6 +4650,7 @@ Avoid presenting unverified policy or timelines as facts."""
 
             with st.spinner("Chief is reviewing your BBA situation..."):
                 try:
+                    require_ai()
                     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                     message = client.messages.create(
                         model="claude-opus-4-5", max_tokens=2000,
@@ -4537,15 +4658,13 @@ Avoid presenting unverified policy or timelines as facts."""
                     )
                     bba_caveat = "AI PLANNING DRAFT — current BBA/A2P/CA2P rules have not been verified. Confirm eligibility, deadlines and selection requirements with your command career counselor or ESO before acting."
                     bba_advice = bba_caveat + "\n\n" + message.content[0].text
+                    spend("ai")
                     st.subheader("⚓ Your BBA Strategy")
                     st.markdown(bba_advice)
-                    st.download_button(
-                        "📥 Download BBA Strategy",
-                        data=bba_advice,
-                        file_name=f"BBA_Strategy_{bba_rating}.txt",
-                        mime="text/plain",
-                        width="stretch",
-                    )
+                    counted_download("📥 Download BBA Strategy", bba_advice,
+                                     f"BBA_Strategy_{bba_rating}.txt")
+                except LimitReached as e:
+                    st.warning(str(e))
                 except Exception as e:
                     st.error("Error: " + str(e))
 
@@ -4553,6 +4672,39 @@ Avoid presenting unverified policy or timelines as facts."""
 # ── TAB 7: MY PROFILE ─────────────────────────────────────────────────────────
 with tab7:
     st.subheader("👤 My Profile")
+
+    # ── Your plan: rating lock and this month's usage (account_locks.py) ──
+    with st.container(border=True):
+        _locked = st.session_state.get("locked_rating")
+        st.markdown(f"**Rating:** {_locked or 'not set'}  ·  **Plan:** "
+                    f"{TIER_LABELS.get(st.session_state.tier, st.session_state.tier)}")
+        _u = current_usage()
+        for _kind in ("ai", "download"):
+            _line = locks.usage_line(_u, _kind)
+            if _line:
+                st.caption(_line + " · resets on the 1st")
+        st.caption("Questions from the verified question bank don't count against your limits.")
+        if _locked:
+            _next = locks.next_rating_change(st.session_state.get("rating_set_at"))
+            if _next:
+                st.caption(f"You can change your rating yourself after {_next}. "
+                           f"Converting sooner? Email {SUPPORT_EMAIL}.")
+            else:
+                with st.expander("Change my rating"):
+                    _others = [r for r in locks.RATING_CHOICES if r != _locked]
+                    _new = st.selectbox("New rating", _others, key="rating_change_pick")
+                    st.caption(f"After changing, you can't change it again for "
+                               f"{locks.RATING_CHANGE_DAYS} days.")
+                    if st.button(f"Change to {_new}", key="rating_change_go"):
+                        if locks.save_rating(supabase, st.session_state.user.id, _new):
+                            st.session_state.locked_rating = _new
+                            st.session_state.rating_set_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                            for _k in ("sg_rating", "tutor_rating", "pq_rating",
+                                       "plan_rating", "bba_rating"):
+                                st.session_state.pop(_k, None)
+                            st.rerun()
+                        else:
+                            st.error(f"That change wasn't allowed yet. Email {SUPPORT_EMAIL} for help.")
     if st.session_state.get("_checkout_notice"):
         st.warning(st.session_state["_checkout_notice"])
     st.markdown("#### Subscription and billing")

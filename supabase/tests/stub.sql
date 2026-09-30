@@ -1,0 +1,17 @@
+create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
+create schema auth;
+create table auth.users (id uuid primary key, email text);
+create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true),'')::uuid $$;
+create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims', true),''),'{}')::jsonb $$;
+grant usage on schema auth to anon, authenticated, service_role;
+grant usage on schema public to anon, authenticated, service_role;
+create table public.profiles (id uuid references auth.users on delete cascade primary key, email text, tier text default 'trial', trial_start timestamptz default now(), created_at timestamptz default now(), stripe_customer_id text);
+alter table public.profiles enable row level security;
+create policy sel on public.profiles for select using (auth.uid() = id);
+create policy upd on public.profiles for update using (auth.uid() = id);
+create policy ins on public.profiles for insert with check (auth.uid() = id);
+create policy del on public.profiles for delete using (auth.uid() = id);
+grant select, insert, update, delete on public.profiles to authenticated, service_role;
+grant all on all tables in schema public to service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;

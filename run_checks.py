@@ -62,7 +62,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 392
+EXPECTED_TOTAL = 401
 
 
 def skip(reason):
@@ -1442,6 +1442,34 @@ def main():
           in src19, True)
     check("a bank-sourced study guide set is labeled by its real tier, not the grounded one",
           "if exam_all_verified(sg_rows):" in src19, True)
+
+    # ── 22. ACCOUNT LOCKS (account_locks.py, 30 Sep 2026) ────────────────────────
+    #
+    # The rules live in Postgres (supabase/migrations/20260930_account_locks.sql,
+    # proven by supabase/tests/behave.sql) and the UI is driven end to end by
+    # account_locks_test.py. These checks guard the wiring: a new rating menu,
+    # download or AI call added later must go through the lock, not around it.
+    print("\n22. ACCOUNT LOCKS (account_locks.py)")
+    src22 = open(APP, encoding="utf-8").read()
+    check("no rating menu bypasses the lock",
+          len(re.findall(r'st\.selectbox\("Your Rating"', src22)), 0)
+    check("...that one is the fallback inside rating_select itself",
+          "return st.selectbox(label, RATINGS, key=key)" in src22, True)
+    check("five tabs use the locked rating menu",
+          src22.count('rating_select("Your Rating", key='), 5)
+    check("only the free FMS report downloads without being counted (+ counted_download's own)",
+          src22.count("st.download_button("), 2)
+    check("every paid AI generation checks the monthly limit first",
+          src22.count("require_ai("), 5 + 1)  # 5 call sites + its definition
+    check("...and is counted once it succeeds",
+          src22.count('spend("ai")'), 5)
+    check("a sailor signed in elsewhere is signed out here",
+          "locks.session_still_active(" in src22 and "_signed_out_elsewhere" in src22, True)
+    import account_locks as _al
+    check("a download is stamped with the sailor's email",
+          _al.stamp_text("x", "s@n.mil").count("s@n.mil"), 2)
+    check("an unreachable usage check never locks a paying sailor out",
+          _al.has_left(None, "ai"), True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
