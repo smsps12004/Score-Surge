@@ -195,6 +195,30 @@ def main():
     sheet_text = ("PAYGRADE COMPETING FOR: E6\nEXAM STANDARD SCORE 62.00\n"
                   "PERFORMANCE MARK AVERAGE (RSCA PMA) 4.06\nSERVICE IN PAYGRADE 3.50\n"
                   "AWARDS POINTS 4.00\nEDUCATION POINTS 4.00\nPNA POINTS 6.00")
+
+    # iPhone JPEGs can open as MPO images under newer Pillow releases. The
+    # prepared grayscale copy is valid, but pytesseract 0.3.13 rejects the raw
+    # image's MPO format label. The raw-vs-processed production probe and the
+    # fallback pass must neutralize that label without taking down the upload.
+    _mpo_image = _Image.new("RGB", (120, 120), "white")
+    _mpo_image.format = "MPO"
+
+    def _reject_mpo(image, **_kwargs):
+        if image.format == "MPO":
+            raise TypeError("Unsupported image format/type")
+        return sheet_text
+
+    at = build_app()
+    at.run()
+    at.file_uploader[0].set_value(("iphone_sheet.jpeg", _png, "image/jpeg"))
+    with patch("PIL.Image.open", return_value=_mpo_image), \
+            patch("pytesseract.image_to_string", side_effect=_reject_mpo):
+        at.run()
+    check("an iPhone MPO-labelled JPEG does not crash the OCR probe",
+          len(at.exception), 0)
+    check("...and the read still reaches the score form",
+          [n.value for n in at.number_input if "Exam Standard Score" in n.label], [62.0])
+
     at = upload("photo_of_sheet.pdf", _scanned_pdf, "application/pdf",
                 patch("pytesseract.image_to_string", return_value=sheet_text))
     check("a photographed PDF is OCR'd instead of rejected", len(at.exception), 0)

@@ -1538,7 +1538,32 @@ def ocr_text(image):
     than a couple of the six figures.
     """
     prepared = prepare_for_ocr(image)
-    text = pytesseract.image_to_string(prepared, config=OCR_PRIMARY_CONFIG); _rawp = pytesseract.image_to_string(image, config=OCR_PRIMARY_CONFIG); print(f"[OCR-DEBUG-RAW] raw_len={len(_rawp)} raw_snippet={_rawp[:150]!r} prepared_size={prepared.size} orig_size={image.size} orig_mode={image.mode}", flush=True)
+    text = pytesseract.image_to_string(prepared, config=OCR_PRIMARY_CONFIG)
+
+    # Temporary production probe: compare the same pixels before preprocessing.
+    # Some iPhone JPEGs open as MPO files. pytesseract 0.3.13 rejects that format
+    # label even though the pixel data is valid, so copy the pixels into a neutral
+    # PIL image first. The probe must never block the real OCR path if it fails.
+    try:
+        unprocessed = image.copy()
+        unprocessed.format = None
+        raw_probe_text = pytesseract.image_to_string(
+            unprocessed, config=OCR_PRIMARY_CONFIG
+        )
+        print(
+            "[OCR-DEBUG-RAW] "
+            f"raw_len={len(raw_probe_text)} "
+            f"raw_snippet={redact_pii(raw_probe_text)[:150]!r} "
+            f"prepared_size={prepared.size} orig_size={image.size} "
+            f"orig_mode={image.mode} orig_format={image.format!r}",
+            flush=True,
+        )
+    except Exception as probe_error:
+        print(
+            "[OCR-DEBUG-RAW-ERROR] "
+            f"{type(probe_error).__name__}: {probe_error}",
+            flush=True,
+        )
 
     def thin(t):
         try:
@@ -1557,7 +1582,9 @@ def ocr_text(image):
     # where being wrong is worse than being slow.
     if extract_paygrade(text) is None:
         try:
-            text += "\n" + pytesseract.image_to_string(image)
+            unprocessed = image.copy()
+            unprocessed.format = None
+            text += "\n" + pytesseract.image_to_string(unprocessed)
         except Exception:
             pass
     return text
@@ -1967,7 +1994,15 @@ with tab1:
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
-            _extracted = extract_text_from_upload(uploaded_file); print(f"[OCR-DEBUG] name={uploaded_file.name!r} size={uploaded_file.size} type={uploaded_file.type!r} extracted_len={(len(_extracted[0]) if _extracted else 0)} snippet={(_extracted[0][:200] if _extracted else '')!r}", flush=True)
+            _extracted = extract_text_from_upload(uploaded_file)
+            _debug_text = _extracted[0] if _extracted else ""
+            print(
+                "[OCR-DEBUG] "
+                f"name={uploaded_file.name!r} size={uploaded_file.size} "
+                f"type={uploaded_file.type!r} extracted_len={len(_debug_text)} "
+                f"snippet={redact_pii(_debug_text)[:200]!r}",
+                flush=True,
+            )
         # None means extract_text_from_upload has already said what went wrong and
         # what to do about it. A second, vaguer error underneath helps nobody.
         _already_explained = _extracted is None
