@@ -200,12 +200,15 @@ def main():
     # prepared grayscale copy is valid, but pytesseract 0.3.13 rejects the raw
     # image's MPO format label. The raw-vs-processed production probe and the
     # fallback pass must neutralize that label without taking down the upload.
-    _mpo_image = _Image.new("RGB", (120, 120), "white")
+    _mpo_image = _Image.new("RGB", (120, 80), "white")
     _mpo_image.format = "MPO"
+    _mpo_image.getexif()[274] = 6  # stored landscape, displayed 90° clockwise
 
     def _reject_mpo(image, **_kwargs):
         if image.format == "MPO":
             raise TypeError("Unsupported image format/type")
+        if image.width > image.height:
+            raise RuntimeError("EXIF orientation was not applied before OCR")
         return sheet_text
 
     at = build_app()
@@ -216,6 +219,8 @@ def main():
         at.run()
     check("an iPhone MPO-labelled JPEG does not crash the OCR probe",
           len(at.exception), 0)
+    check("...and applies the phone photo's EXIF orientation before OCR",
+          len(at.error), 0)
     check("...and the read still reaches the score form",
           [n.value for n in at.number_input if "Exam Standard Score" in n.label], [62.0])
 

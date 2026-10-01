@@ -1521,7 +1521,11 @@ MAX_OCR_PAGES = 2
 
 def prepare_for_ocr(image):
     """Grayscale, enlarge to a readable size, lift contrast, sharpen."""
-    img = image.convert("L")
+    # Phone cameras commonly store the pixels sideways and rely on EXIF metadata
+    # to tell viewers how to rotate them. Browser previews honor that metadata;
+    # Pillow/Tesseract do not unless it is applied explicitly. Normalize first so
+    # OCR sees the same upright sheet the sailor saw before uploading it.
+    img = ImageOps.exif_transpose(image).convert("L")
     scale = OCR_TARGET_WIDTH / max(img.width, 1)
     if scale > 1.05:
         scale = min(scale, 4.0)
@@ -1545,7 +1549,7 @@ def ocr_text(image):
     # label even though the pixel data is valid, so copy the pixels into a neutral
     # PIL image first. The probe must never block the real OCR path if it fails.
     try:
-        unprocessed = image.copy()
+        unprocessed = ImageOps.exif_transpose(image)
         unprocessed.format = None
         raw_probe_text = pytesseract.image_to_string(
             unprocessed, config=OCR_PRIMARY_CONFIG
@@ -1555,7 +1559,8 @@ def ocr_text(image):
             f"raw_len={len(raw_probe_text)} "
             f"raw_snippet={redact_pii(raw_probe_text)[:150]!r} "
             f"prepared_size={prepared.size} orig_size={image.size} "
-            f"orig_mode={image.mode} orig_format={image.format!r}",
+            f"orig_mode={image.mode} orig_format={image.format!r} "
+            f"exif_orientation={image.getexif().get(274)!r}",
             flush=True,
         )
     except Exception as probe_error:
@@ -1582,7 +1587,7 @@ def ocr_text(image):
     # where being wrong is worse than being slow.
     if extract_paygrade(text) is None:
         try:
-            unprocessed = image.copy()
+            unprocessed = ImageOps.exif_transpose(image)
             unprocessed.format = None
             text += "\n" + pytesseract.image_to_string(unprocessed)
         except Exception:
