@@ -1538,7 +1538,7 @@ def ocr_text(image):
     than a couple of the six figures.
     """
     prepared = prepare_for_ocr(image)
-    text = pytesseract.image_to_string(prepared, config=OCR_PRIMARY_CONFIG)
+    text = pytesseract.image_to_string(prepared, config=OCR_PRIMARY_CONFIG); _rawp = pytesseract.image_to_string(image, config=OCR_PRIMARY_CONFIG); print(f"[OCR-DEBUG-RAW] raw_len={len(_rawp)} raw_snippet={_rawp[:150]!r} prepared_size={prepared.size} orig_size={image.size} orig_mode={image.mode}", flush=True)
 
     def thin(t):
         try:
