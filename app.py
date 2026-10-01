@@ -1967,7 +1967,7 @@ with tab1:
 
     if uploaded_file is not None:
         with st.spinner("Reading your document..."):
-            _extracted = extract_text_from_upload(uploaded_file); print(f"[OCR-DEBUG] name={uploaded_file.name!r} size={uploaded_file.size} type={uploaded_file.type!r} extracted_len={(len(_extracted[0]) if _extracted else 0)} snippet={(_extracted[0][:200] if _extracted else '')!r}")
+            _extracted = extract_text_from_upload(uploaded_file); print(f"[OCR-DEBUG] name={uploaded_file.name!r} size={uploaded_file.size} type={uploaded_file.type!r} extracted_len={(len(_extracted[0]) if _extracted else 0)} snippet={(_extracted[0][:200] if _extracted else '')!r}", flush=True)
         # None means extract_text_from_upload has already said what went wrong and
         # what to do about it. A second, vaguer error underneath helps nobody.
         _already_explained = _extracted is None
