@@ -56,7 +56,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 378
+EXPECTED_TOTAL = 379
 
 
 def skip(reason):
@@ -1300,6 +1300,11 @@ def main():
         check("the Fork / GitHub toolbar is turned off", "toolbarMode" in _cfg, True)
     else:
         skip("no .streamlit/config.toml staged — toolbar setting not checked")
+    # The config setting alone stopped working on a newer Streamlit (Fork button seen
+    # live again 1 Oct 2026), so app.py also hides the header buttons with CSS.
+    _app_src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    check("the Fork / GitHub header buttons are hidden by CSS too",
+          '[data-testid="stToolbarActions"]{display:none !important;}' in _app_src, True)
 
 
     # ── 19. VERIFIED QUESTION BANK (question_bank.py) ────────────────────────────
