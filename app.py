@@ -17,6 +17,16 @@ import question_bank
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
+# Hide Streamlit Cloud's header buttons (Fork, GitHub link, Share, star, edit).
+# .streamlit/config.toml sets toolbarMode = "minimal", which used to be enough, but a
+# newer Streamlit release stopped honouring it for these buttons -- the Fork button was
+# found back on the live app 1 Oct 2026. This CSS hides them directly, whatever the
+# Streamlit version does. Verified against the live page's own markup before shipping.
+st.markdown(
+    '<style>[data-testid="stToolbarActions"]{display:none !important;}</style>',
+    unsafe_allow_html=True,
+)
+
 # Optional imports
 try:
     import pytesseract
