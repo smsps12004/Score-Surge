@@ -198,8 +198,8 @@ def main():
 
     # iPhone JPEGs can open as MPO images under newer Pillow releases. The
     # prepared grayscale copy is valid, but pytesseract 0.3.13 rejects the raw
-    # image's MPO format label. The raw-vs-processed production probe and the
-    # fallback pass must neutralize that label without taking down the upload.
+    # image's MPO format label. The untouched-image fallback must neutralize that
+    # label without taking down the upload.
     _mpo_image = _Image.new("RGB", (120, 80), "white")
     _mpo_image.format = "MPO"
     _mpo_image.getexif()[274] = 6  # stored landscape, displayed 90° clockwise
@@ -217,7 +217,7 @@ def main():
     with patch("PIL.Image.open", return_value=_mpo_image), \
             patch("pytesseract.image_to_string", side_effect=_reject_mpo):
         at.run()
-    check("an iPhone MPO-labelled JPEG does not crash the OCR probe",
+    check("an iPhone MPO-labelled JPEG does not crash the OCR fallback",
           len(at.exception), 0)
     check("...and applies the phone photo's EXIF orientation before OCR",
           len(at.error), 0)
