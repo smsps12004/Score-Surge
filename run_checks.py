@@ -62,7 +62,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 401
+EXPECTED_TOTAL = 407
 
 
 def skip(reason):
@@ -1369,6 +1369,71 @@ def main():
           _verdict["verdict"], "inconclusive")
     check("...and says why, instead of failing silently",
           bool(_verdict["reasoning"]), True)
+
+    # Verified-bank questions (question_bank.py) carry only a page in chapter_section
+    # ("p. 1607") and the article number in source_manual ("MILPERSMAN 1306-102").
+    # Until 8 Oct 2026 run_challenge only looked in chapter_section, so every challenge
+    # on a bank question came back "inconclusive" even with the article on hand. These
+    # checks drive the real lookup against the real corpus and the real bank CSV, with a
+    # stand-in for the Anthropic client that records what it was sent instead of
+    # calling the network.
+    import csv as _csv20
+    import types as _types20
+    import corpus as _corpus20
+    import question_bank as _qb20
+
+    _sent20 = []
+
+    class _FakeMessages20:
+        def create(self, **kw):
+            _sent20.append(kw["messages"][0]["content"])
+            return _types20.SimpleNamespace(content=[_types20.SimpleNamespace(
+                text='{"verdict": "upholds", "reasoning": "stand-in"}')])
+
+    class _FakeClient20:
+        def __init__(self, **kw):
+            self.messages = _FakeMessages20()
+
+    _ns20 = dict(ENGINE_NS)
+    _ns20.update({"corpus": _corpus20, "ANTHROPIC_API_KEY": "fake",
+                  "anthropic": _types20.SimpleNamespace(Anthropic=_FakeClient20)})
+    exec(src18[src18.index("def run_challenge"):src18.index("def render_challenge_button")], _ns20)
+
+    with open(_qb20.BANK_CSV_PATH, newline="", encoding="utf-8") as _f20:
+        _bank20 = [_qb20._row_to_question(r) for r in _csv20.DictReader(_f20)]
+    _mil20 = [q for q in _bank20 if q["source_manual"].upper().startswith("MILPERSMAN")]
+    _bup20 = next(q for q in _bank20 if q["source_manual"].upper().startswith("BUPERSINST"))
+
+    _bq20 = _mil20[0]
+    _art20 = re.search(r"\d{4}-\d{2,4}", _bq20["source_manual"]).group(0)
+    _sent20.clear()
+    _v20 = _ns20["run_challenge"](_bq20, "I think this is wrong")
+    check("a verified-bank MILPERSMAN question reaches the real fact-check, not 'inconclusive'",
+          (_v20["verdict"], len(_sent20)), ("upholds", 1))
+    check("...and the fact-check is handed that article's real manual text",
+          bool(_sent20) and _corpus20.flatten_columns(
+              _corpus20.get_article_text(_art20))[:200] in _sent20[0], True)
+    check("...labelled with the manual and article, not just a bare page number",
+          bool(_sent20) and f"REAL TEXT ({_bq20['source_manual']}" in _sent20[0], True)
+
+    _sent20.clear()
+    _vb20 = _ns20["run_challenge"](_bup20, "I think this is wrong")
+    check("a BUPERSINST bank question is inconclusive, names its own manual, no API call",
+          (_vb20["verdict"], len(_sent20), "BUPERSINST" in _vb20["reasoning"],
+           "MILPERSMAN article" in _vb20["reasoning"]),
+          ("inconclusive", 0, True, False))
+
+    _sent20.clear()
+    _lookalike20 = {**_bup20, "source_manual": "SECNAVINST 1050-010", "chapter_section": "p. 4"}
+    check("an article-shaped number in a non-MILPERSMAN manual never pulls MILPERSMAN text",
+          (_ns20["run_challenge"](_lookalike20, "wrong")["verdict"], len(_sent20)),
+          ("inconclusive", 0))
+
+    _sent20.clear()
+    for _q in _mil20:
+        _ns20["run_challenge"](_q, "wrong")
+    check("every MILPERSMAN question in the bank can now be fact-checked by the button",
+          (len(_sent20), len(_mil20) > 0), (len(_mil20), True))
 
     check("the rate limit is the 3-per-day the spec calls for",
           ENGINE_NS["CHALLENGE_DAILY_LIMIT"], 3)

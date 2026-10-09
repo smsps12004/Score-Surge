@@ -3257,15 +3257,24 @@ def run_challenge(question_row: dict, reason: str) -> dict:
     Never raises -- a failure here becomes an honest "inconclusive", not a crash.
     """
     ref = question_row.get("chapter_section") or ""
+    manual = (question_row.get("source_manual") or "").strip()
+    # AI-written questions carry the article number in chapter_section. Verified-bank
+    # questions carry only a page there ("p. 1607") and the article number in
+    # source_manual ("MILPERSMAN 1306-102"), so look in both. source_manual is only
+    # searched when it names MILPERSMAN -- the only manual whose article text the
+    # corpus can re-pull -- so another manual's numbering can never pull the wrong text.
     number_match = re.search(r"(\d{4}-\d{2,4})", ref)
+    if not number_match and "MILPERSMAN" in manual.upper():
+        number_match = re.search(r"(\d{4}-\d{2,4})", manual)
     real_text = corpus.get_article_text(number_match.group(1)) if number_match else ""
+    source_label = ", ".join(p for p in (manual, ref) if p) or "its cited source"
 
     if not real_text:
         return {
             "verdict": "inconclusive",
             "reasoning": (
-                "This question isn't tied to a specific, current MILPERSMAN article "
-                "we can automatically re-pull and check. The automatic check is "
+                f"The app can't automatically re-pull the text of this question's "
+                f"source ({source_label}) to check it. The automatic check is "
                 "inconclusive; no human review has occurred."
             ),
         }
@@ -3289,7 +3298,7 @@ def run_challenge(question_row: dict, reason: str) -> dict:
             f"C) {question_row.get('answer_c')}\nD) {question_row.get('answer_d')}\n"
             f"KEYED ANSWER: {question_row.get('correct_answer')}\n"
             f"SAILOR'S REASON FOR CHALLENGING: {reason}\n\n"
-            f"REAL TEXT ({ref}):\n{flat_text}"
+            f"REAL TEXT ({source_label}):\n{flat_text}"
         )
         msg = client.messages.create(
             model="claude-opus-4-5", max_tokens=500,
