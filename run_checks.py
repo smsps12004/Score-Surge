@@ -32,7 +32,13 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
      articles from a topic's own bibliography line, stays empty for a
      non-MILPERSMAN topic, respects the article cap, and never serves a
      superseded edition as current text
- 19. The verified question bank (question_bank.py): loads the shipped CSV,
+ 19. Randomized retrieval (corpus._spread): a topic's source pool rotates
+     across generations instead of always handing back the same articles
+ 20. The Challenge button: a question's fingerprint is stable, an
+     ungroundable citation resolves to "inconclusive" with no API call, and
+     the sailor-facing guardrails (required reason, daily limit, no
+     re-challenging a settled question) are wired into the button itself
+ 21. The verified question bank (question_bank.py): loads the shipped CSV,
      resolves the one topic-name mismatch between the source bank and Score
      Surge's own topics, stays empty for a rating/paygrade/topic it has no
      coverage for, never hands back a partial set, and is actually wired into
@@ -56,7 +62,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 379
+EXPECTED_TOTAL = 412
 
 
 def skip(reason):
@@ -643,8 +649,13 @@ def main():
     p = dive["prompt"]
     check("a Deep Dive on a groundable topic really retrieves real text",
           dive["sg_grounded"], True)
+    # As of 3 Sep 2026 _spread() draws a random article per slice (Change 2 — a sailor
+    # generating several exams on one topic should see a rotating source pool), so this
+    # can no longer hardcode which article number landed in the prompt — only that one
+    # of the numbers get_series_grounding() actually matched really is there.
     check("...and the real article text is in the prompt",
-          "MILPERSMAN 1050-010" in p, True)
+          bool(dive["sg_articles"]) and
+          any(f"MILPERSMAN {a}" in p for a in dive["sg_articles"]), True)
     check("...and it is allowed to state a value that appears in that text",
           "MAY state a specific fact" in p, True)
     check("...and must name the article when it does",
@@ -661,7 +672,11 @@ def main():
     sgq = sg_build("Practice Questions", GROUNDABLE)
     q = sgq["sgq_prompt"]
     check("grounded Practice Questions build a question prompt", bool(q), True)
-    check("...that carries the real article text", "MILPERSMAN 1050-010" in q, True)
+    # Same reasoning as the Deep Dive check above — the random slice pick means the
+    # specific article number varies, only that a real matched one is present does not.
+    check("...that carries the real article text",
+          bool(sgq["sg_articles"]) and
+          any(f"MILPERSMAN {a}" in q for a in sgq["sg_articles"]), True)
     check("...and demands a verbatim source_quote",
           "WORD FOR WORD" in q and '"source_quote"' in q, True)
     check("...and states that unfindable quotes are discarded", "DISCARDS" in q, True)
@@ -796,10 +811,10 @@ def main():
           "Base them only on what is in the text above" in tutor, True)
     check("grounded follow-up may cite the source text, unlike memory mode",
           "You MAY state a specific fact if, and only" in tutor, True)
-    check("on-screen banner says when a lesson is grounded",
-          "grounded in the real text of milpersman" in tutor.lower(), True)
+    check("on-screen banner discloses source-supplied AI draft",
+          "ai draft with milpersman" in tutor.lower(), True)
     check("downloaded grounded lesson names the article in its caveat",
-          "GROUNDED IN THE REAL TEXT OF MILPERSMAN" in tutor, True)
+          "AI DRAFT WITH MILPERSMAN" in tutor, True)
 
     # ── 14. COORDINATE-BASED PARSING (the root-cause fix, BREAK_ATTEMPT finding 5) ──
     #
@@ -926,8 +941,11 @@ def main():
     print("\n15. AUTOMATIC TUTOR GROUNDING (corpus.get_series_grounding)")
 
     block, matched = _corpus.get_series_grounding("MILPERSMAN 1050 series, NSIPS")
+    # As of 3 Sep 2026 _spread() draws a random article per slice of the series
+    # (Change 2), so the exact number can no longer be pinned down — only that real
+    # 1050-series articles were found at all.
     check("1050 series: finds real articles from the topic's own bib line",
-          "1050-010" in matched, True)
+          bool(matched) and all(a.startswith("1050-") for a in matched), True)
     check("1050 series: more than just the one hand-mapped article",
           len(matched) > 1, True)
     check("1050 series: every matched number's text actually loaded",
@@ -1156,8 +1174,8 @@ def main():
           "st.text_input(\"Subject" in guide, False)
     check("the grounded banner does not claim a person checked the answer key",
           "Nobody has checked that the right" in guide, True)
-    check("a grounded Deep Dive says on screen that it came from the manual",
-          "Taught from the manual" in guide, True)
+    check("a grounded Deep Dive discloses source-supplied AI draft",
+          "AI draft with source excerpts supplied" in guide, True)
 
     # ── 17. READING ORDER (MILPERSMAN's two-column rule tables) ──────────────────
     #
@@ -1306,15 +1324,159 @@ def main():
     check("the Fork / GitHub header buttons are hidden by CSS too",
           '[data-testid="stToolbarActions"]{display:none !important;}' in _app_src, True)
 
+    # ── 19. RANDOMIZED RETRIEVAL (corpus._spread, Change 2 — 3 Sep 2026) ─────────
+    #
+    # Before 3 Sep 2026, _spread() picked a fixed article at each slice of a series,
+    # so a sailor generating several exams on one topic saw the exact same source
+    # pool every time. This proves the fix: the article count and coverage stay the
+    # same, but the specific pick within each slice now varies run to run.
+    print("\n19. RANDOMIZED RETRIEVAL (corpus._spread)")
 
-    # ── 19. VERIFIED QUESTION BANK (question_bank.py) ────────────────────────────
+    _series = [f"1050-{n:03d}" for n in range(1, 21)]  # 20 fake but well-formed numbers
+    _spread_once = _corpus._spread(_series, 5)
+    check("still returns exactly the number of articles asked for",
+          len(_spread_once), 5)
+    check("the last slice's pick comes from the high end of the series, not the low end",
+          _series.index(_spread_once[-1]) >= 16, True)
+    check("a list no longer than the cap is returned untouched",
+          _corpus._spread(_series[:5], 5), _series[:5])
+    check("a cap of zero is a no-op, not a crash",
+          _corpus._spread(_series, 0), _series)
+
+    _picks = {tuple(_corpus._spread(_series, 5)) for _ in range(30)}
+    check("the same series yields more than one pool across generations",
+          len(_picks) > 1, True)
+    check("every pick still lands inside its own slice, not anywhere in the series",
+          all(sorted(p) == list(p) for p in _picks), True)
+
+    # ── 20. CHALLENGE BUTTON (Change 3 — 3 Sep 2026) ──────────────────────────────
+    #
+    # Sailor-flagged questions, AI-checked first. The full AI research pass calls the
+    # Anthropic API, so it is out of scope for a fast pre-push check — this proves the
+    # parts that do not need the network: the question fingerprint is stable, an
+    # ungroundable question resolves to "inconclusive" without ever touching the API,
+    # and the sailor-facing guardrails (required reason, rate limit, no re-challenging
+    # a settled question) are really wired into the button, not just described in a
+    # comment somewhere.
+    print("\n20. CHALLENGE BUTTON")
+
+    ENGINE_NS["hashlib"] = __import__("hashlib")
+    _q1 = {"question": "How is leave charged?", "correct_answer": "B",
+           "source_manual": "MILPERSMAN", "chapter_section": "Article 1050-010"}
+    _q2 = {**_q1, "correct_answer": "C"}
+    _h1a = ENGINE_NS["_question_hash"](_q1)
+    _h1b = ENGINE_NS["_question_hash"](_q1)
+    _h2 = ENGINE_NS["_question_hash"](_q2)
+    check("the same question fingerprints the same way twice", _h1a, _h1b)
+    check("a different keyed answer fingerprints differently", _h1a != _h2, True)
+
+    # No MILPERSMAN article number in the citation at all — the fact-check path must
+    # bail out to "inconclusive" before it ever reaches corpus.get_article_text() or
+    # the Anthropic call, which is what makes this safe to run with no network and no
+    # API key.
+    _no_article = {"question": "What manual covers the JTR?", "correct_answer": "A",
+                   "source_manual": "JTR", "chapter_section": "Chapter 2",
+                   "answer_a": "x", "answer_b": "y", "answer_c": "z", "answer_d": "w"}
+    _verdict = ENGINE_NS["run_challenge"](_no_article, "I think this is wrong")
+    check("a question with no MILPERSMAN citation gets an inconclusive verdict, no API call",
+          _verdict["verdict"], "inconclusive")
+    check("...and says why, instead of failing silently",
+          bool(_verdict["reasoning"]), True)
+
+    # Verified-bank questions (question_bank.py) carry only a page in chapter_section
+    # ("p. 1607") and the article number in source_manual ("MILPERSMAN 1306-102").
+    # Until 8 Oct 2026 run_challenge only looked in chapter_section, so every challenge
+    # on a bank question came back "inconclusive" even with the article on hand. These
+    # checks drive the real lookup against the real corpus and the real bank CSV, with a
+    # stand-in for the Anthropic client that records what it was sent instead of
+    # calling the network.
+    import csv as _csv20
+    import types as _types20
+    import corpus as _corpus20
+    import question_bank as _qb20
+
+    _sent20 = []
+
+    class _FakeMessages20:
+        def create(self, **kw):
+            _sent20.append(kw["messages"][0]["content"])
+            return _types20.SimpleNamespace(content=[_types20.SimpleNamespace(
+                text='{"verdict": "upholds", "reasoning": "stand-in"}')])
+
+    class _FakeClient20:
+        def __init__(self, **kw):
+            self.messages = _FakeMessages20()
+
+    _ns20 = dict(ENGINE_NS)
+    _ns20.update({"corpus": _corpus20, "ANTHROPIC_API_KEY": "fake",
+                  "anthropic": _types20.SimpleNamespace(Anthropic=_FakeClient20)})
+    exec(src18[src18.index("def run_challenge"):src18.index("def render_challenge_button")], _ns20)
+
+    with open(_qb20.BANK_CSV_PATH, newline="", encoding="utf-8") as _f20:
+        _bank20 = [_qb20._row_to_question(r) for r in _csv20.DictReader(_f20)]
+    _mil20 = [q for q in _bank20 if q["source_manual"].upper().startswith("MILPERSMAN")]
+    _bup20 = next(q for q in _bank20 if q["source_manual"].upper().startswith("BUPERSINST"))
+
+    _bq20 = _mil20[0]
+    _art20 = re.search(r"\d{4}-\d{2,4}", _bq20["source_manual"]).group(0)
+    _sent20.clear()
+    _v20 = _ns20["run_challenge"](_bq20, "I think this is wrong")
+    check("a verified-bank MILPERSMAN question reaches the real fact-check, not 'inconclusive'",
+          (_v20["verdict"], len(_sent20)), ("upholds", 1))
+    check("...and the fact-check is handed that article's real manual text",
+          bool(_sent20) and _corpus20.flatten_columns(
+              _corpus20.get_article_text(_art20))[:200] in _sent20[0], True)
+    check("...labelled with the manual and article, not just a bare page number",
+          bool(_sent20) and f"REAL TEXT ({_bq20['source_manual']}" in _sent20[0], True)
+
+    _sent20.clear()
+    _vb20 = _ns20["run_challenge"](_bup20, "I think this is wrong")
+    check("a BUPERSINST bank question is inconclusive, names its own manual, no API call",
+          (_vb20["verdict"], len(_sent20), "BUPERSINST" in _vb20["reasoning"],
+           "MILPERSMAN article" in _vb20["reasoning"]),
+          ("inconclusive", 0, True, False))
+
+    _sent20.clear()
+    _lookalike20 = {**_bup20, "source_manual": "SECNAVINST 1050-010", "chapter_section": "p. 4"}
+    check("an article-shaped number in a non-MILPERSMAN manual never pulls MILPERSMAN text",
+          (_ns20["run_challenge"](_lookalike20, "wrong")["verdict"], len(_sent20)),
+          ("inconclusive", 0))
+
+    _sent20.clear()
+    for _q in _mil20:
+        _ns20["run_challenge"](_q, "wrong")
+    check("every MILPERSMAN question in the bank can now be fact-checked by the button",
+          (len(_sent20), len(_mil20) > 0), (len(_mil20), True))
+
+    check("the rate limit is the 3-per-day the spec calls for",
+          ENGINE_NS["CHALLENGE_DAILY_LIMIT"], 3)
+
+    _challenge_src = src18[src18.index("# ── CHALLENGE BUTTON"):
+                            src18.index("# ── END EXAM QUESTION ENGINE")]
+    check("a blank reason is rejected before anything is submitted",
+          "if not reason.strip():" in _challenge_src, True)
+    check("the daily limit is actually enforced, not just declared",
+          "_challenges_used_today(sailor_id) >= CHALLENGE_DAILY_LIMIT" in _challenge_src, True)
+    check("a sailor can't re-challenge a question they already have a verdict on",
+          "_already_challenged(sailor_id, q_hash)" in _challenge_src, True)
+    check("a confirmed error is queued as priority, not silently applied",
+          "challenge_record(row, reason, verdict_result" in _challenge_src, True)
+    check("the sailor always sees the verdict and the reasoning, win or lose",
+          '["reasoning"]' in _challenge_src and "AI check suggests an error" in _challenge_src
+          and "st.info" in _challenge_src, True)
+    check("logged in the Exam tab's per-question review",
+          "render_challenge_button(r, key_suffix=" in src18, True)
+    check("also logged under Study Guide Practice Questions, not just Mock Exam",
+          "render_challenge_button(sgq_row, key_suffix=" in src18, True)
+
+    # ── 21. VERIFIED QUESTION BANK (question_bank.py) ────────────────────────────
     #
     # Score Surge DB's separately-verified bank, shipped as data/ps_question_bank.csv
     # and wired into Mock Exam and Study Guide Practice Questions on 21 Sep 2026. Every
     # count below is checked against the shipped file itself, not a fixture, so a stale
     # or corrupted copy of the CSV fails this section rather than silently serving
     # fewer questions than it claims to.
-    print("\n19. VERIFIED QUESTION BANK (question_bank.py)")
+    print("\n21. VERIFIED QUESTION BANK (question_bank.py)")
     import question_bank as _qb
     _qb._load.cache_clear()
 
@@ -1358,6 +1520,34 @@ def main():
           in src19, True)
     check("a bank-sourced study guide set is labeled by its real tier, not the grounded one",
           "if exam_all_verified(sg_rows):" in src19, True)
+
+    # ── 22. ACCOUNT LOCKS (account_locks.py, 30 Sep 2026) ────────────────────────
+    #
+    # The rules live in Postgres (supabase/migrations/20260930_account_locks.sql,
+    # proven by supabase/tests/behave.sql) and the UI is driven end to end by
+    # account_locks_test.py. These checks guard the wiring: a new rating menu,
+    # download or AI call added later must go through the lock, not around it.
+    print("\n22. ACCOUNT LOCKS (account_locks.py)")
+    src22 = open(APP, encoding="utf-8").read()
+    check("no rating menu bypasses the lock",
+          len(re.findall(r'st\.selectbox\("Your Rating"', src22)), 0)
+    check("...that one is the fallback inside rating_select itself",
+          "return st.selectbox(label, RATINGS, key=key)" in src22, True)
+    check("five tabs use the locked rating menu",
+          src22.count('rating_select("Your Rating", key='), 5)
+    check("only the free FMS report downloads without being counted (+ counted_download's own)",
+          src22.count("st.download_button("), 2)
+    check("every paid AI generation checks the monthly limit first",
+          src22.count("require_ai("), 5 + 1)  # 5 call sites + its definition
+    check("...and is counted once it succeeds",
+          src22.count('spend("ai")'), 5)
+    check("a sailor signed in elsewhere is signed out here",
+          "locks.session_still_active(" in src22 and "_signed_out_elsewhere" in src22, True)
+    import account_locks as _al
+    check("a download is stamped with the sailor's email",
+          _al.stamp_text("x", "s@n.mil").count("s@n.mil"), 2)
+    check("an unreachable usage check never locks a paying sailor out",
+          _al.has_left(None, "ai"), True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

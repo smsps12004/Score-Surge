@@ -21,6 +21,7 @@ rewrite.
 """
 
 import os
+import random
 import re
 import sqlite3
 import functools
@@ -346,15 +347,22 @@ def _spread(articles: list, want: int) -> list:
     stopped reaching Separation Leave, EML or anything above 1050-085.
 
     Spreading costs nothing (same article count, same prompt size) and means a topic's
-    grounding spans its whole series rather than one end of it. It is still
-    deterministic: the same topic yields the same articles every time, so a sailor
-    generating several exams on one topic sees the same source pool. Rotating that
-    pool per generation is a real improvement and is not done here.
+    grounding spans its whole series rather than one end of it. As of 3 Sep 2026 each
+    slice of the series also draws a random article instead of always the same one, so
+    a sailor generating several exams on one topic sees a rotating source pool instead
+    of the identical handful every time — still evenly spread across the series, just
+    not the same pick within each slice.
     """
     if len(articles) <= want or want <= 0:
         return articles
     step = len(articles) / want
-    return [articles[min(int(i * step), len(articles) - 1)] for i in range(want)]
+    result = []
+    for i in range(want):
+        lo = int(i * step)
+        hi = int((i + 1) * step) if i < want - 1 else len(articles)
+        hi = max(hi, lo + 1)
+        result.append(articles[random.randrange(lo, min(hi, len(articles)))])
+    return result
 
 
 def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 2500):
@@ -369,7 +377,7 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
     just a lid on prompt size, since a lesson grounded in twelve articles doesn't
     teach any better than one grounded in eight.
     """
-    if not bib:
+    if not bib or max_articles <= 0:
         return "", []
     con = _connect()
     if con is None:
@@ -401,9 +409,10 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
     # named — a bib line like "MILPERSMAN 1910 series, 1830 series" names both
     # deliberately, and 1910 alone runs past most caps, which would otherwise starve
     # 1830 out of the lesson entirely even though the bib line asked for it too.
-    numbers = list(explicit_articles)
-    i = 0
-    while len(numbers) < max_articles and any(per_series):
+    numbers = list(dict.fromkeys(explicit_articles))
+    for i in range(max((len(items) for items in per_series), default=0)):
+        if len(numbers) >= max_articles:
+            break
         for series_articles in per_series:
             if i < len(series_articles):
                 article = series_articles[i]
@@ -411,7 +420,6 @@ def get_series_grounding(bib: str, max_articles: int = 8, max_chars_each: int = 
                     numbers.append(article)
                 if len(numbers) >= max_articles:
                     break
-        i += 1
 
     numbers = numbers[:max_articles]
     return build_source_block(numbers, max_chars_each=max_chars_each)
