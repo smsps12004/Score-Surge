@@ -20,6 +20,16 @@ import account_locks as locks
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
 
+# Hide Streamlit Cloud's header buttons (Fork, GitHub link, Share, star, edit).
+# .streamlit/config.toml sets toolbarMode = "minimal", which used to be enough, but a
+# newer Streamlit release stopped honouring it for these buttons -- the Fork button was
+# found back on the live app 1 Oct 2026. This CSS hides them directly, whatever the
+# Streamlit version does. Verified against the live page's own markup before shipping.
+st.markdown(
+    '<style>[data-testid="stToolbarActions"]{display:none !important;}</style>',
+    unsafe_allow_html=True,
+)
+
 # Optional imports
 try:
     import pytesseract
@@ -1069,6 +1079,28 @@ def extract_number_near_label(text, patterns, valid_range=None, field=None, wind
     return None
 
 
+def extract_labelled_awards_integer(raw_text):
+    """Read ``Awards: 2`` without reopening the generic bare-integer bug.
+
+    Some photographed profile sheets lose the decimal places on the Awards row.
+    A generic integer fallback is unsafe because nearby dates and cycle numbers can
+    look like field values.  This exception is deliberately much narrower: the
+    number must be on the same line, immediately after an exact Awards label and a
+    colon or dash, and it must fall inside the published Awards range.
+    """
+    if not raw_text:
+        return None
+    match = re.search(
+        r"(?im)^[^a-z0-9\r\n]{0,4}awards?(?:\s+points?)?\s*[:\-]\s*(\d{1,2})(?![\d.,])\b",
+        raw_text,
+    )
+    if not match:
+        return None
+    value = float(match.group(1))
+    lo, hi = FIELD_RANGES["awards"]
+    return value if lo <= value <= hi else None
+
+
 def parse_ocr_text(raw_text):
     """Return (values, missing_fields). Every value is guaranteed in-range."""
     results = {}
@@ -1076,6 +1108,8 @@ def parse_ocr_text(raw_text):
     for field, patterns in LABEL_PATTERNS.items():
         rng = FIELD_RANGES.get(field)
         value = extract_number_near_label(raw_text, patterns, valid_range=rng, field=field)
+        if value is None and field == "awards":
+            value = extract_labelled_awards_integer(raw_text)
         if value is not None:
             results[field] = value
         else:
@@ -1394,7 +1428,11 @@ def extract_exam_rate(raw_text):
 
     # 1. Labelled. OCR loses the column alignment, so allow some noise between the
     #    label and the value, but not so much that PRESENT RATE's value wins.
-    m = re.search(rf"exam\s*rate\W{{0,4}}\s*({_RATE_TOKEN})\b", t, re.IGNORECASE)
+    m = re.search(
+        rf"exam\s*(?:rank\s*/\s*)?rate\W{{0,4}}\s*({_RATE_TOKEN})\b",
+        t,
+        re.IGNORECASE,
+    )
     if m:
         pg = rate_to_paygrade(m.group(1))
         if pg:
@@ -1648,7 +1686,11 @@ MAX_OCR_PAGES = 2
 
 def prepare_for_ocr(image):
     """Grayscale, enlarge to a readable size, lift contrast, sharpen."""
-    img = image.convert("L")
+    # Phone cameras commonly store the pixels sideways and rely on EXIF metadata
+    # to tell viewers how to rotate them. Browser previews honor that metadata;
+    # Pillow/Tesseract do not unless it is applied explicitly. Normalize first so
+    # OCR sees the same upright sheet the sailor saw before uploading it.
+    img = ImageOps.exif_transpose(image).convert("L")
     scale = OCR_TARGET_WIDTH / max(img.width, 1)
     if scale > 1.05:
         scale = min(scale, 4.0)
@@ -1684,7 +1726,9 @@ def ocr_text(image):
     # where being wrong is worse than being slow.
     if extract_paygrade(text) is None:
         try:
-            text += "\n" + pytesseract.image_to_string(image)
+            unprocessed = ImageOps.exif_transpose(image)
+            unprocessed.format = None
+            text += "\n" + pytesseract.image_to_string(unprocessed)
         except Exception:
             pass
     return text

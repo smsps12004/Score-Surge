@@ -62,7 +62,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 407
+EXPECTED_TOTAL = 412
 
 
 def skip(reason):
@@ -276,6 +276,13 @@ def main():
           "awards" not in z[1], True)
     check("a bare non-zero integer near a label is still rejected",
           "tir" in parse("SERVICE IN PAYGRADE AS OF SEP 30,2025\nAWARDS 0")[1], True)
+    photographed_awards = parse("_ Awards: 2 ie ;\n_ Education Points: 0.00")
+    check("a photographed sheet's labelled bare Awards integer is read",
+          photographed_awards[0]["awards"], 2.0)
+    check("the labelled Awards integer is no longer reported missing",
+          "awards" not in photographed_awards[1], True)
+    check("an out-of-range labelled Awards integer is still rejected",
+          "awards" in parse("Awards: 30")[1], True)
 
     print("\n5. PAYGRADE DETECTION")
     # Navy systems print the same paygrade as E6, E-6 and E06, and often name the
@@ -325,6 +332,7 @@ def main():
         ("photographed sheet, OCR'd",
          "3 AN NICHOLAS 596815320 PS3 PS2 USNRT 266 2600469 SEP 23 66231 43106", "E5"),
         ("labelled exam rate", "EXAM RATE: PSC", "E7"),
+        ("photographed sheet rank/rate", "Exam Rank/Rate: PS1 BRICL: USN", "E6"),
     ]:
         check(f"{name} -> {want}", getpg(text), want)
 
@@ -1310,6 +1318,11 @@ def main():
         check("the Fork / GitHub toolbar is turned off", "toolbarMode" in _cfg, True)
     else:
         skip("no .streamlit/config.toml staged — toolbar setting not checked")
+    # The config setting alone stopped working on a newer Streamlit (Fork button seen
+    # live again 1 Oct 2026), so app.py also hides the header buttons with CSS.
+    _app_src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    check("the Fork / GitHub header buttons are hidden by CSS too",
+          '[data-testid="stToolbarActions"]{display:none !important;}' in _app_src, True)
 
     # ── 19. RANDOMIZED RETRIEVAL (corpus._spread, Change 2 — 3 Sep 2026) ─────────
     #
