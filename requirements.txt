@@ -6,4 +6,7 @@ pymupdf
 pytesseract
 Pillow
 supabase
-stripe
+# Pinned 12 Oct 2026. stripe 16.0.0 (API 2026-09-30.endive) rejects
+# payment_method_types at Checkout, and an unpinned install broke every
+# Upgrade button in production. Before unpinning: run_checks.py section 23.
+stripe==15.6.1

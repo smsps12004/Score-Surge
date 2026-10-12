@@ -62,7 +62,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 412
+EXPECTED_TOTAL = 415
 
 
 def skip(reason):
@@ -1548,6 +1548,21 @@ def main():
           _al.stamp_text("x", "s@n.mil").count("s@n.mil"), 2)
     check("an unreachable usage check never locks a paying sailor out",
           _al.has_left(None, "ai"), True)
+
+    # ── 23. STRIPE LIBRARY PIN (12 Oct 2026) ─────────────────────────────────
+    # An unpinned `stripe` let Streamlit Cloud install 16.0.0 on the 8 Oct
+    # rebuild. Its API version (2026-09-30.endive) rejects payment_method_types,
+    # which create_checkout_session() sends, so every Upgrade button failed.
+    print("\n23. STRIPE LIBRARY PIN")
+    _req23 = open(os.path.join(os.path.dirname(APP), "requirements.txt"), encoding="utf-8").read()
+    _pin23 = re.search(r"^stripe==([0-9.]+)\s*$", _req23, re.M)
+    check("stripe is pinned to one exact version in requirements.txt", bool(_pin23), True)
+    import stripe as _stripe23
+    check("the installed stripe library matches the pin",
+          _stripe23.VERSION == (_pin23.group(1) if _pin23 else None), True)
+    _src23 = open(APP, encoding="utf-8").read()
+    check("checkout still sends payment_method_types, so the pinned API must accept it",
+          ("payment_method_types=" in _src23) and not _stripe23.api_version.endswith(".endive"), True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
