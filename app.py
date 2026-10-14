@@ -15,6 +15,7 @@ import stripe
 import corpus
 from launch_safety import EDUCATIONAL_NOTICE, DATA_NOTICE, SUPPORT_EMAIL, validated_checkout, challenge_record
 import question_bank
+import placement
 import account_locks as locks
 
 # PAGE CONFIG — must be first
@@ -3257,6 +3258,83 @@ def _question_hash(q: dict) -> str:
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
+def save_generated_questions(raw_rows: list, *, origin: str, rating: str, paygrade: str,
+                             topic: str, source_block: str = "") -> int:
+    """Save every question the AI just wrote -- Shawn's call, 13 Oct 2026, "no matter what".
+
+    Pass the rows straight out of parse_exam_json(), BEFORE the quote gate, so the ones
+    the gate throws out are saved too (marked quote_not_found). Everything lands in
+    Supabase's generated_questions table as review_status='unverified'. The app never
+    reads that table back: a row only becomes a bank question after the Score Surge DB
+    gates promote it. See supabase/migrations/20261013_generated_questions.sql.
+
+    Never raises and never slows the sailor down for long. Returns how many rows were
+    sent (0 if logged out, nothing to save, or the table doesn't exist yet).
+    """
+    user = st.session_state.get("user")
+    if not raw_rows or not user:
+        return 0
+
+    def _clip(value, n):
+        return str(value or "").strip()[:n]
+
+    records, seen = [], set()
+    for q in raw_rows:
+        if not isinstance(q, dict):
+            continue
+        letter = _clip(q.get("correct_answer"), 1).upper()
+        if not _clip(q.get("question"), 1) or letter not in ("A", "B", "C", "D"):
+            continue
+        if not all(_clip(q.get(f"answer_{L}"), 1) for L in "abcd"):
+            continue
+        h = _question_hash(q)
+        if h in seen:
+            continue
+        seen.add(h)
+        article = ""
+        if source_block:
+            try:
+                article = verify_exam_quote(q.get("source_quote", ""), source_block) or ""
+            except Exception:
+                article = ""
+            gate = "quote_matched" if article else "quote_not_found"
+        else:
+            gate = "no_source_text"
+        records.append({
+            "sailor_id": user.id,
+            "origin": origin,
+            "rating": _clip(rating, 10),
+            "paygrade": _clip(paygrade, 10),
+            "topic": _clip(topic, 200),
+            "question": _clip(q.get("question"), 2000),
+            "answer_a": _clip(q.get("answer_a"), 1000),
+            "answer_b": _clip(q.get("answer_b"), 1000),
+            "answer_c": _clip(q.get("answer_c"), 1000),
+            "answer_d": _clip(q.get("answer_d"), 1000),
+            "correct_answer": letter,
+            "explanation": _clip(q.get("explanation"), 4000),
+            "source_manual": _clip(q.get("source_manual"), 300),
+            "chapter_section": _clip(q.get("chapter_section"), 300),
+            "source_quote": _clip(q.get("source_quote"), 4000),
+            "gate": gate,
+            "matched_article": _clip(article, 40),
+            "review_status": "unverified",
+            "question_hash": h,
+        })
+    if not records:
+        return 0
+    try:
+        supabase.table("generated_questions").upsert(
+            records, on_conflict="question_hash", ignore_duplicates=True,
+            returning="minimal", default_to_null=False,
+        ).execute()
+    except Exception:
+        # Saving is a bonus, not the product. Missing table, network blip, RLS -- the
+        # sailor still gets their exam.
+        return 0
+    return len(records)
+
+
 def _challenges_used_today(sailor_id: str) -> int:
     """How many challenges this sailor has already submitted today.
 
@@ -3412,10 +3490,220 @@ def render_challenge_button(row: dict, key_suffix):
 # ── END EXAM QUESTION ENGINE ─────────────────────────────────────────────────────
 
 
+# ── PLACEMENT TEST ────────────────────────────────────────────────────────────
+#
+# Shawn's idea, 13 Oct 2026: before a sailor's first Study Guide, find out where they
+# stand so the Chief knows where to start them. See placement.py for the rules. In
+# short: 40 questions, verified bank only, no AI call (so it's free on every tier),
+# topics with no verified questions reported as "not tested yet", never as a score.
+#
+# It sits at the top of the Study tab, above the paywall, on purpose: a free sailor
+# takes it, sees exactly which topics they're weak in, and the upgrade banner right
+# under it is the Chief offering to build the plan around that result.
+
+def _save_placement_result(result: dict, paygrade: str):
+    """Write the per-topic results to score_history and point the Study Guide at them."""
+    entries = placement.history_entries(result, datetime.date.today().strftime("%b %d"))
+    st.session_state.setdefault("score_history", [])
+    st.session_state.score_history.extend(entries)
+    save_error = ""
+    if st.session_state.user and entries:
+        # Same rule as the Mock Exam: never crash over history, never pretend it saved.
+        try:
+            supabase.table("score_history").insert(
+                [{"user_id": st.session_state.user.id, **e} for e in entries]
+            ).execute()
+        except Exception as e:
+            save_error = f"{type(e).__name__}: {e}"
+    # Open the Study Guide on this paygrade and on their weakest topic. Both keys are
+    # widget keys further down this tab, which hasn't drawn yet this run.
+    topics = list(PS_TOPICS_BY_PAYGRADE.get(paygrade, {}).keys())
+    weakest = placement.weakest_topic(st.session_state.score_history, topics)
+    st.session_state["sg_paygrade"] = paygrade
+    if weakest:
+        st.session_state["sg_topic"] = weakest
+    return save_error
+
+
+def _start_placement(paygrade: str, topics: list):
+    qs, untested = placement.build_placement("PS", paygrade, topics)
+    st.session_state.placement_qs = qs
+    st.session_state.placement_pg = paygrade
+    st.session_state.placement_untested = untested
+    for stale in ("placement_result", "placement_blank_warning"):
+        st.session_state.pop(stale, None)
+    for i in range(placement.PLACEMENT_SIZE + 10):
+        st.session_state.pop(f"placement_pick_{i}", None)
+
+
+def _grade_placement(picks: list):
+    qs = st.session_state.get("placement_qs") or []
+    pg = st.session_state.get("placement_pg")
+    result = placement.grade_placement(qs, picks)
+    result["untested"] = st.session_state.get("placement_untested") or []
+    result["paygrade"] = pg
+    result["save_error"] = _save_placement_result(result, pg)
+    st.session_state.placement_result = result
+    st.session_state.pop("placement_qs", None)
+    st.session_state.pop("placement_blank_warning", None)
+
+
+def _render_placement_report(result: dict):
+    st.markdown(f"#### 📍 Your placement — PS {result.get('paygrade', '')}")
+    st.markdown(f"**{result['correct']} / {result['total']} — {result['pct']}% overall**")
+    st.caption("Every question came from the verified question bank: its quoted line is "
+               "real manual text, and a separate AI review confirmed the quote proves the "
+               "keyed answer.")
+    ordered = sorted(result["topics"].items(), key=lambda kv: (kv[1]["pct"], kv[0]))
+    rows = [{
+        "Level": f"{placement.LEVEL_ICONS.get(t['level'], '')} {t['level']}",
+        "Topic": name,
+        "Score": f"{t['correct']}/{t['total']}",
+    } for name, t in ordered]
+    for name in result.get("untested", []):
+        rows.append({"Level": f"{placement.LEVEL_ICONS[placement.LEVEL_UNTESTED]} "
+                              f"{placement.LEVEL_UNTESTED}",
+                     "Topic": name, "Score": "—"})
+    st.table(pd.DataFrame(rows))
+    if result.get("untested"):
+        st.caption("**Not tested yet** means the verified bank has no questions for that "
+                   "topic yet — the app won't guess at your level there. Study it from your "
+                   "bibliography and ask PS Agent for the specifics.")
+    if result.get("save_error"):
+        st.warning("Your results show here but **didn't save to your account** — they'll be "
+                   "gone after you log out. Try the test again later. "
+                   f"(Details: {result['save_error'][:160]})")
+
+    weakest = placement.weakest_topic(st.session_state.get("score_history", []),
+                                      [n for n, _ in ordered])
+    if can_access("petty_officer"):
+        if weakest:
+            st.success(f"**Next:** your Study Guide below now opens on **{weakest}**, your "
+                       "weakest topic, and the Chief has your results.")
+        else:
+            st.success("**Strong across every topic tested.** The Chief has your results — "
+                       "generate a Study Guide below to sharpen the edges.")
+    else:
+        st.info("**Next:** upgrade and the Chief builds your study guide around these results"
+                + (f", starting with **{weakest}**." if weakest else "."))
+
+    missed = [r for r in result.get("rows", []) if not r.get("is_right")]
+    if missed:
+        with st.expander(f"Review the {len(missed)} you missed"):
+            for r in missed:
+                st.markdown(f"**{r['question']}**")
+                picked = r.get("picked")
+                st.markdown(
+                    f"Your answer: {picked + ') ' + r['answer_' + picked.lower()] if picked else '— (blank)'}  \n"
+                    f"Correct: **{r['correct_answer']}) {r['answer_' + r['correct_answer'].lower()]}**"
+                )
+                if r.get("explanation"):
+                    st.caption(r["explanation"])
+                st.caption(exam_source_line(r))
+                st.write("")
+
+
+def render_placement_section():
+    hist = st.session_state.get("score_history", [])
+    rating = st.session_state.get("locked_rating") or "PS"
+    active = bool(st.session_state.get("placement_qs"))
+    result = st.session_state.get("placement_result")
+    taken_any = any(placement.has_placement_history(hist, list(PS_TOPICS_BY_PAYGRADE[pg].keys()))
+                    for pg in PS_TOPICS_BY_PAYGRADE)
+
+    with st.expander("📍 Placement Test — find out where you stand (free)",
+                     expanded=active or bool(result) or not taken_any):
+        if rating != "PS":
+            st.info("The placement test is PS-only for now — it only uses questions from "
+                    "the verified bank, and that bank is PS so far.")
+            return
+
+        st.caption(f"{placement.PLACEMENT_SIZE} questions across your rating's topics, all "
+                   "from the verified question bank. No AI, no limits used. Take it before "
+                   "your first study guide so the Chief knows where to start you — retake "
+                   "it any time.")
+
+        _pg_options = [pg for pg in ("E5", "E6") if pg in PS_TOPICS_BY_PAYGRADE]
+        _default_pg = sailor_paygrade()
+        pg = st.selectbox(
+            "Paygrade you're competing for", _pg_options,
+            index=_pg_options.index(_default_pg) if _default_pg in _pg_options else None,
+            placeholder="— Select your paygrade —",
+            key="placement_pg_pick", disabled=active,
+        )
+        if not pg:
+            return
+        topics = list(PS_TOPICS_BY_PAYGRADE[pg].keys())
+
+        if not placement.placement_ready("PS", pg, topics):
+            st.info(f"**The {pg} placement test is coming soon.** The verified bank doesn't "
+                    f"have enough {pg} questions yet to give you a fair read across your "
+                    "topics — we'd rather wait than guess. In the meantime, practice by topic "
+                    "below.")
+            return
+
+        if not active:
+            if result and result.get("paygrade") == pg:
+                _render_placement_report(result)
+                st.divider()
+            label = ("Retake placement test" if (result or taken_any)
+                     else f"Start my placement test ({placement.PLACEMENT_SIZE} questions)")
+            if st.button(label, key="placement_start", width="stretch"):
+                _start_placement(pg, topics)
+                st.rerun()
+            return
+
+        qs = st.session_state.placement_qs
+        st.caption(f"{len(qs)} questions · PS {st.session_state.get('placement_pg')} · topics "
+                   "are mixed like the real exam · answers stay hidden until you submit.")
+        with st.form("placement_form"):
+            for i, q in enumerate(qs):
+                st.markdown(f"**Q{i + 1}. {q['question']}**")
+                st.radio(
+                    f"Placement question {i + 1}",
+                    options=["A", "B", "C", "D"],
+                    index=None,
+                    format_func=lambda L, q=q: f"{L})  {q['answer_' + L.lower()]}",
+                    key=f"placement_pick_{i}",
+                    label_visibility="collapsed",
+                )
+                st.write("")
+            submitted = st.form_submit_button("Grade my placement test", width="stretch")
+
+        picks = [st.session_state.get(f"placement_pick_{i}") for i in range(len(qs))]
+        if submitted:
+            blanks = [i + 1 for i, p in enumerate(picks) if p is None]
+            if blanks:
+                st.session_state.placement_blank_warning = blanks
+            else:
+                _grade_placement(picks)
+                st.rerun()
+
+        blanks = st.session_state.get("placement_blank_warning")
+        if blanks:
+            st.warning(
+                f"You haven't answered {len(blanks)} question{'s' if len(blanks) > 1 else ''} "
+                f"({', '.join(str(b) for b in blanks[:12])}{'…' if len(blanks) > 12 else ''}). "
+                "A blank counts as wrong — go back and answer, or grade it as-is."
+            )
+            if st.button("Grade anyway — blanks count as wrong", key="placement_grade_anyway",
+                         width="stretch"):
+                _grade_placement(picks)
+                st.rerun()
+        if st.button("Cancel placement test", key="placement_cancel"):
+            for i in range(len(qs)):
+                st.session_state.pop(f"placement_pick_{i}", None)
+            st.session_state.pop("placement_qs", None)
+            st.session_state.pop("placement_blank_warning", None)
+            st.rerun()
+
+
 # ── TAB 3: AI STUDY GUIDE ─────────────────────────────────────────────────────
 with tab3:
     st.subheader("📖 AI Study Guide")
     st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
+
+    render_placement_section()
 
     if not can_access("petty_officer"):
         upgrade_banner("petty_officer", "study_guide")
@@ -3436,6 +3724,18 @@ with tab3:
         if not is_curated(sg_rating, sg_paygrade):
             st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
                        "Verify against your official bib before test day.")
+
+        # Open on the sailor's weakest topic from their placement test / mock exams --
+        # only when they haven't picked one themselves this session.
+        sg_weak = (placement.weakest_topic(st.session_state.get("score_history", []),
+                                           list(sg_topics.keys()))
+                   if is_curated(sg_rating, sg_paygrade) else None)
+        if sg_weak and st.session_state.get("sg_topic") not in sg_topics:
+            st.session_state["sg_topic"] = sg_weak
+        if sg_weak:
+            st.caption(f"📍 Your weakest topic from your latest results: **{sg_weak}**. "
+                       "The Chief knows how you did on each topic and builds the plan "
+                       "around it.")
 
         with st.form("study_guide_form"):
             col1, col2 = st.columns(2)
@@ -3489,6 +3789,12 @@ with tab3:
                     sg_source_block, sg_articles = "", []
                 sg_grounded = bool(sg_source_block)
 
+                # Placement / mock exam results, so the Chief starts where the sailor
+                # is weak instead of from a blank page. Empty for a sailor with no
+                # history, which leaves the prompt exactly as it was.
+                sg_brief = (placement.chief_brief(st.session_state.get("score_history", []),
+                                                  list(sg_topics.keys()))
+                            if is_curated(sg_rating, sg_paygrade) else "")
                 topic_instruction = (
                     f"Focus exclusively on: {sg_topic}"
                     if sg_is_deep_dive else f"Guide type: {sg_type}"
@@ -3524,7 +3830,7 @@ Generate a personalized Navy advancement study guide for:
 - FMS Gap: {sg_gap} points
 - Strategy: {strategy}
 - {topic_instruction}
-
+{sg_brief}
 Structure the guide as follows:
 1. ONE sentence of honest assessment of their situation
 2. Top study topics for {sg_rating} advancement exam (with brief explanation of why each matters)
@@ -3644,8 +3950,13 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
                                 model="claude-opus-4-5", max_tokens=6000,
                                 messages=[{"role": "user", "content": sgq_prompt}]
                             )
+                            sg_parsed = parse_exam_json(message.content[0].text)
+                            save_generated_questions(
+                                sg_parsed, origin="study_guide_practice", rating=sg_rating,
+                                paygrade=sg_paygrade, topic=sg_topic,
+                                source_block=sg_source_block)
                             sg_rows, sg_dropped = ground_exam_questions(
-                                parse_exam_json(message.content[0].text), sg_source_block)
+                                sg_parsed, sg_source_block)
                             sg_rows = sg_rows[:sgq_keep]
                             guide_text = render_questions_markdown(sg_rows)
                         else:
@@ -4234,6 +4545,12 @@ article number rather than inventing one."""
                             messages=[{"role": "user", "content": pq_prompt}]
                         )
                         parsed = parse_exam_json(message.content[0].text)
+                        # Saved before the gate, so even the ones it throws out are kept
+                        # (as unverified) -- see save_generated_questions().
+                        save_generated_questions(
+                            parsed, origin="mock_exam", rating=pq_rating,
+                            paygrade=pq_paygrade, topic=pq_topic,
+                            source_block=exam_source_block if exam_grounded else "")
                         dropped = 0
                         if parsed and exam_grounded:
                             # The gate. Anything whose quote isn't really in the retrieved

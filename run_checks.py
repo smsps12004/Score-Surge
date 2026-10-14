@@ -43,6 +43,9 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
      Surge's own topics, stays empty for a rating/paygrade/topic it has no
      coverage for, never hands back a partial set, and is actually wired into
      both Mock Exam and the Study Guide's Practice Questions mode
+ 24. The placement test (placement.py): 40 verified-bank questions, no AI, honest
+     about untested topics, results reach the Chief's prompt -- and every
+     AI-generated question is saved to generated_questions as unverified
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -62,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 415
+EXPECTED_TOTAL = 453
 
 
 def skip(reason):
@@ -613,6 +616,11 @@ def main():
             # accuracy rules and not about dates, which section 8 already covers.
             "cycle_authority_line": lambda: "AUTHORITY LINE",
             "cycle_facts_block": lambda: "CYCLE FACTS",
+            # Placement results (13 Oct 2026). No history here, so the brief is empty
+            # and the prompt is exactly what it was before placement existed.
+            "placement": __import__("placement"),
+            "is_curated": lambda rating, paygrade: True,
+            "st": type("st", (), {"session_state": {}}),
         }
         exec(prompt_block, ns)
         return ns
@@ -1563,6 +1571,144 @@ def main():
     _src23 = open(APP, encoding="utf-8").read()
     check("checkout still sends payment_method_types, so the pinned API must accept it",
           ("payment_method_types=" in _src23) and not _stripe23.api_version.endswith(".endive"), True)
+
+    # ── 24. PLACEMENT TEST + GENERATED-QUESTION POOL (13 Oct 2026) ────────────
+    # placement.py: 40 questions, verified bank only, no AI, honest about topics it
+    # can't test. save_generated_questions(): every AI-written question saved as
+    # unverified, gate failures included, and never read back as a bank question.
+    print("\n24. PLACEMENT TEST + GENERATED-QUESTION POOL")
+    import random as _rnd24
+    import placement as _pl
+    _qb._load.cache_clear()
+    _src24 = open(APP, encoding="utf-8").read()
+    _E6 = ["Customer Service Management & Processing", "Disbursing Operations",
+           "Education Services", "Manning & Manpower Management", "MILPAY Processing",
+           "Receipts Management & Processing", "Reenlistment & Extension Processing",
+           "Reserve Pay, Management & Processing", "Separations & Retirement Processing",
+           "Transfers Management & Processing", "Travel & Transportation Processing"]
+    _E5 = ["Customer Service Management & Processing", "MILPAY Processing",
+           "Separations & Retirement Processing", "Transfers Management & Processing",
+           "Travel & Transportation Processing", "Military Awards"]
+    check("placement test is 40 questions", _pl.PLACEMENT_SIZE, 40)
+    _alloc = _pl.allocate({"a": 100, "b": 3, "c": 0, "d": 50}, 20)
+    check("allocation spreads evenly and a short topic gives its share away",
+          _alloc, {"a": 9, "b": 3, "d": 8})
+    check("allocation never hands out more than the bank holds",
+          sum(_pl.allocate({"a": 2, "b": 1}, 40).values()), 3)
+    check("E6 is ready (the bank can fill 40 across enough topics)",
+          _pl.placement_ready("PS", "E6", _E6), True)
+    check("E5 is NOT ready (7 verified questions) -- no thin test",
+          _pl.placement_ready("PS", "E5", _E5), False)
+    check("a rating with no bank is not ready", _pl.placement_ready("YN", "E6", _E6), False)
+    _qs, _untested = _pl.build_placement("PS", "E6", _E6, rng=_rnd24.Random(7))
+    check("E6 test builds exactly 40 questions", len(_qs), 40)
+    check("...every one from the verified bank", all(q.get("verified") == "yes" for q in _qs), True)
+    check("...every one tagged with its topic", all(q.get("topic") in _E6 for q in _qs), True)
+    check("...no question twice", len({q["question"] for q in _qs}), 40)
+    check("...spread 5 each across the 8 covered topics",
+          sorted({t: sum(q["topic"] == t for q in _qs) for t in set(q["topic"] for q in _qs)}.values()),
+          [5] * 8)
+    check("topics with no verified questions are reported, not scored",
+          _untested, ["Disbursing Operations", "Receipts Management & Processing",
+                      "Travel & Transportation Processing"])
+    check("an unready test builds nothing", _pl.build_placement("PS", "E5", _E5)[0], [])
+    _picks = [q["correct_answer"] if q["topic"] != "Education Services" else None for q in _qs]
+    _res = _pl.grade_placement(_qs, _picks)
+    check("grading uses the bank's own key (blanks count wrong)", _res["correct"], 35)
+    check("a topic answered all blank is 'Start here'",
+          _res["topics"]["Education Services"]["level"], _pl.LEVEL_START_HERE)
+    check("a perfect topic is 'Strong'",
+          _res["topics"]["MILPAY Processing"]["level"], _pl.LEVEL_STRONG)
+    check("level bands: 3 of 5 is Needs work, 2 of 5 Start here, 2 of 2 too few to judge",
+          (_pl.level_for(3, 5), _pl.level_for(2, 5), _pl.level_for(2, 2)),
+          (_pl.LEVEL_NEEDS_WORK, _pl.LEVEL_START_HERE, _pl.LEVEL_TOO_FEW))
+    _hist = _pl.history_entries(_res, "Oct 13")
+    check("one score_history row per tested topic, in the Mock Exam's shape",
+          (len(_hist), set(_hist[0])), (8, {"date", "topic", "score", "total", "pct"}))
+    check("the weakest topic is the one the Chief opens on",
+          _pl.weakest_topic(_hist, _E6), "Education Services")
+    check("a later, better result replaces an earlier one",
+          _pl.weakest_topic(_hist + [{"topic": "Education Services", "total": 5, "pct": 100}], _E6),
+          None)
+    _brief = _pl.chief_brief(_hist, _E6)
+    check("the Chief is told untested topics are unknown, not strengths",
+          "Disbursing Operations: not tested yet" in _brief, True)
+    check("no history means no change to the Study Guide prompt", _pl.chief_brief([], _E6), "")
+    _ns_hist = sg_build("Full Rating Guide", UNGROUNDABLE)
+    _ns_hist["st"] = type("st", (), {"session_state": {"score_history": [
+        {"topic": "Leave", "score": 1, "total": 5, "pct": 20}]}})
+    exec(prompt_block, _ns_hist)
+    check("with results on file, the Chief's actual prompt carries them",
+          "Leave: 20% on their latest attempt (Start here)" in _ns_hist["prompt"]
+          and _ns_hist["prompt"].index("WHAT YOU KNOW ABOUT THIS SAILOR")
+          < _ns_hist["prompt"].index("ACCURACY RULES"), True)
+    _pl_src = open(os.path.join(os.path.dirname(APP), "placement.py"), encoding="utf-8").read()
+    _sect = _src24[_src24.index("# ── PLACEMENT TEST ──"):_src24.index("# ── TAB 3: AI STUDY GUIDE")]
+    check("placement makes no AI call and spends no limit",
+          any(k in _pl_src + _sect for k in ("anthropic", "messages.create", "require_ai(", "spend(")),
+          False)
+    check("placement sits above the Study tab paywall (free for every tier)",
+          _src24.index("    render_placement_section()") < _src24.index('upgrade_banner("petty_officer", "study_guide")'),
+          True)
+    check("placement results are saved to score_history",
+          'supabase.table("score_history").insert(' in _sect, True)
+    check("the Study Guide prompt carries the placement brief",
+          "{sg_brief}" in _src24 and "placement.chief_brief(" in _src24, True)
+
+    # save_generated_questions(), run for real against a fake Supabase.
+    class _FakeTable:
+        def __init__(self, sink): self.sink = sink
+        def upsert(self, rows, **kw): self.sink.append((rows, kw)); return self
+        def execute(self): return None
+    class _FakeSB:
+        def __init__(self): self.sink = []
+        def table(self, name): self.sink.append(name); return _FakeTable(self.sink)
+    class _User: id = "u-1"
+    class _SS(dict):
+        __getattr__ = dict.get
+    _sb = _FakeSB()
+    _ns24 = {"re": re, "hashlib": __import__("hashlib"), "supabase": _sb,
+             "st": type("st", (), {"session_state": _SS(user=_User())})}
+    exec(_src24[_src24.index("EXAM_QUOTE_MIN_WORDS ="):_src24.index("def ground_exam_questions")], _ns24)
+    exec(_src24[_src24.index("def _question_hash"):_src24.index("def _challenges_used_today")], _ns24)
+    _real = _qs[0]["source_quote"]
+    _block24 = f"\n--- MILPERSMAN 1306-100 — Test ---\n{_real}\n"
+    _raw = [
+        {**{k: _qs[0][k] for k in ("question", "answer_a", "answer_b", "answer_c", "answer_d",
+                                   "correct_answer", "source_quote")}},
+        {"question": "Q2?", "answer_a": "a", "answer_b": "b", "answer_c": "c", "answer_d": "d",
+         "correct_answer": "B", "source_quote": "a sentence that appears nowhere in the manual text at all ok"},
+        {"question": "", "answer_a": "a", "answer_b": "b", "answer_c": "c", "answer_d": "d",
+         "correct_answer": "A"},
+    ]
+    _n = _ns24["save_generated_questions"](_raw, origin="mock_exam", rating="PS", paygrade="E6",
+                                           topic="T", source_block=_block24)
+    _rows24, _kw24 = _sb.sink[1]
+    check("every well-formed generated question is saved, gate failures included", _n, 2)
+    check("...into generated_questions", _sb.sink[0], "generated_questions")
+    check("...all marked unverified", {r["review_status"] for r in _rows24}, {"unverified"})
+    check("...with what the quote gate said about each",
+          [r["gate"] for r in _rows24], ["quote_matched", "quote_not_found"])
+    check("...and a duplicate is stored once (unique hash, ignore duplicates)",
+          (_kw24.get("on_conflict"), _kw24.get("ignore_duplicates")), ("question_hash", True))
+    _ns24["st"].session_state = _SS(user=None)
+    check("a logged-out session saves nothing", _ns24["save_generated_questions"](
+        _raw, origin="mock_exam", rating="PS", paygrade="E6", topic="T"), 0)
+    _ns24["st"].session_state = _SS(user=_User())
+    _ns24["supabase"] = type("Boom", (), {"table": lambda self, n: (_ for _ in ()).throw(RuntimeError("no table"))})()
+    check("a missing table never breaks the exam", _ns24["save_generated_questions"](
+        _raw, origin="mock_exam", rating="PS", paygrade="E6", topic="T"), 0)
+    check("Mock Exam saves BEFORE the gate drops anything",
+          _src24.index('origin="mock_exam"') < _src24.index("parsed, dropped = ground_exam_questions(parsed, exam_source_block)"),
+          True)
+    check("Practice Questions saves BEFORE the gate too",
+          _src24.index('origin="study_guide_practice"') < _src24.index("sg_parsed, sg_source_block)"), True)
+    check("the app never reads generated_questions back",
+          len(re.findall(r'table\("generated_questions"\)\s*\.\s*select', _src24)), 0)
+    _mig = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
+                             "20261013_generated_questions.sql"), encoding="utf-8").read()
+    check("the table defaults every row to unverified and sailors can't insert anything else",
+          "default 'unverified'" in _mig and "review_status = 'unverified'" in _mig, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
