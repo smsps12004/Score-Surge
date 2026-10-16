@@ -316,6 +316,66 @@ def main():
     check("...and the login form is still intact underneath",
           _labels.count("Password") >= 1, True)
 
+    # ── 9. PLACEMENT TEST (13 Oct 2026) ──────────────────────────────────────
+    # Driven end to end through the real page: a FREE sailor takes the whole test,
+    # grades it, gets a report card, and a paying sailor's Study Guide then opens on
+    # their weakest topic. No AI call is allowed anywhere in this flow.
+    print("\n9. PLACEMENT TEST (free, verified bank only, no AI)")
+    with patch("anthropic.Anthropic", side_effect=AssertionError("unexpected AI call")) as ai:
+        at = build_app(tier="free")
+        at.run()
+        check("free page renders with the placement test", len(at.exception), 0)
+        pick = [s for s in at.selectbox if s.label == "Paygrade you're competing for"]
+        check("placement paygrade picker is there for a free sailor", len(pick), 1)
+        check("...with nothing preselected", pick[0].value, None)
+        pick[0].select("E5").run()
+        check("E5 says coming soon instead of running a thin test",
+              any("E5 placement test is coming soon" in i.value for i in at.info), True)
+        [s for s in at.selectbox if s.label == "Paygrade you're competing for"][0].select("E6").run()
+        start = [b for b in at.button if b.label.startswith("Start my placement test")]
+        check("E6 offers a start button", len(start), 1)
+        start[0].click().run()
+        radios = [r for r in at.radio if r.label.startswith("Placement question")]
+        check("the test shows 40 questions", len(radios), 40)
+        _qs = at.session_state["placement_qs"]
+        check("...every one from the verified bank", all(q.get("verified") == "yes" for q in _qs), True)
+        # Answer the first 30 right and leave 10 blank, then grade anyway.
+        for i, r in enumerate(radios[:30]):
+            r.set_value(_qs[i]["correct_answer"])
+        [b for b in at.button if b.label == "Grade my placement test"][0].click().run()
+        check("blanks are flagged before grading",
+              any("haven't answered 10 questions" in w.value for w in at.warning), True)
+        [b for b in at.button if b.label.startswith("Grade anyway")][0].click().run()
+        for exc in at.exception:
+            print(f"  EXCEPTION: {str(exc.value)[:300]}")
+        check("grading renders with no exception", len(at.exception), 0)
+        res = at.session_state["placement_result"]
+        check("the score is 30 of 40", (res["correct"], res["total"]), (30, 40))
+        check("a report card table is shown", len(at.table) >= 1, True)
+        check("...listing untested topics honestly",
+              "Not tested yet" in at.table[0].value.to_string(), True)
+        check("results reach score_history (8 tested topics)",
+              len(at.session_state["score_history"]), 8)
+        check("a free sailor is pointed at the upgrade, not a guide they can't open",
+              any("upgrade and the Chief builds" in i.value for i in at.info), True)
+        _weak = at.session_state["sg_topic"]
+        check("the Study Guide is pointed at a real weak topic",
+              res["topics"][_weak]["level"] != "Strong", True)
+    check("the whole placement flow made zero AI calls", ai.call_count, 0)
+
+    at = build_app(tier="petty_officer")
+    at.session_state["score_history"] = [
+        {"date": "Oct 13", "topic": "Education Services", "score": 1, "total": 5, "pct": 20},
+        {"date": "Oct 13", "topic": "MILPAY Processing", "score": 5, "total": 5, "pct": 100},
+    ]
+    at.session_state["score_history_loaded"] = True
+    at.session_state["sg_paygrade"] = "E6"
+    at.run()
+    check("a paying sailor's Study tab renders with results on file", len(at.exception), 0)
+    _sg = [s for s in at.selectbox if s.label.startswith("Topic (used by")]
+    check("...and the Study Guide opens on their weakest topic",
+          _sg[0].value if _sg else None, "Education Services")
+
     print("\n" + "=" * 68)
     if FAIL:
         print(f"{len(FAIL)} SMOKE CHECK(S) FAILED — the app is broken for users:")
