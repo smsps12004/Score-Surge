@@ -65,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 453
+EXPECTED_TOTAL = 467
 
 
 def skip(reason):
@@ -1290,7 +1290,7 @@ def main():
     # past the edge and three of the seven — including Mock Exam and Planner, two of
     # the things the Chief tier is sold on — sat behind a ~12px scroll arrow.
     _tabs_src = src18[src18.index("tab1, tab2, tab3"):]
-    _tabs_src = _tabs_src[:_tabs_src.index("])")]
+    _tabs_src = _tabs_src[:_tabs_src.index("]")]  # list ends at "]" (tabs got a key 22 Oct 2026)
     _labels = re.findall(r'"([^"]+)"', _tabs_src)
     check("all seven tabs are still there", len(_labels), 7)
     # Emoji + one short word. The longest label is what decides whether the strip fits.
@@ -1671,10 +1671,15 @@ def main():
              "st": type("st", (), {"session_state": _SS(user=_User())})}
     exec(_src24[_src24.index("EXAM_QUOTE_MIN_WORDS ="):_src24.index("def ground_exam_questions")], _ns24)
     exec(_src24[_src24.index("def _question_hash"):_src24.index("def _challenges_used_today")], _ns24)
-    _real = _qs[0]["source_quote"]
+    # A quote under EXAM_QUOTE_MIN_WORDS is rightly rejected by the gate, and the
+    # placement draw isn't fully deterministic -- so using whatever _qs[0] happened to
+    # be made this check fail about 3 runs in 5 (found 22 Oct 2026). Use a question
+    # whose quote is long enough to count.
+    _q24 = next(q for q in _qs if len(q["source_quote"].split()) >= 15)
+    _real = _q24["source_quote"]
     _block24 = f"\n--- MILPERSMAN 1306-100 — Test ---\n{_real}\n"
     _raw = [
-        {**{k: _qs[0][k] for k in ("question", "answer_a", "answer_b", "answer_c", "answer_d",
+        {**{k: _q24[k] for k in ("question", "answer_a", "answer_b", "answer_c", "answer_d",
                                    "correct_answer", "source_quote")}},
         {"question": "Q2?", "answer_a": "a", "answer_b": "b", "answer_c": "c", "answer_d": "d",
          "correct_answer": "B", "source_quote": "a sentence that appears nowhere in the manual text at all ok"},
@@ -1709,6 +1714,49 @@ def main():
                              "20261013_generated_questions.sql"), encoding="utf-8").read()
     check("the table defaults every row to unverified and sailors can't insert anything else",
           "default 'unverified'" in _mig and "review_status = 'unverified'" in _mig, True)
+
+    # ── 25. Launch-day public copy and readiness (22 Oct 2026) ────────────────
+    print("\n25. LAUNCH: PUBLIC COPY, READINESS, QUOTES, SIGNUP SOURCE")
+    sys.path.insert(0, os.path.dirname(APP))
+    import public_site as _site
+    import readiness as _rd
+    _src25 = open(APP, encoding="utf-8").read()
+    _rows25 = {(r["rating"], r["paygrade"]): r for r in _rd.readiness_table()}
+    check("PS E6 practice questions are open", _rows25[("PS", "E6")]["status"], "open")
+    check("...and nothing is open with zero servable verified questions",
+          [k for k, r in _rows25.items() if r["status"] == "open" and r["servable"] == 0], [])
+    _yn_nc = [r for (rt, _), r in _rows25.items() if rt in ("YN", "NC")]
+    check("tagline only claims YN/NC practice questions if the bank has some",
+          ("PS, YN and NC" in _site.TAGLINE) <= any(r["verified_in_bank"] for r in _yn_nc), True)
+    check("the independence line is the exact approved wording", _site.INDEPENDENCE_LINE,
+          "Score Surge is an independent exam-prep tool. Not affiliated with or endorsed "
+          "by the U.S. Navy or DoD.")
+    check("no price is typed into the public copy (read from UPGRADE_INFO instead)",
+          re.search(r"\$\d", _site.TAGLINE + _site.TERMS_MD + _site.REFUNDS_MD) is None, True)
+    check("refund policy: full refund of the latest charge within 7 days",
+          "within 7 days of a charge and we'll refund that charge in full" in _site.REFUNDS_MD, True)
+    _mig25 = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
+                               "20261022_heard_from.sql"), encoding="utf-8").read()
+    check("every signup answer the form offers is allowed by the database",
+          all(f"'{v}'" in _mig25 for v in _site.HEARD_FROM_CHOICES), True)
+    check("an answer not on the list is never stored", _site.clean_heard_from("myspace"), None)
+    # exam_quote_text: shows the checked quote, never an unchecked one, never twice.
+    _ns25 = {}
+    exec(_src25[_src25.index("def exam_quote_text"):_src25.index("def exam_all_verified")], _ns25)
+    _eq = _ns25["exam_quote_text"]
+    check("a quote-checked question shows its manual text",
+          bool(_eq({"source_quote": "the rule", "grounded": "yes"})), True)
+    check("an unchecked question's 'quote' is never shown as manual text",
+          _eq({"source_quote": "the rule"}), "")
+    check("a bank question's quote isn't shown twice",
+          _eq({"source_quote": "the rule", "verified": "yes", "explanation": 'Per X: "the rule"'}), "")
+    check("the memory-written practice path is gated behind 'coming soon'",
+          "if not exam_grounded:\n" in _src25 and "topic_coming_soon_text(pq_topic)" in _src25, True)
+    check("the old confirmation link's tokens are wiped from the address bar",
+          "scrub_tokens_from_url()" in _src25[_src25.index("def show_auth_page"):], True)
+    check("trial banner: never promises full access at the $12.99 price",
+          "full access with Chief at \\$19.99/mo" in _site.trial_banner_text(2, "$12.99/mo", "$19.99/mo"),
+          True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

@@ -17,6 +17,8 @@ from launch_safety import EDUCATIONAL_NOTICE, DATA_NOTICE, SUPPORT_EMAIL, valida
 import question_bank
 import placement
 import account_locks as locks
+import public_site as site
+import readiness
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -152,7 +154,18 @@ LEGACY_PRICE_IDS = {
 PRICE_TO_TIER = {v: k for k, v in STRIPE_PRICE_IDS.items()}
 PRICE_TO_TIER.update(LEGACY_PRICE_IDS)
 
-def get_user_tier(user_id: str, user_email: str = "") -> str:
+def heard_from_of(user) -> str | None:
+    """The optional "How did you hear about us?" answer saved on the login at signup.
+
+    It's kept in the login's own metadata as well as on the profile, because with
+    email confirmation on, signup returns no session and the profile row isn't
+    created until the sailor's first real login -- by then the form is long gone.
+    """
+    meta = getattr(user, "user_metadata", None) or {}
+    return site.clean_heard_from(meta.get("heard_from") if isinstance(meta, dict) else None)
+
+
+def get_user_tier(user_id: str, user_email: str = "", heard_from: str | None = None) -> str:
     """What this sailor is entitled to see.
 
     This used to call `.single()`, which raises both when there is no row AND when
@@ -195,6 +208,14 @@ def get_user_tier(user_id: str, user_email: str = "") -> str:
                 # The Stripe webhook matches profiles on email. A row without one can
                 # never be upgraded by it.
                 new_row["email"] = user_email
+            if heard_from:
+                # Tried first, then dropped: if the heard_from column hasn't been
+                # added in Supabase yet, a new sailor must still get their trial.
+                try:
+                    supabase.table("profiles").insert({**new_row, "heard_from": heard_from}).execute()
+                    return "trial"
+                except Exception:
+                    pass
             try:
                 supabase.table("profiles").insert(new_row).execute()
                 return "trial"
@@ -280,6 +301,17 @@ def upgrade_banner(required_tier: str, where: str):
     """
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
+    upgrade_controls(required_tier, where)
+
+
+def upgrade_controls(required_tier: str, where: str):
+    """Consent box, Upgrade button and checkout link for one plan.
+
+    Split out of upgrade_banner() on 22 Oct 2026 so My Profile can offer the same
+    upgrade to a sailor on the free trial, who sees no locked tab and so had no way
+    to pay at all. Same rules as before: Stripe is only called on the tap.
+    """
+    label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.caption(f"Billing or cancellation help: {SUPPORT_EMAIL}")
     st.caption("Monthly subscription; renews automatically until canceled. Review the price and billing terms at Stripe checkout. Manage or cancel from My Profile. AI-generated study material can contain errors; advancement is not guaranteed.")
 
@@ -310,7 +342,35 @@ def upgrade_banner(required_tier: str, where: str):
             url=st.session_state[url_key],
             width="stretch",
         )
-        st.caption("Opens Stripe in a new tab. Your card details never touch Score Surge.")
+        st.caption("Opens Stripe in a new tab. Your card details never touch Score Surge. "
+                   "After paying you'll land back on Score Surge in that tab — log in "
+                   "there and your plan is on. Or come back to this tab and tap "
+                   "**I've paid — refresh my plan**.")
+        if st.button("🔄 I've paid — refresh my plan", key=f"refresh_tier_{required_tier}_{where}"):
+            refresh_my_plan()
+
+
+def refresh_my_plan():
+    """Re-read this sailor's plan from the database (after paying in another tab).
+
+    The Stripe webhook is what actually upgrades the profile row. This tab can't
+    hear it, so the sailor asks; nothing here grants anything on its own.
+    """
+    user = st.session_state.get("user")
+    if not user:
+        return
+    tier = get_user_tier(user.id, getattr(user, "email", "") or "")
+    if tier in ("petty_officer", "chief"):
+        st.session_state.tier = tier
+        st.session_state._payment_success = True
+        for _k in [k for k in st.session_state.keys() if str(k).startswith("_checkout_url_")]:
+            st.session_state.pop(_k, None)
+        st.session_state.pop("_billing_customer", None)
+        st.rerun()
+    else:
+        st.info("No payment has come through on this account yet. Stripe can take a "
+                "minute — try again shortly. If you were charged and this still says "
+                f"so in 10 minutes, email {SUPPORT_EMAIL}.")
 
 
 def load_score_history(user_id: str) -> list:
@@ -327,22 +387,115 @@ def load_score_history(user_id: str) -> list:
         return []
 
 
+# ── PUBLIC PIECES: footer, welcome, URL clean-up (22 Oct 2026) ─────────────────
+AUTH_TAB_LOGIN = "Log In"
+AUTH_TAB_SIGNUP = "Create Account"
+
+# Supabase's older confirmation link lands here with the sailor's live login tokens
+# in the address bar (#access_token=...&refresh_token=...). The part after # never
+# reaches the server, so the app can't use it -- but it stays visible, where a
+# screenshot, the browser history or a shared link can leak it. This runs in the
+# browser and wipes it the moment the page loads, then reloads with ?confirmed=1 so
+# the page can say "email confirmed, log in". It checks the app's own frame and the
+# top window, because Streamlit Cloud wraps the app in a frame. The new-style link
+# (?token_hash=..., handled server-side below) never carries a token at all.
+_SCRUB_TOKEN_JS = """
+<script>
+(function () {
+  var pat = /(access_token|refresh_token|provider_token|error_description)=/;
+  function scrub(w) {
+    try {
+      var h = w.location.hash || "";
+      if (!pat.test(h)) { return false; }
+      var ok = !/error/.test(h);
+      var q = ok ? "?confirmed=1" : "?confirm_error=1";
+      w.location.replace(w.location.pathname + q);
+      return true;
+    } catch (e) { return false; }
+  }
+  if (!scrub(window)) {
+    try { if (window.top && window.top !== window) { scrub(window.top); } } catch (e) {}
+  }
+})();
+</script>
+"""
+
+
+def scrub_tokens_from_url():
+    st.html(_SCRUB_TOKEN_JS, unsafe_allow_javascript=True)
+
+
+def render_footer():
+    """The bottom of every page, logged in or not: independence line + legal links."""
+    st.divider()
+    st.caption(site.INDEPENDENCE_LINE)
+    st.caption(site.legal_links_md(get_app_base_url()) +
+               f" · [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})")
+
+
+def render_welcome():
+    """What a first-time visitor sees above the login: what this is, what's free, prices."""
+    st.markdown(f"#### {site.TAGLINE}")
+    st.markdown(
+        "**Free with an account:**\n"
+        "- **FMS calculator** — type in your numbers or upload your profile sheet.\n"
+        "- **Placement test** — 40 verified questions that show where you stand, topic "
+        f"by topic. **Covers {_placement_covers()} today.** "
+        "Other ratings and paygrades are coming soon."
+    )
+    _cols = st.columns(2)
+    for _col, _tier in zip(_cols, ("petty_officer", "chief")):
+        _label, _price, _features = UPGRADE_INFO[_tier]
+        with _col.container(border=True):
+            st.markdown(f"**{_label} — {site.money_md(_price)}**")
+            st.caption(plan_features(_tier))
+    st.markdown(f"**{site.TRIAL_LINE}.**")
+    st.button("Start free trial", type="primary", width="stretch",
+              key="start_free_trial", on_click=_open_signup_tab)
+
+
+def plan_features(tier: str) -> str:
+    """What a plan includes. Chief includes everything Petty Officer does (TIER_ORDER)."""
+    features = UPGRADE_INFO[tier][2]
+    return f"Everything in Petty Officer, plus {features}" if tier == "chief" else features
+
+
+def _placement_covers() -> str:
+    """'PS E6' today -- from the same rule the placement test itself uses."""
+    parts = [f"{r} {pg}" for r in readiness.RATINGS for pg in readiness.open_paygrades(r)]
+    return " and ".join(parts) if parts else "no ratings yet"
+
+
+def _open_signup_tab():
+    st.session_state["auth_tab"] = AUTH_TAB_SIGNUP
+
+
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
+    scrub_tokens_from_url()
     if st.session_state.get("_signed_out_elsewhere"):
         st.warning(
             "You were signed out because this account signed in on another device. "
             "Each Score Surge account is for one sailor, one device at a time."
         )
-    st.markdown("Navy advancement exam preparation: FMS estimates, study tools and practice questions.")
+    if st.session_state.get("_email_confirmed"):
+        st.success("✅ **Email confirmed.** Log in below to start your free trial.")
+    if st.session_state.get("_confirm_failed"):
+        st.warning("That confirmation link didn't work — it may have expired or already "
+                   "been used. Try logging in below; if that fails, create the account "
+                   f"again or email {SUPPORT_EMAIL}.")
+    if st.session_state.get("_paid_logged_out"):
+        st.success("✅ **Payment received.** Log in below and your new plan is switched on.")
+    render_welcome()
     with st.expander("Before you use Score Surge: accuracy and data"):
         st.write(EDUCATIONAL_NOTICE)
         st.write(DATA_NOTICE)
         st.write(f"Support: {SUPPORT_EMAIL}")
     st.divider()
 
-    tab_login, tab_signup = st.tabs(["Log In", "Create Account"])
+    tab_login, tab_signup = st.tabs([AUTH_TAB_LOGIN, AUTH_TAB_SIGNUP], key="auth_tab",
+                                    on_change="rerun")
 
     with tab_login:
         st.subheader("Welcome back, Sailor.")
@@ -363,7 +516,10 @@ def show_auth_page():
                     st.session_state.user = res.user
                     st.session_state.access_token = res.session.access_token
                     st.session_state.refresh_token = res.session.refresh_token
-                    st.session_state.tier = get_user_tier(res.user.id, res.user.email or "")
+                    st.session_state.tier = get_user_tier(res.user.id, res.user.email or "",
+                                                          heard_from_of(res.user))
+                    for _k in ("_email_confirmed", "_confirm_failed", "_paid_logged_out"):
+                        st.session_state.pop(_k, None)
                     # One login at a time: this device becomes the active one, and any
                     # other device signed in to this account is signed out within a minute.
                     locks.claim_session(supabase, res.user.id, st.session_state)
@@ -465,6 +621,13 @@ def show_auth_page():
             signup_email = st.text_input("Email")
             signup_password = st.text_input("Password", type="password")
             signup_password2 = st.text_input("Confirm Password", type="password")
+            signup_heard = st.selectbox(
+                "How did you hear about us? (optional)",
+                list(site.HEARD_FROM_CHOICES), index=None,
+                format_func=lambda v: site.HEARD_FROM_CHOICES[v],
+                placeholder="Choose one, or skip",
+                key="signup_heard_from",
+            )
             signup_submit = st.form_submit_button(
                 "Create Account & Start Free Trial", width="stretch"
             )
@@ -478,10 +641,13 @@ def show_auth_page():
                 st.error("Password must be at least 6 characters.")
             else:
                 try:
-                    res = supabase.auth.sign_up({
-                        "email": signup_email,
-                        "password": signup_password,
-                    })
+                    _heard = site.clean_heard_from(signup_heard)
+                    _signup = {"email": signup_email, "password": signup_password}
+                    if _heard:
+                        # Kept on the login itself too: with email confirmation on,
+                        # the profile row is only created at first login.
+                        _signup["options"] = {"data": {"heard_from": _heard}}
+                    res = supabase.auth.sign_up(_signup)
                     if res.user and res.session:
                         st.session_state.user = res.user
                         st.session_state.access_token = res.session.access_token
@@ -491,14 +657,23 @@ def show_auth_page():
                             # `email` is written because the Stripe webhook matches
                             # profiles on it. Without it, a sailor can pay and the
                             # webhook updates zero rows while reporting success.
-                            supabase.table("profiles").upsert({
+                            _row = {
                                 "id": res.user.id,
                                 "email": res.user.email,
                                 "tier": "trial",
                                 "trial_start": datetime.datetime.now(
                                     datetime.timezone.utc
                                 ).isoformat(),
-                            }).execute()
+                            }
+                            try:
+                                if not _heard:
+                                    raise ValueError("no answer to store")
+                                supabase.table("profiles").upsert(
+                                    {**_row, "heard_from": _heard}).execute()
+                            except Exception:
+                                # No answer, or the heard_from column isn't in
+                                # Supabase yet -- the trial row matters more.
+                                supabase.table("profiles").upsert(_row).execute()
                         except Exception:
                             # Most likely `email` is not a column on profiles yet.
                             # Fall back to the row we know the schema accepts, so a
@@ -546,9 +721,58 @@ if _qp.get("stripe_success") == "true" and st.session_state.user:
     st.query_params.clear()
     st.rerun()
 
+# ── PAID, BUT THIS TAB ISN'T LOGGED IN ────────────────────────────────────────
+# Stripe opens in a new tab and comes back to a new tab, which has no login. The
+# query string is left alone so the callback above runs the moment they log in;
+# until then the login page says the payment arrived instead of looking like nothing
+# happened.
+if _qp.get("stripe_success") == "true" and not st.session_state.user:
+    st.session_state["_paid_logged_out"] = True
+
+# ── EMAIL CONFIRMATION LINK (22 Oct 2026) ─────────────────────────────────────
+# The confirmation email's link carries a one-time code (?token_hash=...&type=email),
+# never the login tokens themselves. The server exchanges it for a session, the
+# sailor is logged straight in, and the code is wiped from the address bar. Needs
+# the Supabase "Confirm signup" email template to use this link -- see OPERATIONS.md.
+# Old-style links (#access_token=...) are wiped in the browser; see _SCRUB_TOKEN_JS.
+if _qp.get("token_hash") and not st.session_state.user:
+    _th, _type = _qp.get("token_hash", ""), _qp.get("type", "email")
+    st.query_params.clear()
+    try:
+        if _type not in ("email", "signup"):
+            raise ValueError("unsupported confirmation type")
+        _res = supabase.auth.verify_otp({"token_hash": _th, "type": _type})
+        if _res.user and _res.session:
+            st.session_state.user = _res.user
+            st.session_state.access_token = _res.session.access_token
+            st.session_state.refresh_token = _res.session.refresh_token
+            st.session_state.tier = get_user_tier(_res.user.id, _res.user.email or "",
+                                                  heard_from_of(_res.user))
+            locks.claim_session(supabase, _res.user.id, st.session_state)
+        else:
+            st.session_state["_email_confirmed"] = True
+    except Exception as _e:
+        print(f"[confirm] token_hash verification failed: {_e!r}")
+        st.session_state["_confirm_failed"] = True
+    st.rerun()
+if _qp.get("confirmed") == "1" or _qp.get("confirm_error") == "1":
+    st.session_state["_email_confirmed" if _qp.get("confirmed") == "1"
+                     else "_confirm_failed"] = True
+    st.query_params.clear()
+    st.rerun()
+
+# ── PUBLIC LEGAL PAGES: ?page=terms | privacy | refunds ───────────────────────
+if _qp.get("page") in site.LEGAL_PAGES:
+    _title, _body = site.LEGAL_PAGES[_qp.get("page")]
+    st.markdown(f"[← Back to Score Surge]({get_app_base_url()}/)")
+    st.markdown(site.rewrite_relative_links(_body, get_app_base_url()))
+    render_footer()
+    st.stop()
+
 # ── REQUIRE LOGIN ─────────────────────────────────────────────────────────────
 if not st.session_state.user:
     show_auth_page()
+    render_footer()
     st.stop()
 
 # Load tier if missing
@@ -587,6 +811,11 @@ if st.session_state.get("locked_rating", "?") is None:
         "the tutor, mock exams — will be built for the rating you choose here."
     )
     _pick = st.radio("Your rating", locks.RATING_CHOICES, horizontal=True, key="first_rating_pick")
+    _soon = [r for r in locks.RATING_CHOICES if not readiness.open_paygrades(r)]
+    if _pick in _soon:
+        st.info(f"**Heads up for {_pick}:** the FMS calculator, Tutor and study plans work "
+                f"now, but {_pick} practice questions, mock exams and the placement test are "
+                "coming soon — they only go live once they can be backed by real manual text.")
     st.caption(
         f"You can change it yourself once every {locks.RATING_CHANGE_DAYS} days from My Profile. "
         f"If you convert ratings sooner, email {SUPPORT_EMAIL}."
@@ -598,6 +827,7 @@ if st.session_state.get("locked_rating", "?") is None:
             st.rerun()
         else:
             st.error("That didn't save. Try again in a moment.")
+    render_footer()
     st.stop()
 
 
@@ -722,16 +952,39 @@ if st.session_state.get("_payment_success"):
     tier_label = TIER_LABELS.get(st.session_state.tier, st.session_state.tier)
     st.success(f"🎉 Payment successful! You now have **{tier_label}** access. Welcome aboard!")
 
-# Trial banner
+# Trial banner. Shown at the top of EVERY tab (trial_nudge below), with real prices
+# and a way to pay. Until 22 Oct 2026 a trial sailor saw "enjoy full access!" once,
+# above the tabs, and no Upgrade button anywhere -- can_access() is True for every tab
+# during a trial, so no locked tab ever offered one. A sailor who wanted to pay on
+# day one couldn't.
+TRIAL_BANNER = ""
 if st.session_state.tier == "trial":
+    _days_left = None
     try:
         result = supabase.table("profiles").select("trial_start").eq("id", st.session_state.user.id).single().execute()
-        trial_start = datetime.datetime.fromisoformat(result.data["trial_start"].replace("Z", "+00:00"))
-        days_left = 3 - (datetime.datetime.now(datetime.timezone.utc) - trial_start).days
-        days_left = max(0, days_left)
-        st.info(f"🎖️ **Free trial active** — {days_left} day(s) remaining. Enjoy full access!")
+        _days_left = site.trial_days_left(result.data["trial_start"],
+                                          datetime.datetime.now(datetime.timezone.utc))
     except Exception:
-        st.info("🎖️ **Free trial active** — enjoy full access!")
+        pass
+    TRIAL_BANNER = site.trial_banner_text(_days_left, UPGRADE_INFO["petty_officer"][1],
+                                          UPGRADE_INFO["chief"][1])
+
+MAIN_TAB_PROFILE = "👤 Profile"
+
+
+def _go_to_profile():
+    st.session_state["main_tab"] = MAIN_TAB_PROFILE
+
+
+def trial_nudge(where: str):
+    """One small line at the top of a tab during the free trial, with a way to upgrade."""
+    if not TRIAL_BANNER:
+        return
+    with st.container(border=True):
+        st.markdown(TRIAL_BANNER)
+        if where != "profile":
+            st.button("See plans & upgrade", key=f"trial_upgrade_{where}",
+                      on_click=_go_to_profile)
 
 st.markdown("""
 Your Navy advancement engine. Calculate your FMS, build your study plan, and advance.
@@ -747,7 +1000,15 @@ Your Navy advancement engine. Calculate your FMS, build your study plan, and adv
 # studying for the next cycle. Nothing on screen would have looked wrong.
 #
 # When the next NAVADMIN drops, edit this block and nothing else.
+#
+# HOW TO UPDATE (22 Oct 2026): when the spring 2027 NAVADMIN is published, change
+# "number", "navadmin" and every date below to the new cycle's, and set "next_label"
+# to the cycle after that (e.g. "Fall 2027"). That's the whole job: the countdown,
+# the planner and the AI prompts all read from here. Until then, the cycle below has
+# ended, and every screen says "Spring 2027 exam dates not yet announced" instead of
+# showing Cycle 272's past dates.
 CYCLE = {
+    "next_label": "Spring 2027",
     "number": 272,
     "navadmin": "NAVADMIN 168/26",
     "pmkee":         datetime.date(2026, 7, 31),
@@ -816,6 +1077,11 @@ def cycle_expired(today=None):
     forever. An app that looks abandoned is one a paying sailor stops trusting.
     """
     return (today or datetime.date.today()) > CYCLE["exam_e5"]
+
+
+def next_cycle_not_announced():
+    """'Spring 2027 exam dates not yet announced.' -- what every screen says between cycles."""
+    return f"{CYCLE['next_label']} exam dates not yet announced."
 
 
 def cycle_authority_line(today=None):
@@ -1862,178 +2128,10 @@ def extract_text_from_upload(uploaded_file):
     return raw_text, word_boxes
 
 
-# ── PS TOPICS ─────────────────────────────────────────────────────────────────
-PS_TOPICS = {
-    "E6 - Customer Service Management & Processing": {
-        "subtopics": ["Correspondence", "DEERS & RAPIDS Management", "Electronic Service Record", "Leave"],
-        "bib": "BUPERSINST 1750.10E, MILPERSMAN 1050 series, NSIPS"
-    },
-    "E6 - Disbursing Operations": {
-        "subtopics": ["Fiscal", "Navy Cash"],
-        "bib": "DOD 7000.14-R Vol 5, NAVSUP P-727"
-    },
-    "E6 - Education Services": {
-        "subtopics": ["Advancement", "Programs"],
-        "bib": "BUPERSINST 1430.16G, NAVPERS 18068F"
-    },
-    "E6 - Manning & Manpower Management": {
-        "subtopics": ["Administration & Management", "Roles & Responsibilities"],
-        "bib": "OPNAVINST 1300.21, BUPERSINST 1080.54B, MNA Users Guide"
-    },
-    "E6 - MILPAY Processing": {
-        "subtopics": ["Allotments", "Indebtedness", "Legal", "Pay Processing", "Report Management"],
-        "bib": "DOD 7000.14-R Vol 7A, Navy DJMS Procedures Training Guide"
-    },
-    "E6 - Receipts Management & Processing": {
-        "subtopics": ["Gains", "Procedures", "Required Documentation & Forms"],
-        "bib": "NSIPS, MILPERSMAN 1300 series"
-    },
-    "E6 - Reenlistment & Extension Processing": {
-        "subtopics": ["Administration & Procedures", "Eligibility"],
-        "bib": "OPNAVINST 1160.8B, MILPERSMAN 1160 series"
-    },
-    "E6 - Reserve Pay, Management & Processing": {
-        "subtopics": ["Electronic Drill Management", "Entitlements", "Gains",
-                      "Mobilization & Demobilization", "Separations & Transfers"],
-        "bib": "RESPERS M-1001.5, BUPERSINST 1001.39F"
-    },
-    "E6 - Separations & Retirement Processing": {
-        "subtopics": ["Entitlements & Audit", "Required Documentation & Forms", "Strength Loss"],
-        "bib": "BUPERSINST 1900.8F, MILPERSMAN 1910 series, 1830 series"
-    },
-    "E6 - Transfers Management & Processing": {
-        "subtopics": ["Entitlements", "Loss", "Required Documentation & Forms"],
-        "bib": "JTR Chapter 5, MILPERSMAN 1300 series"
-    },
-    "E6 - Travel & Transportation Processing": {
-        "subtopics": ["Computations", "Requirements", "Travel Policy & Procedures"],
-        "bib": "JTR Chapters 1, 2, 5, DOD 7000.14-R Vol 9"
-    },
-    "E5 - Customer Service Management & Processing": {
-        "subtopics": ["Correspondence", "DEERS & RAPIDS Management", "Electronic Service Record", "Leave"],
-        "bib": "BUPERSINST 1750.10E Ch 4, MILPERSMAN 1050 series"
-    },
-    "E5 - MILPAY Processing": {
-        "subtopics": ["Allotments", "Pay Processing", "Special Pays"],
-        "bib": "DOD 7000.14-R Vol 7A, Navy DJMS Procedures Training Guide"
-    },
-    "E5 - Separations & Retirement Processing": {
-        "subtopics": ["Entitlements", "Required Documentation", "DD214"],
-        "bib": "BUPERSINST 1900.8F, MILPERSMAN 1910 series"
-    },
-    "E5 - Transfers Management & Processing": {
-        "subtopics": ["Entitlements", "Loss", "Required Documentation & Forms"],
-        "bib": "JTR Chapters 2, 3, 5, MILPERSMAN 1300 series"
-    },
-    "E5 - Travel & Transportation Processing": {
-        "subtopics": ["Computations", "Requirements", "Travel Policy & Procedures"],
-        "bib": "JTR, DOD 7000.14-R Vol 9"
-    },
-    "E5 - Military Awards": {
-        "subtopics": ["Award Types", "Eligibility", "Processing"],
-        "bib": "SECNAVINST 1650.1J"
-    },
-}
-
-# YN's own topic map, built 7 Sep 2026 the same way PS's was: real chapters from the
-# rating's own training manual (NAVEDTRA 15009C, Yeoman — 6 chapters, page-indexed into
-# corpus.db as yn_pages, see build_yn_corpus.py in Score Surge DB), cross-checked
-# against YN's actual current Navy COOL bibliography (all 4 variants — E5/E6, Regular/
-# Substitute — fetched and read 7 Sep 2026; see bibliography_YN_Sept2026.md in Score
-# Surge DB for the full reference-by-reference table this was built from).
-#
-# Topic names follow NAVEDTRA 15009C's own 6 chapters — that's the Navy's own
-# organization of what a Yeoman studies, not an invented grouping — and every "bib"
-# line only names a reference this session actually confirmed governs that chapter's
-# content, never a guess. Every "MILPERSMAN NNNN series" mention below is a series
-# genuinely cited on a current YN bibliography (E5 and/or E6) and already fully in
-# corpus.db, so it starts auto-grounding through corpus.get_series_grounding() the
-# same day this ships — no separate engineering step needed for those. The DoD
-# 7000.14-R Vol 7A / Vol 9 and NAVEDTRA 15009C citations are equally real and
-# equally confirmed, but corpus.get_series_grounding() only knows how to retrieve
-# from the MILPERSMAN pages table today — those sources are named here for honest
-# attribution and are the next grounding-engine work, not yet wired to retrieve text.
-# Three MILPERSMAN articles genuinely cited on a current YN bib have no corpus.db row
-# at all yet (1070-290, 1300-100, 1300-202) — real Gate 0 gaps, left out of every bib
-# line below rather than cited as if they were sourced.
-YN_TOPICS = {
-    "E6 - Navy Yeoman Fundamentals": {
-        "subtopics": ["Office Procedures & Customer Service", "Career Path & Flag/Staff Support",
-                      "Protocol & Social Usage"],
-        "bib": "NAVEDTRA 15009C Ch 1, OPNAVINST 1000.16L, OPNAVINST 1160.6C"
-    },
-    "E6 - Correspondence & Records Management": {
-        "subtopics": ["Naval Correspondence", "Files & Records Management",
-                      "Reports & Forms Management Programs"],
-        "bib": "NAVEDTRA 15009C Ch 2, MILPERSMAN 1000-021, SECNAV M-5216.5, SECNAV M-5210.1, "
-               "OPNAV M-5215.1, OPNAVINST 5215.17A"
-    },
-    "E6 - Evaluations & Awards": {
-        "subtopics": ["EVAL/FITREP Processing", "Military Awards Processing",
-                      "Awards Submission to OMPF"],
-        "bib": "NAVEDTRA 15009C Ch 2, 3, MILPERSMAN 1770 series, BUPERSINST 1610.10H, "
-               "SECNAVINST 1650.1J, SECNAV M-1650.1"
-    },
-    "E6 - Pay & Personnel Administration (CPPA)": {
-        "subtopics": ["Pay & Allowances", "Electronic Service Record (ESR) & OMPF",
-                      "Receipts, Transfers & Advancement Processing"],
-        "bib": "NAVEDTRA 15009C Ch 3, DoD 7000.14-R Vol 7A Ch 1, 10, 18, 25, 26, 27, 29, "
-               "DFAS-CL DJMS MMPA Guide, MILPERSMAN 1070 series, 1300 series, 1320 series, 1600 series"
-    },
-    "E6 - Separations Processing": {
-        "subtopics": ["Separation Documentation", "Discharge Characterization & Fleet Reserve"],
-        "bib": "NAVEDTRA 15009C Ch 3, MILPERSMAN 1910 series, 1800 series, BUPERSINST 1900.8F"
-    },
-    "E6 - Legal & Disciplinary Processing": {
-        "subtopics": ["Non-Judicial Punishment (NJP)", "Administrative Investigations & Unauthorized Absence"],
-        "bib": "NAVEDTRA 15009C Ch 4, MCM 2024 Edition, JAGINST 5800.7G"
-    },
-    "E6 - Travel Processing": {
-        "subtopics": ["Travel Orders & Allowances", "PCS & Separation Travel"],
-        "bib": "NAVEDTRA 15009C Ch 5, JOINT TRAVEL REGULATIONS Ch 1, 2, 5, DoD 7000.14-R Vol 9 Ch 5, 8"
-    },
-    "E6 - Security Administration": {
-        "subtopics": ["Personnel Security Clearances", "Classified Material Control & Physical Security"],
-        "bib": "NAVEDTRA 15009C Ch 6, DODM 5200.01, DODI 5200.48, SECNAVINST 5510.30C, SECNAVINST 5510.36B"
-    },
-    "E5 - Navy Yeoman Fundamentals": {
-        "subtopics": ["Office Procedures & Customer Service", "Career Path & Flag/Staff Support",
-                      "Protocol & Social Usage"],
-        "bib": "NAVEDTRA 15009C Ch 1, OPNAVINST 1000.16L"
-    },
-    "E5 - Correspondence & Records Management": {
-        "subtopics": ["Naval Correspondence", "Files & Records Management",
-                      "Reports & Forms Management Programs"],
-        "bib": "NAVEDTRA 15009C Ch 2, SECNAV M-5216.5, SECNAV M-5210.1, SECNAV M-5210.2, "
-               "OPNAV M-5215.1, OPNAVINST 5215.17A"
-    },
-    "E5 - Evaluations & Awards": {
-        "subtopics": ["EVAL/FITREP Processing", "Military Awards Processing"],
-        "bib": "NAVEDTRA 15009C Ch 2, 3, BUPERSINST 1610.10H, SECNAVINST 1650.1J, SECNAV M-1650.1"
-    },
-    "E5 - Pay & Personnel Administration (CPPA)": {
-        "subtopics": ["Pay & Allowances", "Electronic Service Record (ESR) & OMPF",
-                      "Receipts, Transfers & Advancement Processing"],
-        "bib": "NAVEDTRA 15009C Ch 3, DoD 7000.14-R Vol 7A Ch 1, 10, 18, 25, 32, "
-               "MILPERSMAN 1070 series, 1300 series, 1320 series, 1600 series"
-    },
-    "E5 - Separations Processing": {
-        "subtopics": ["Separation Documentation", "Discharge Characterization & Fleet Reserve"],
-        "bib": "NAVEDTRA 15009C Ch 3, MILPERSMAN 1910 series, 1800 series, BUPERSINST 1900.8F"
-    },
-    "E5 - Legal & Disciplinary Processing": {
-        "subtopics": ["Non-Judicial Punishment (NJP)", "Administrative Investigations & Unauthorized Absence"],
-        "bib": "NAVEDTRA 15009C Ch 4, MCM 2024 Edition, JAGINST 5800.7G"
-    },
-    "E5 - Travel Processing": {
-        "subtopics": ["Travel Orders & Allowances", "PCS & Separation Travel"],
-        "bib": "NAVEDTRA 15009C Ch 5, JOINT TRAVEL REGULATIONS Ch 5, DoD 7000.14-R Vol 9 Ch 6, 8"
-    },
-    "E5 - Security Administration": {
-        "subtopics": ["Personnel Security Clearances", "Classified Material Control & Physical Security"],
-        "bib": "NAVEDTRA 15009C Ch 6, DODM 5200.01, ICPG 704.2, SECNAVINST 5510.30C, SECNAVINST 5510.36B"
-    },
-}
+# ── PS / YN TOPICS ────────────────────────────────────────────────────────────
+# The curated topic maps now live in rate_topics.py (moved word for word 22 Oct 2026,
+# so the public welcome page can read them before login).
+from rate_topics import PS_TOPICS, YN_TOPICS
 
 # ── TUTOR GROUNDING — a hand-picked override on top of automatic retrieval ───────
 # Score Surge grounds the Tutor from corpus.db (see corpus.py) — every current
@@ -2232,11 +2330,12 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🎓 Tutor",
     "🎯 Exam",
     "📅 Planner",
-    "👤 Profile",
-])
+    "👤 Profile",  # == MAIN_TAB_PROFILE
+], key="main_tab", on_change="rerun")
 
 # ── TAB 1: FMS CALCULATOR ─────────────────────────────────────────────────────
 with tab1:
+    trial_nudge("fms")
     st.subheader("📤 Upload Profile Sheet (Optional)")
     uploaded_file = st.file_uploader(
         "Upload your Navy Profile Sheet — image or PDF",
@@ -2699,20 +2798,21 @@ with tab1:
 
 # ── TAB 2: ADVANCEMENT INFO ───────────────────────────────────────────────────
 with tab2:
+    trial_nudge("info")
     today = datetime.date.today()
 
     if cycle_expired(today):
         # Four "✅ Passed" tiles under a live countdown heading is how an app starts
         # looking abandoned. Say the cycle is done and stop pretending to count.
-        st.subheader(f"⏱️ Cycle {CYCLE['number']} — Complete")
+        # 22 Oct 2026: this used to restate the finished cycle's exam dates, which
+        # read as the dates to a sailor skimming the page. Past dates are gone; it
+        # just says the next ones aren't out.
+        st.subheader(f"⏱️ {CYCLE['next_label']} Exam Dates")
         st.info(
-            f"**Cycle {CYCLE['number']} is finished.** The E5 exam was held "
-            f"{_fmt_date(CYCLE['exam_e5'])} and the E6 exam "
-            f"{_fmt_date(CYCLE['exam_e6'])}.\n\n"
-            "The next cycle's dates are not loaded into Score Surge yet — check the "
-            "NAVADMIN on [MyNavyHR](https://www.mynavyhr.navy.mil) for them. Your FMS "
-            "calculator, study tools and score history all still work; only the "
-            "countdown above is waiting on the new NAVADMIN."
+            f"**{next_cycle_not_announced()}** As soon as the NAVADMIN is published, "
+            "your countdown and deadlines show up here. Watch "
+            "[MyNavyHR](https://www.mynavyhr.navy.mil) for it. Your FMS calculator, "
+            "study tools and score history all work in the meantime."
         )
         deadlines = []
     else:
@@ -3144,6 +3244,8 @@ def render_questions_markdown(questions: list) -> str:
         out.append(f"**Answer: {q['correct_answer']}**")
         if q.get("explanation"):
             out.append(q["explanation"])
+        if exam_quote_text(q):
+            out.append(f"> 📜 {exam_quote_text(q)}")
         line = exam_source_line(q)
         if line:
             out.append(f"_{line}_")
@@ -3211,6 +3313,24 @@ def exam_source_line(q: dict) -> str:
     if str(q.get("grounded", "")).strip().lower() in ("yes", "true", "1"):
         return f"📗 Quoted from {ref} — the wording was matched against the real manual text."
     return f"🔎 Unverified lead: {ref} — confirm in your bib before you trust it."
+
+
+def exam_quote_text(q: dict) -> str:
+    """The exact manual text behind the answer, if this question carries some.
+
+    Bank questions already put the quote in their explanation, so it isn't repeated
+    for them. A quote-checked AI question only showed the article number until
+    22 Oct 2026; its quote -- matched word for word against the manual -- now shows
+    too. A question with no quote, or one that never passed a check, shows nothing.
+    """
+    quote = str(q.get("source_quote") or "").strip()
+    if not quote:
+        return ""
+    checked = any(str(q.get(k, "")).strip().lower() in ("yes", "true", "1")
+                  for k in ("verified", "grounded"))
+    if not checked or quote in str(q.get("explanation") or ""):
+        return ""
+    return f'Manual text: "{quote}"'
 
 
 def exam_all_verified(questions: list) -> bool:
@@ -3614,8 +3734,8 @@ def render_placement_section():
     with st.expander("📍 Placement Test — find out where you stand (free)",
                      expanded=active or bool(result) or not taken_any):
         if rating != "PS":
-            st.info("The placement test is PS-only for now — it only uses questions from "
-                    "the verified bank, and that bank is PS so far.")
+            st.info(f"**The {rating} placement test is coming soon.** It only uses "
+                    "questions from the verified bank, and that bank is PS-only so far.")
             return
 
         st.caption(f"{placement.PLACEMENT_SIZE} questions across your rating's topics, all "
@@ -3700,6 +3820,7 @@ def render_placement_section():
 
 # ── TAB 3: AI STUDY GUIDE ─────────────────────────────────────────────────────
 with tab3:
+    trial_nudge("study")
     st.subheader("📖 AI Study Guide")
     st.caption("Powered by a stern, coffee-drinking PS Chief who has no time for excuses.")
 
@@ -3757,7 +3878,21 @@ with tab3:
                 list(sg_topics.keys()), key="sg_topic")
             sg_submit = st.form_submit_button("Generate My Study Guide", width="stretch")
 
-        if sg_submit:
+        # Practice Questions follows the same launch rule as the Mock Exam (item 6,
+        # 22 Oct 2026): verified bank, or quote-checked against loaded manual text,
+        # or "coming soon" -- never questions written from memory.
+        _sgq_block = ""
+        if sg_submit and sg_type == "Practice Questions":
+            if not readiness.practice_open(sg_rating, sg_paygrade):
+                _sgq_block = readiness.coming_soon_text(sg_rating, sg_paygrade)
+            elif (question_bank.bank_count(sg_rating, sg_paygrade, sg_topic) < 8
+                  and not corpus.get_series_grounding(
+                      (sg_topics.get(sg_topic) or {}).get("bib", ""))[0]):
+                _sgq_block = readiness.topic_coming_soon_text(sg_topic)
+        if _sgq_block:
+            st.info(_sgq_block)
+
+        if sg_submit and not _sgq_block:
             if True:
                 if sg_gap > 10:
                     strategy = "broad coverage — this sailor needs significant improvement across all areas"
@@ -4053,6 +4188,7 @@ Write exactly {sgq_ask} NWAE-style multiple choice questions for:
 
 # ── TAB 4: AI TUTOR ───────────────────────────────────────────────────────────
 with tab4:
+    trial_nudge("tutor")
     st.subheader("🎓 Interactive AI Tutor")
     st.caption("Pick a topic. The Chief will teach it. Ask questions. Get answers. Pass your exam.")
 
@@ -4436,6 +4572,7 @@ def score_bars(entries, show_topic=True):
 
 # ── TAB 5: MOCK EXAM ──────────────────────────────────────────────────────────
 with tab5:
+    trial_nudge("exam")
     st.subheader("🎯 Full Mock Exam")
     st.caption("Exam-style questions, graded by the Chief. Real explanations. Chief doesn't grade on a curve.")
 
@@ -4449,418 +4586,440 @@ with tab5:
         with colA:
             pq_rating = rating_select("Your Rating", key="pq_rating")
         with colB:
+            # Opens on the sailor's own paygrade if the FMS tab knows it, else on the
+            # first paygrade with practice questions live (PS E6 today), so the tab
+            # doesn't open on a "coming soon" by default.
+            _pq_default = sailor_paygrade() or next(
+                (pg for pg in readiness.open_paygrades(pq_rating) if pg in PAYGRADES), "E5")
             pq_paygrade = st.selectbox("Your Paygrade", PAYGRADES,
-                                       index=PAYGRADES.index("E5"), key="pq_paygrade")
+                                       index=PAYGRADES.index(_pq_default), key="pq_paygrade")
 
-        with st.spinner(f"Loading {pq_rating} {pq_paygrade} topics..."):
-            pq_topics = get_rate_topics(pq_rating, pq_paygrade)
+        # 22 Oct 2026 (marketing review item 6): practice questions only where the
+        # verified bank can honestly carry them -- see readiness.py. Elsewhere the
+        # sailor is told "coming soon" instead of being handed thin or memory-written
+        # questions.
+        pq_open = readiness.practice_open(pq_rating, pq_paygrade)
+        if not pq_open:
+            st.info(readiness.coming_soon_text(pq_rating, pq_paygrade))
+        else:
+            with st.spinner(f"Loading {pq_rating} {pq_paygrade} topics..."):
+                pq_topics = get_rate_topics(pq_rating, pq_paygrade)
 
-        if not is_curated(pq_rating, pq_paygrade):
-            st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
-                       "Verify against your official bib before test day.")
+            if not is_curated(pq_rating, pq_paygrade):
+                st.caption("Topics for this rate are AI-generated from the NWAE bibliography. "
+                           "Verify against your official bib before test day.")
 
-        with st.form("practice_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                pq_topic = st.selectbox("Topic", list(pq_topics.keys()), key="pq_topic")
-            with col2:
-                pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
-            pq_submit = st.form_submit_button("Generate Mock Exam", width="stretch")
+            with st.form("practice_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    pq_topic = st.selectbox("Topic", list(pq_topics.keys()), key="pq_topic")
+                with col2:
+                    pq_num = st.selectbox("Number of Questions", [3, 5, 10], key="pq_num")
+                pq_submit = st.form_submit_button("Generate Mock Exam", width="stretch")
 
-        if pq_submit:
-            if pq_topic not in pq_topics:
-                pq_topic = list(pq_topics.keys())[0]
-            bib_refs = pq_topics[pq_topic]["bib"]
+            if pq_submit:
+                if pq_topic not in pq_topics:
+                    pq_topic = list(pq_topics.keys())[0]
+                bib_refs = pq_topics[pq_topic]["bib"]
 
-            # Verified bank first. Only PS has one right now, and only for the topics
-            # it actually covers -- get_bank_questions() returns [] the moment it can't
-            # fill the whole request, which sends this straight to the else branch below
-            # and the app behaves exactly as it did before this existed.
-            bank_rows = (question_bank.get_bank_questions(pq_rating, pq_paygrade, pq_topic, pq_num)
-                         if pq_rating == "PS" else [])
+                # Verified bank first. Only PS has one right now, and only for the topics
+                # it actually covers -- get_bank_questions() returns [] the moment it can't
+                # fill the whole request, which sends this straight to the else branch below
+                # and the app behaves exactly as it did before this existed.
+                bank_rows = (question_bank.get_bank_questions(pq_rating, pq_paygrade, pq_topic, pq_num)
+                             if pq_rating == "PS" else [])
 
-            if bank_rows:
-                st.session_state.exam_questions = bank_rows
-                st.session_state.exam_topic = pq_topic
-                st.session_state.exam_rating = pq_rating
-                for stale in ("exam_result", "exam_blank_warning", "practice_questions",
-                              "exam_short_by"):
-                    st.session_state.pop(stale, None)
-                for i in range(50):
-                    st.session_state.pop(f"exam_pick_{i}", None)
-                # Every question already came from the verified bank -- nothing was
-                # asked for that wasn't delivered.
-                st.session_state.exam_short_by = 0
-            else:
-                # Same retrieval the Tutor uses: every current MILPERSMAN article in the
-                # hundred-series this topic's own bibliography line already names. A topic
-                # governed by a manual not in the corpus yet (JTR, most of the FMR) comes
-                # back empty and falls through to the memory-written exam, unchanged.
-                exam_source_block, exam_articles = corpus.get_series_grounding(bib_refs)
-                exam_grounded = bool(exam_source_block)
-                # Ask for a couple of spares when grounded, because a question whose quote
-                # cannot be found gets dropped and a sailor who asked for 5 should still
-                # get 5. Trimmed back to pq_num after verification.
-                pq_ask = pq_num + 2 if exam_grounded else pq_num
-
-                pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
-{cycle_authority_line()}
-
-{cycle_facts_block()}
-
-Write exactly {pq_ask} NWAE-style multiple choice questions for:
-- Topic: {pq_topic}
-- Rating / Paygrade: {pq_rating} advancing to {pq_paygrade}
-- Governing References: {bib_refs}
-
-{EXAM_JSON_RULES}"""
-
-                if exam_grounded:
-                    pq_prompt += grounded_question_rules(exam_source_block, pq_ask)
+                if bank_rows:
+                    st.session_state.exam_questions = bank_rows
+                    st.session_state.exam_topic = pq_topic
+                    st.session_state.exam_rating = pq_rating
+                    for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                                  "exam_short_by"):
+                        st.session_state.pop(stale, None)
+                    for i in range(50):
+                        st.session_state.pop(f"exam_pick_{i}", None)
+                    # Every question already came from the verified bank -- nothing was
+                    # asked for that wasn't delivered.
+                    st.session_state.exam_short_by = 0
                 else:
-                    pq_prompt += """
+                    # Same retrieval the Tutor uses: every current MILPERSMAN article in the
+                    # hundred-series this topic's own bibliography line already names. A topic
+                    # governed by a manual not in the corpus yet (JTR, most of the FMR) comes
+                    # back empty and falls through to the memory-written exam, unchanged.
+                    exam_source_block, exam_articles = corpus.get_series_grounding(bib_refs)
+                    exam_grounded = bool(exam_source_block)
+                    # No verified bank set and no manual text to write from: say "coming soon"
+                    # for this topic rather than write questions from memory (item 6, 22 Oct 2026).
+                    if not exam_grounded:
+                        st.info(readiness.topic_coming_soon_text(pq_topic))
+                    else:
+                        # Ask for a couple of spares when grounded, because a question whose quote
+                        # cannot be found gets dropped and a sailor who asked for 5 should still
+                        # get 5. Trimmed back to pq_num after verification.
+                        pq_ask = pq_num + 2 if exam_grounded else pq_num
 
-=== ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+                        pq_prompt = f"""You are a senior {pq_rating} Chief Petty Officer writing a Navy {pq_rating} {pq_paygrade} advancement exam practice set.
+        {cycle_authority_line()}
 
-You do not have the manuals in front of you for this topic. You are writing from memory,
-and a sailor will carry what you say into a closed-book exam. Measured 20 August 2026:
-of 30 questions written this way, only 5 were safe to hand a sailor, and not one
-citation could be traced to a real article. The bad ones read exactly like the good ones.
+        {cycle_facts_block()}
 
-So write questions on the SHAPE of the rule — what the process is, who is involved, how
-it flows, what the exam is really testing — rather than on a specific number you cannot
-check. Where a question cannot work without a value, name the manual and omit the
-article number rather than inventing one."""
+        Write exactly {pq_ask} NWAE-style multiple choice questions for:
+        - Topic: {pq_topic}
+        - Rating / Paygrade: {pq_rating} advancing to {pq_paygrade}
+        - Governing References: {bib_refs}
 
-                with st.spinner("Chief is writing your exam..."):
-                    try:
-                        require_ai()
-                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                        message = client.messages.create(
-                            # A grounded set is two questions longer and every question
-                            # carries a quote, so 4000 truncates the JSON mid-array and the
-                            # whole exam parses to nothing.
-                            model="claude-opus-4-5",
-                            max_tokens=6000 if exam_grounded else 4000,
-                            messages=[{"role": "user", "content": pq_prompt}]
-                        )
-                        parsed = parse_exam_json(message.content[0].text)
-                        # Saved before the gate, so even the ones it throws out are kept
-                        # (as unverified) -- see save_generated_questions().
-                        save_generated_questions(
-                            parsed, origin="mock_exam", rating=pq_rating,
-                            paygrade=pq_paygrade, topic=pq_topic,
-                            source_block=exam_source_block if exam_grounded else "")
-                        dropped = 0
-                        if parsed and exam_grounded:
-                            # The gate. Anything whose quote isn't really in the retrieved
-                            # text is discarded here, before a sailor can ever see it.
-                            parsed, dropped = ground_exam_questions(parsed, exam_source_block)
-                            parsed = parsed[:pq_num]
-                        if not parsed:
-                            if exam_grounded and dropped:
-                                st.error(
-                                    "Chief wrote questions the app couldn't trace back to the "
-                                    "manual text, so none of them were shown. That's the check "
-                                    "doing its job. Hit Generate Mock Exam again."
-                                )
-                            else:
-                                st.error("Chief's exam came back in a format the app couldn't read. "
-                                         "Hit Generate Mock Exam again.")
+        {EXAM_JSON_RULES}"""
+
+                        if exam_grounded:
+                            pq_prompt += grounded_question_rules(exam_source_block, pq_ask)
                         else:
-                            spend("ai")
-                            st.session_state.exam_questions = parsed
-                            st.session_state.exam_topic = pq_topic
-                            st.session_state.exam_rating = pq_rating
-                            # Clear anything left over from a previous sitting, including the
-                            # old free-text format, so a new exam never opens pre-graded.
-                            for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                            pq_prompt += """
+
+        === ACCURACY RULES — THESE OVERRIDE EVERYTHING ABOVE ===
+
+        You do not have the manuals in front of you for this topic. You are writing from memory,
+        and a sailor will carry what you say into a closed-book exam. Measured 20 August 2026:
+        of 30 questions written this way, only 5 were safe to hand a sailor, and not one
+        citation could be traced to a real article. The bad ones read exactly like the good ones.
+
+        So write questions on the SHAPE of the rule — what the process is, who is involved, how
+        it flows, what the exam is really testing — rather than on a specific number you cannot
+        check. Where a question cannot work without a value, name the manual and omit the
+        article number rather than inventing one."""
+
+                        with st.spinner("Chief is writing your exam..."):
+                            try:
+                                require_ai()
+                                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                                message = client.messages.create(
+                                    # A grounded set is two questions longer and every question
+                                    # carries a quote, so 4000 truncates the JSON mid-array and the
+                                    # whole exam parses to nothing.
+                                    model="claude-opus-4-5",
+                                    max_tokens=6000 if exam_grounded else 4000,
+                                    messages=[{"role": "user", "content": pq_prompt}]
+                                )
+                                parsed = parse_exam_json(message.content[0].text)
+                                # Saved before the gate, so even the ones it throws out are kept
+                                # (as unverified) -- see save_generated_questions().
+                                save_generated_questions(
+                                    parsed, origin="mock_exam", rating=pq_rating,
+                                    paygrade=pq_paygrade, topic=pq_topic,
+                                    source_block=exam_source_block if exam_grounded else "")
+                                dropped = 0
+                                if parsed and exam_grounded:
+                                    # The gate. Anything whose quote isn't really in the retrieved
+                                    # text is discarded here, before a sailor can ever see it.
+                                    parsed, dropped = ground_exam_questions(parsed, exam_source_block)
+                                    parsed = parsed[:pq_num]
+                                if not parsed:
+                                    if exam_grounded and dropped:
+                                        st.error(
+                                            "Chief wrote questions the app couldn't trace back to the "
+                                            "manual text, so none of them were shown. That's the check "
+                                            "doing its job. Hit Generate Mock Exam again."
+                                        )
+                                    else:
+                                        st.error("Chief's exam came back in a format the app couldn't read. "
+                                                 "Hit Generate Mock Exam again.")
+                                else:
+                                    spend("ai")
+                                    st.session_state.exam_questions = parsed
+                                    st.session_state.exam_topic = pq_topic
+                                    st.session_state.exam_rating = pq_rating
+                                    # Clear anything left over from a previous sitting, including the
+                                    # old free-text format, so a new exam never opens pre-graded.
+                                    for stale in ("exam_result", "exam_blank_warning", "practice_questions",
+                                                  "exam_short_by"):
+                                        st.session_state.pop(stale, None)
+                                    for i in range(50):
+                                        st.session_state.pop(f"exam_pick_{i}", None)
+                                    # Set AFTER the clear-out above, or this exam's own count is the
+                                    # thing that gets wiped.
+                                    st.session_state.exam_short_by = max(0, pq_num - len(parsed))
+                            except LimitReached as e:
+                                st.warning(str(e))
+                            except Exception as e:
+                                st.error("Error: " + str(e))
+
+            exam_qs = st.session_state.get("exam_questions") or []
+            if exam_qs:
+                exam_topic = st.session_state.get("exam_topic", pq_topic)
+                exam_rating = st.session_state.get("exam_rating", pq_rating)
+                exam_result = st.session_state.get("exam_result")
+
+                def _grade_exam(picks):
+                    """Grade against the answer key we already hold.
+
+                    The grader used to be a second Claude call that re-read its own exam
+                    text and reported a score in prose, which then had to be regex'd back
+                    out. That round trip cost money, could disagree with itself, and once
+                    returned "Final Score: 0/0". The correct letter is right here.
+                    """
+                    rows, correct = [], 0
+                    for q, picked in zip(exam_qs, picks):
+                        is_right = bool(picked) and picked == q["correct_answer"]
+                        correct += 1 if is_right else 0
+                        rows.append({**q, "picked": picked, "is_right": is_right})
+
+                    total = len(exam_qs)
+                    pct = round((correct / total) * 100) if total else 0
+
+                    # The Chief's voice is the product, so this one call stays — but it is
+                    # only ever the closing remark. A failure here must not cost the sailor
+                    # a graded exam.
+                    feedback = ""
+                    missed = [r["question"] for r in rows if not r["is_right"]]
+                    # How much the Chief is allowed to lean on this answer key depends on
+                    # where the key came from. Three states, three different things to say.
+                    if exam_all_verified(exam_qs):
+                        key_caveat = ""
+                    elif exam_all_grounded(exam_qs):
+                        key_caveat = (
+                            "\n\nIMPORTANT: these questions were written from the real MILPERSMAN "
+                            "text and each one's quoted rule was matched back to that text, so the "
+                            "subject matter is sound — but no person has checked that the correct "
+                            "letter was keyed. Teach the rule behind anything they missed, and name "
+                            "the article shown under the question as where to confirm it. Do not "
+                            "tell them they do not know their job on the strength of an unchecked key."
+                        )
+                    else:
+                        key_caveat = (
+                            "\n\nIMPORTANT: these questions were AI-generated and have NOT been "
+                            "verified against the official manuals — the answer key itself may be "
+                            "wrong. Verification has caught cancelled article numbers and wrong "
+                            "references. So point the sailor at the governing manual to confirm "
+                            "what they missed. Do not tell them they do not know their job over a "
+                            "question you cannot vouch for. Stay direct, but aim them at the "
+                            "reference rather than judging them on this key."
+                        )
+                    try:
+                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                        fb_prompt = (
+                            f"You are a {exam_rating} Chief giving a sailor one short, direct "
+                            f"closing remark on their practice exam.\n"
+                            f"Topic: {exam_topic}\nScore: {correct} out of {total} ({pct}%).\n"
+                            + ("Questions missed:\n- " + "\n- ".join(missed) if missed
+                               else "They answered every question correctly.")
+                            + "\n\nTwo to four sentences. Be honest and specific about what to "
+                              "study next. No fluff, no praise they did not earn."
+                            + key_caveat
+                        )
+                        fb = client.messages.create(
+                            model="claude-opus-4-5", max_tokens=400,
+                            messages=[{"role": "user", "content": fb_prompt}]
+                        )
+                        feedback = fb.content[0].text.strip()
+                    except Exception:
+                        feedback = ""
+
+                    entry = {
+                        "date": datetime.date.today().strftime("%b %d"),
+                        "topic": exam_topic, "score": correct, "total": total,
+                        "pct": pct,
+                    }
+                    st.session_state.score_history.append(entry)
+                    save_error = ""
+                    if st.session_state.user:
+                        # Never crash the page over history, but never pretend it saved
+                        # either. Swallowing this meant a sailor watched their score appear,
+                        # then found it gone at next login with no explanation.
+                        try:
+                            supabase.table("score_history").insert(
+                                {"user_id": st.session_state.user.id, **entry}
+                            ).execute()
+                        except Exception as e:
+                            save_error = f"{type(e).__name__}: {e}"
+
+                    st.session_state.exam_result = {
+                        "rows": rows, "score": correct, "total": total, "pct": pct,
+                        "topic": exam_topic, "feedback": feedback, "save_error": save_error,
+                    }
+                    st.session_state.pop("exam_blank_warning", None)
+
+                # ── ANSWERING ────────────────────────────────────────────────────
+                if not exam_result:
+                    st.divider()
+                    st.subheader("📝 Your Mock Exam")
+                    st.caption(f"{len(exam_qs)} questions · {exam_topic} · "
+                               "answers stay hidden until you submit.")
+                    # Three honest states, and they must not be allowed to blur into each
+                    # other: a person signed this off / the machine proved the wording is
+                    # real / neither. The middle one is new as of 25 Aug 2026.
+                    if exam_all_verified(exam_qs):
+                        pass
+                    elif exam_all_grounded(exam_qs):
+                        st.info(
+                            "**Written from the manual, and checked.** Every question here was "
+                            "written from the real text of the MILPERSMAN articles for this topic, "
+                            "and the app matched each one's quoted line back to that text before "
+                            "showing it to you — anything it couldn't match was thrown out. "
+                            "That means the rule under each question is really in the manual. "
+                            "It does not mean a Chief has signed off on the answer key, so if one "
+                            "looks wrong, check the article named under it."
+                        )
+                        short_by = st.session_state.get("exam_short_by") or 0
+                        if short_by:
+                            st.caption(
+                                f"{short_by} question{'s' if short_by > 1 else ''} didn't survive "
+                                "that check and were dropped, so this set is a little short."
+                            )
+                    else:
+                        st.warning(
+                            "**Unverified practice questions.** These are written by AI from the "
+                            "NWAE bibliography and have not been checked against the official "
+                            "manuals. Spot-checking has found wrong article numbers and cancelled "
+                            "references. Use them to practise the format — confirm anything you "
+                            "learn here against your bib before test day."
+                        )
+
+                    with st.form("exam_answer_form"):
+                        for i, q in enumerate(exam_qs):
+                            st.markdown(f"**Q{i + 1}. {q['question']}**")
+                            st.radio(
+                                f"Question {i + 1}",
+                                options=["A", "B", "C", "D"],
+                                index=None,  # nothing pre-selected, same as a blank answer sheet
+                                format_func=lambda L, q=q: f"{L})  {q['answer_' + L.lower()]}",
+                                key=f"exam_pick_{i}",
+                                label_visibility="collapsed",
+                            )
+                            st.write("")
+                        exam_submitted = st.form_submit_button("Submit Exam", width="stretch")
+
+                    current_picks = [st.session_state.get(f"exam_pick_{i}")
+                                     for i in range(len(exam_qs))]
+
+                    if exam_submitted:
+                        blanks = [i + 1 for i, p in enumerate(current_picks) if p is None]
+                        if blanks:
+                            st.session_state.exam_blank_warning = blanks
+                        else:
+                            with st.spinner("Chief is grading..."):
+                                _grade_exam(current_picks)
+                            st.rerun()
+
+                    blanks = st.session_state.get("exam_blank_warning")
+                    if blanks:
+                        st.warning(
+                            f"You haven't answered {'question' if len(blanks) == 1 else 'questions'} "
+                            f"{', '.join(str(b) for b in blanks)}. On the real NWAE a blank counts "
+                            "as wrong — go back and answer, or submit as-is."
+                        )
+                        if st.button("Submit anyway — blanks count as wrong", width="stretch"):
+                            with st.spinner("Chief is grading..."):
+                                _grade_exam(current_picks)
+                            st.rerun()
+
+                # ── REVIEW ───────────────────────────────────────────────────────
+                else:
+                    score = exam_result["score"]
+                    total = exam_result["total"]
+                    pct = exam_result["pct"]
+
+                    st.divider()
+                    st.subheader("📊 Your Grade")
+                    verdict = f"**{score} / {total} — {pct}%**"
+                    if pct >= 80:
+                        st.success(f"{verdict} · Solid. That's advancement-standard work.")
+                    elif pct >= 70:
+                        st.info(f"{verdict} · Passing, but there's room between you and the cut.")
+                    else:
+                        st.error(f"{verdict} · Below standard. This topic needs real study time.")
+
+                    if exam_all_verified(exam_result["rows"]):
+                        pass
+                    elif exam_all_grounded(exam_result["rows"]):
+                        st.info(
+                            "**The rules behind these questions are real; the answer key is still "
+                            "AI's.** Each question was written from the actual MILPERSMAN text and "
+                            "its quoted line was matched back to that text. Nobody has checked that "
+                            "the right letter was keyed. If you're confident an answer marked wrong "
+                            "was actually right, open the article named under it and settle it there."
+                        )
+                    else:
+                        st.warning(
+                            "**This score is practice, not truth.** These questions were "
+                            "AI-generated and have not been verified against the official manuals. "
+                            "If you're confident an answer marked wrong was actually right, back "
+                            "yourself and check the manual — the key may be the thing that's wrong."
+                        )
+
+                    for i, r in enumerate(exam_result["rows"]):
+                        st.markdown(f"**Q{i + 1}. {r['question']}**")
+                        picked = r["picked"]
+                        correct = r["correct_answer"]
+                        picked_text = r.get(f"answer_{picked.lower()}") if picked else None
+
+                        if r["is_right"]:
+                            st.markdown(f"✅ **Correct** — {picked}) {picked_text}")
+                        elif picked:
+                            st.markdown(f"❌ **Incorrect** — you chose {picked}) {picked_text}")
+                            st.markdown(f"**Correct answer: {correct}) "
+                                        f"{r['answer_' + correct.lower()]}**")
+                        else:
+                            st.markdown("❌ **No answer given**")
+                            st.markdown(f"**Correct answer: {correct}) "
+                                        f"{r['answer_' + correct.lower()]}**")
+
+                        if r.get("explanation"):
+                            st.markdown(r["explanation"])
+                        if exam_quote_text(r):
+                            st.markdown(f"> 📜 {exam_quote_text(r)}")
+                        src = exam_source_line(r)
+                        if src:
+                            st.caption(src)
+                        render_challenge_button(r, key_suffix=f"exam_{i}")
+                        st.divider()
+
+                    if exam_result.get("feedback"):
+                        st.markdown("### Chief's Feedback")
+                        st.markdown(exam_result["feedback"])
+
+                    if exam_result.get("save_error"):
+                        st.caption(
+                            "⚠️ Scored, but could not save to your account "
+                            "— this result will disappear when you log out. "
+                            "Download it below if you want to keep it."
+                        )
+                        # The reason stays visible, just not shouted at the sailor. A bare
+                        # `except Exception:` here is what hid error 42501 for weeks: the
+                        # RLS policy was rejecting the write because the Supabase client had
+                        # lost its session on rerun, and nothing anywhere recorded why.
+                        # Whatever breaks this next, it will say so.
+                        with st.expander("Technical detail"):
+                            st.code(exam_result["save_error"])
+
+                    download_lines = [f"{exam_topic} — {score}/{total} ({pct}%)", ""]
+                    for i, r in enumerate(exam_result["rows"]):
+                        download_lines.append(f"Q{i + 1}. {r['question']}")
+                        for L in ("a", "b", "c", "d"):
+                            download_lines.append(f"   {L.upper()}) {r['answer_' + L]}")
+                        download_lines.append(f"   Your answer: {r['picked'] or '(blank)'}")
+                        download_lines.append(f"   Correct answer: {r['correct_answer']}")
+                        if r.get("explanation"):
+                            download_lines.append(f"   {r['explanation']}")
+                        if exam_quote_text(r):
+                            download_lines.append(f"   {exam_quote_text(r)}")
+                        src = exam_source_line(r)
+                        if src:
+                            download_lines.append(f"   {src}")
+                        download_lines.append("")
+                    if exam_result.get("feedback"):
+                        download_lines += ["Chief's Feedback:", exam_result["feedback"]]
+
+                    col_dl, col_again = st.columns(2)
+                    with col_dl:
+                        counted_download("📥 Download Results", "\n".join(download_lines),
+                                         "PracticeResults.txt", key="dl_practice_results")
+                    with col_again:
+                        if st.button("🔄 Take Another Exam", width="stretch"):
+                            for stale in ("exam_questions", "exam_result", "exam_blank_warning",
                                           "exam_short_by"):
                                 st.session_state.pop(stale, None)
                             for i in range(50):
                                 st.session_state.pop(f"exam_pick_{i}", None)
-                            # Set AFTER the clear-out above, or this exam's own count is the
-                            # thing that gets wiped.
-                            st.session_state.exam_short_by = max(0, pq_num - len(parsed))
-                    except LimitReached as e:
-                        st.warning(str(e))
-                    except Exception as e:
-                        st.error("Error: " + str(e))
-
-        exam_qs = st.session_state.get("exam_questions") or []
-        if exam_qs:
-            exam_topic = st.session_state.get("exam_topic", pq_topic)
-            exam_rating = st.session_state.get("exam_rating", pq_rating)
-            exam_result = st.session_state.get("exam_result")
-
-            def _grade_exam(picks):
-                """Grade against the answer key we already hold.
-
-                The grader used to be a second Claude call that re-read its own exam
-                text and reported a score in prose, which then had to be regex'd back
-                out. That round trip cost money, could disagree with itself, and once
-                returned "Final Score: 0/0". The correct letter is right here.
-                """
-                rows, correct = [], 0
-                for q, picked in zip(exam_qs, picks):
-                    is_right = bool(picked) and picked == q["correct_answer"]
-                    correct += 1 if is_right else 0
-                    rows.append({**q, "picked": picked, "is_right": is_right})
-
-                total = len(exam_qs)
-                pct = round((correct / total) * 100) if total else 0
-
-                # The Chief's voice is the product, so this one call stays — but it is
-                # only ever the closing remark. A failure here must not cost the sailor
-                # a graded exam.
-                feedback = ""
-                missed = [r["question"] for r in rows if not r["is_right"]]
-                # How much the Chief is allowed to lean on this answer key depends on
-                # where the key came from. Three states, three different things to say.
-                if exam_all_verified(exam_qs):
-                    key_caveat = ""
-                elif exam_all_grounded(exam_qs):
-                    key_caveat = (
-                        "\n\nIMPORTANT: these questions were written from the real MILPERSMAN "
-                        "text and each one's quoted rule was matched back to that text, so the "
-                        "subject matter is sound — but no person has checked that the correct "
-                        "letter was keyed. Teach the rule behind anything they missed, and name "
-                        "the article shown under the question as where to confirm it. Do not "
-                        "tell them they do not know their job on the strength of an unchecked key."
-                    )
-                else:
-                    key_caveat = (
-                        "\n\nIMPORTANT: these questions were AI-generated and have NOT been "
-                        "verified against the official manuals — the answer key itself may be "
-                        "wrong. Verification has caught cancelled article numbers and wrong "
-                        "references. So point the sailor at the governing manual to confirm "
-                        "what they missed. Do not tell them they do not know their job over a "
-                        "question you cannot vouch for. Stay direct, but aim them at the "
-                        "reference rather than judging them on this key."
-                    )
-                try:
-                    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                    fb_prompt = (
-                        f"You are a {exam_rating} Chief giving a sailor one short, direct "
-                        f"closing remark on their practice exam.\n"
-                        f"Topic: {exam_topic}\nScore: {correct} out of {total} ({pct}%).\n"
-                        + ("Questions missed:\n- " + "\n- ".join(missed) if missed
-                           else "They answered every question correctly.")
-                        + "\n\nTwo to four sentences. Be honest and specific about what to "
-                          "study next. No fluff, no praise they did not earn."
-                        + key_caveat
-                    )
-                    fb = client.messages.create(
-                        model="claude-opus-4-5", max_tokens=400,
-                        messages=[{"role": "user", "content": fb_prompt}]
-                    )
-                    feedback = fb.content[0].text.strip()
-                except Exception:
-                    feedback = ""
-
-                entry = {
-                    "date": datetime.date.today().strftime("%b %d"),
-                    "topic": exam_topic, "score": correct, "total": total,
-                    "pct": pct,
-                }
-                st.session_state.score_history.append(entry)
-                save_error = ""
-                if st.session_state.user:
-                    # Never crash the page over history, but never pretend it saved
-                    # either. Swallowing this meant a sailor watched their score appear,
-                    # then found it gone at next login with no explanation.
-                    try:
-                        supabase.table("score_history").insert(
-                            {"user_id": st.session_state.user.id, **entry}
-                        ).execute()
-                    except Exception as e:
-                        save_error = f"{type(e).__name__}: {e}"
-
-                st.session_state.exam_result = {
-                    "rows": rows, "score": correct, "total": total, "pct": pct,
-                    "topic": exam_topic, "feedback": feedback, "save_error": save_error,
-                }
-                st.session_state.pop("exam_blank_warning", None)
-
-            # ── ANSWERING ────────────────────────────────────────────────────
-            if not exam_result:
-                st.divider()
-                st.subheader("📝 Your Mock Exam")
-                st.caption(f"{len(exam_qs)} questions · {exam_topic} · "
-                           "answers stay hidden until you submit.")
-                # Three honest states, and they must not be allowed to blur into each
-                # other: a person signed this off / the machine proved the wording is
-                # real / neither. The middle one is new as of 25 Aug 2026.
-                if exam_all_verified(exam_qs):
-                    pass
-                elif exam_all_grounded(exam_qs):
-                    st.info(
-                        "**Written from the manual, and checked.** Every question here was "
-                        "written from the real text of the MILPERSMAN articles for this topic, "
-                        "and the app matched each one's quoted line back to that text before "
-                        "showing it to you — anything it couldn't match was thrown out. "
-                        "That means the rule under each question is really in the manual. "
-                        "It does not mean a Chief has signed off on the answer key, so if one "
-                        "looks wrong, check the article named under it."
-                    )
-                    short_by = st.session_state.get("exam_short_by") or 0
-                    if short_by:
-                        st.caption(
-                            f"{short_by} question{'s' if short_by > 1 else ''} didn't survive "
-                            "that check and were dropped, so this set is a little short."
-                        )
-                else:
-                    st.warning(
-                        "**Unverified practice questions.** These are written by AI from the "
-                        "NWAE bibliography and have not been checked against the official "
-                        "manuals. Spot-checking has found wrong article numbers and cancelled "
-                        "references. Use them to practise the format — confirm anything you "
-                        "learn here against your bib before test day."
-                    )
-
-                with st.form("exam_answer_form"):
-                    for i, q in enumerate(exam_qs):
-                        st.markdown(f"**Q{i + 1}. {q['question']}**")
-                        st.radio(
-                            f"Question {i + 1}",
-                            options=["A", "B", "C", "D"],
-                            index=None,  # nothing pre-selected, same as a blank answer sheet
-                            format_func=lambda L, q=q: f"{L})  {q['answer_' + L.lower()]}",
-                            key=f"exam_pick_{i}",
-                            label_visibility="collapsed",
-                        )
-                        st.write("")
-                    exam_submitted = st.form_submit_button("Submit Exam", width="stretch")
-
-                current_picks = [st.session_state.get(f"exam_pick_{i}")
-                                 for i in range(len(exam_qs))]
-
-                if exam_submitted:
-                    blanks = [i + 1 for i, p in enumerate(current_picks) if p is None]
-                    if blanks:
-                        st.session_state.exam_blank_warning = blanks
-                    else:
-                        with st.spinner("Chief is grading..."):
-                            _grade_exam(current_picks)
-                        st.rerun()
-
-                blanks = st.session_state.get("exam_blank_warning")
-                if blanks:
-                    st.warning(
-                        f"You haven't answered {'question' if len(blanks) == 1 else 'questions'} "
-                        f"{', '.join(str(b) for b in blanks)}. On the real NWAE a blank counts "
-                        "as wrong — go back and answer, or submit as-is."
-                    )
-                    if st.button("Submit anyway — blanks count as wrong", width="stretch"):
-                        with st.spinner("Chief is grading..."):
-                            _grade_exam(current_picks)
-                        st.rerun()
-
-            # ── REVIEW ───────────────────────────────────────────────────────
-            else:
-                score = exam_result["score"]
-                total = exam_result["total"]
-                pct = exam_result["pct"]
-
-                st.divider()
-                st.subheader("📊 Your Grade")
-                verdict = f"**{score} / {total} — {pct}%**"
-                if pct >= 80:
-                    st.success(f"{verdict} · Solid. That's advancement-standard work.")
-                elif pct >= 70:
-                    st.info(f"{verdict} · Passing, but there's room between you and the cut.")
-                else:
-                    st.error(f"{verdict} · Below standard. This topic needs real study time.")
-
-                if exam_all_verified(exam_result["rows"]):
-                    pass
-                elif exam_all_grounded(exam_result["rows"]):
-                    st.info(
-                        "**The rules behind these questions are real; the answer key is still "
-                        "AI's.** Each question was written from the actual MILPERSMAN text and "
-                        "its quoted line was matched back to that text. Nobody has checked that "
-                        "the right letter was keyed. If you're confident an answer marked wrong "
-                        "was actually right, open the article named under it and settle it there."
-                    )
-                else:
-                    st.warning(
-                        "**This score is practice, not truth.** These questions were "
-                        "AI-generated and have not been verified against the official manuals. "
-                        "If you're confident an answer marked wrong was actually right, back "
-                        "yourself and check the manual — the key may be the thing that's wrong."
-                    )
-
-                for i, r in enumerate(exam_result["rows"]):
-                    st.markdown(f"**Q{i + 1}. {r['question']}**")
-                    picked = r["picked"]
-                    correct = r["correct_answer"]
-                    picked_text = r.get(f"answer_{picked.lower()}") if picked else None
-
-                    if r["is_right"]:
-                        st.markdown(f"✅ **Correct** — {picked}) {picked_text}")
-                    elif picked:
-                        st.markdown(f"❌ **Incorrect** — you chose {picked}) {picked_text}")
-                        st.markdown(f"**Correct answer: {correct}) "
-                                    f"{r['answer_' + correct.lower()]}**")
-                    else:
-                        st.markdown("❌ **No answer given**")
-                        st.markdown(f"**Correct answer: {correct}) "
-                                    f"{r['answer_' + correct.lower()]}**")
-
-                    if r.get("explanation"):
-                        st.markdown(r["explanation"])
-                    src = exam_source_line(r)
-                    if src:
-                        st.caption(src)
-                    render_challenge_button(r, key_suffix=f"exam_{i}")
-                    st.divider()
-
-                if exam_result.get("feedback"):
-                    st.markdown("### Chief's Feedback")
-                    st.markdown(exam_result["feedback"])
-
-                if exam_result.get("save_error"):
-                    st.caption(
-                        "⚠️ Scored, but could not save to your account "
-                        "— this result will disappear when you log out. "
-                        "Download it below if you want to keep it."
-                    )
-                    # The reason stays visible, just not shouted at the sailor. A bare
-                    # `except Exception:` here is what hid error 42501 for weeks: the
-                    # RLS policy was rejecting the write because the Supabase client had
-                    # lost its session on rerun, and nothing anywhere recorded why.
-                    # Whatever breaks this next, it will say so.
-                    with st.expander("Technical detail"):
-                        st.code(exam_result["save_error"])
-
-                download_lines = [f"{exam_topic} — {score}/{total} ({pct}%)", ""]
-                for i, r in enumerate(exam_result["rows"]):
-                    download_lines.append(f"Q{i + 1}. {r['question']}")
-                    for L in ("a", "b", "c", "d"):
-                        download_lines.append(f"   {L.upper()}) {r['answer_' + L]}")
-                    download_lines.append(f"   Your answer: {r['picked'] or '(blank)'}")
-                    download_lines.append(f"   Correct answer: {r['correct_answer']}")
-                    if r.get("explanation"):
-                        download_lines.append(f"   {r['explanation']}")
-                    src = exam_source_line(r)
-                    if src:
-                        download_lines.append(f"   {src}")
-                    download_lines.append("")
-                if exam_result.get("feedback"):
-                    download_lines += ["Chief's Feedback:", exam_result["feedback"]]
-
-                col_dl, col_again = st.columns(2)
-                with col_dl:
-                    counted_download("📥 Download Results", "\n".join(download_lines),
-                                     "PracticeResults.txt", key="dl_practice_results")
-                with col_again:
-                    if st.button("🔄 Take Another Exam", width="stretch"):
-                        for stale in ("exam_questions", "exam_result", "exam_blank_warning",
-                                      "exam_short_by"):
-                            st.session_state.pop(stale, None)
-                        for i in range(50):
-                            st.session_state.pop(f"exam_pick_{i}", None)
-                        st.rerun()
+                            st.rerun()
 
         if len(st.session_state.score_history) > 0:
             st.divider()
@@ -4873,6 +5032,7 @@ article number rather than inventing one."""
 
 # ── TAB 6: ADVANCEMENT PLANNER ────────────────────────────────────────────────
 with tab6:
+    trial_nudge("planner")
     st.subheader("📅 Smart Advancement Planner")
     st.caption("Your personalized day-by-day study roadmap based on your scores, weak areas, and time to exam.")
 
@@ -4889,12 +5049,26 @@ with tab6:
                 plan_fms = st.number_input("Your Current FMS",
                     min_value=0.0, max_value=max(r["fms_max"] for r in FMS_RULES.values()), value=0.0, step=0.1,
                     key="plan_fms")
-                plan_exam = st.selectbox("Your Exam Date",
-                    [f"{CYCLE['exam_e6']:%B} {CYCLE['exam_e6'].day}, "
-                     f"{CYCLE['exam_e6']:%Y} (E6)",
-                     f"{CYCLE['exam_e5']:%B} {CYCLE['exam_e5'].day}, "
-                     f"{CYCLE['exam_e5']:%Y} (E5)"],
-                    key="plan_exam")
+                if cycle_expired():
+                    # Between cycles there is no official date to offer. The sailor
+                    # plans to their own target date, labelled as theirs, rather than
+                    # being offered last cycle's past dates.
+                    plan_own_date = st.date_input(
+                        "Your target exam date (your estimate)", value=None,
+                        min_value=datetime.date.today(), key="plan_own_date",
+                        help=next_cycle_not_announced() + " Plan to your best estimate "
+                             "and update it when the NAVADMIN is out.")
+                    plan_exam = ""
+                else:
+                    plan_own_date = None
+                    plan_exam = st.selectbox("Your Exam Date",
+                        [f"{CYCLE['exam_e6']:%B} {CYCLE['exam_e6'].day}, "
+                         f"{CYCLE['exam_e6']:%Y} (E6)",
+                         f"{CYCLE['exam_e5']:%B} {CYCLE['exam_e5'].day}, "
+                         f"{CYCLE['exam_e5']:%Y} (E5)"],
+                        key="plan_exam")
+            if cycle_expired():
+                st.caption(f"📅 {next_cycle_not_announced()}")
             plan_weak = st.text_area(
                 "Weak topics (from your practice history or your own knowledge):",
                 placeholder="e.g. Military Awards, TIR calculations, MILPAY processing",
@@ -4903,12 +5077,20 @@ with tab6:
             plan_submit = st.form_submit_button(
                 "Build My Personalized Study Plan", width="stretch")
 
-        plan_date = CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"]
-        plan_valid = plan_date >= datetime.date.today() and plan_paygrade in plan_exam and plan_fms <= FMS_RULES[plan_paygrade]["fms_max"]
+        if cycle_expired():
+            plan_date = plan_own_date
+            if plan_own_date:
+                plan_exam = (f"{_fmt_date(plan_own_date)} (the sailor's own estimate — "
+                             f"{next_cycle_not_announced()})")
+            plan_valid = (plan_own_date is not None and plan_own_date >= datetime.date.today()
+                          and plan_fms <= FMS_RULES[plan_paygrade]["fms_max"])
+        else:
+            plan_date = CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"]
+            plan_valid = plan_date >= datetime.date.today() and plan_paygrade in plan_exam and plan_fms <= FMS_RULES[plan_paygrade]["fms_max"]
         if plan_submit and not plan_valid:
             st.error("Choose an exam date matching your target paygrade that has not passed, and an FMS within that paygrade's maximum. If the listed date has passed, current cycle dates need to be updated before building a plan.")
         if plan_submit and plan_valid:
-            exam_date = (CYCLE["exam_e6"] if "E6" in plan_exam else CYCLE["exam_e5"])
+            exam_date = plan_date
             days_left = (exam_date - datetime.date.today()).days
             days_left = max(days_left, 1)
 
@@ -5041,6 +5223,7 @@ Avoid presenting unverified policy or timelines as facts."""
 
 # ── TAB 7: MY PROFILE ─────────────────────────────────────────────────────────
 with tab7:
+    trial_nudge("profile")
     st.subheader("👤 My Profile")
 
     # ── Your plan: rating lock and this month's usage (account_locks.py) ──
@@ -5079,8 +5262,43 @@ with tab7:
         st.warning(st.session_state["_checkout_notice"])
     st.markdown("#### Subscription and billing")
     st.markdown(f"Billing, cancellation or content-error help: [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})")
-    st.caption("Manage payment details, invoices and cancellation in Stripe. Cancellation options depend on the subscription's billing terms.")
-    if st.button("Manage subscription / cancel", key="manage_subscription"):
+
+    # Who has ever paid? A paid tier says so; a free/trial sailor might still have a
+    # Stripe record from an old, cancelled subscription (invoices live there). Read
+    # once per login, not on every rerun.
+    if st.session_state.tier in ("petty_officer", "chief"):
+        _has_billing = True
+    else:
+        if "_billing_customer" not in st.session_state:
+            try:
+                _rows = supabase.table("profiles").select("stripe_customer_id").eq(
+                    "id", st.session_state.user.id).execute().data or []
+                st.session_state["_billing_customer"] = bool(
+                    len(_rows) == 1 and _rows[0].get("stripe_customer_id"))
+            except Exception:
+                st.session_state["_billing_customer"] = False
+        _has_billing = st.session_state["_billing_customer"]
+
+    if st.session_state.tier in ("trial", "free"):
+        # 22 Oct 2026: a trial sailor had no way to pay -- only "Manage subscription /
+        # cancel", which told someone who had never paid that no billing account was
+        # linked and to "contact support before subscribing again". Now: the plans,
+        # with their real prices, and an Upgrade button straight to Stripe.
+        st.markdown("##### ⬆️ Upgrade")
+        if st.session_state.tier == "trial":
+            st.caption("Upgrade now and your plan starts right away — no need to wait for "
+                       "the trial to end.")
+        _pcols = st.columns(2)
+        for _pcol, _ptier in zip(_pcols, ("petty_officer", "chief")):
+            _plabel, _pprice, _pfeatures = UPGRADE_INFO[_ptier]
+            with _pcol.container(border=True):
+                st.markdown(f"**{_plabel} — {site.money_md(_pprice)}**")
+                st.caption(plan_features(_ptier))
+                upgrade_controls(_ptier, "profile")
+
+    if _has_billing:
+        st.caption("Manage payment details, invoices and cancellation in Stripe. Cancellation options depend on the subscription's billing terms.")
+    if _has_billing and st.button("Manage subscription / cancel", key="manage_subscription"):
         try:
             profile_rows = supabase.table("profiles").select("stripe_customer_id").eq("id", st.session_state.user.id).execute().data or []
             customer_id = profile_rows[0].get("stripe_customer_id") if len(profile_rows) == 1 else None
@@ -5169,3 +5387,4 @@ with tab7:
 st.divider()
 st.caption("**Educational Use Disclaimer**  \n" + EDUCATIONAL_NOTICE)
 st.caption(f"Questions, cancellation or content-error reports: {SUPPORT_EMAIL}")
+render_footer()

@@ -248,3 +248,34 @@ Handoff written for the next session
 
 No step skipped. Work flows up through the chain before it reaches Shawn, and nothing
 reaches the live site before it has run on his Mac.
+
+---
+
+## Launch-day changes, 22 Oct 2026 — one-time setup after merging
+
+1. **Run `supabase/migrations/20261022_heard_from.sql`** in the Supabase SQL editor (one
+   script, additions only, safe to run twice). Until it runs, the signup question still
+   works — the answer is kept on the login — it just isn't on the profile row yet. The
+   script copies those answers over when it does run.
+2. **Change the "Confirm signup" email template** (Supabase → Authentication → Emails →
+   Confirm signup). Replace the link `{{ .ConfirmationURL }}` with:
+   `{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=email`
+   Do this only AFTER the app update is live. With it, the confirmation link logs the
+   sailor straight in and never puts login tokens in the address bar. Old links still in
+   inboxes are handled too: the page wipes `#access_token=...` from the address bar.
+3. **Check Supabase → Authentication → URL Configuration → Site URL** is the app's real
+   address (today `https://score-surge.streamlit.app`).
+
+## When the spring 2027 NAVADMIN is published
+
+Edit the `CYCLE = {` block near the top of `app.py` and nothing else: cycle number,
+NAVADMIN number, every date, and set `next_label` to the cycle after (e.g. "Fall 2027").
+Until then every screen says "Spring 2027 exam dates not yet announced."
+
+## Public pages
+
+- Terms: `/?page=terms` · Privacy: `/?page=privacy` · Refunds: `/?page=refunds`.
+  Text lives in `public_site.py`. Counsel has not reviewed it yet.
+- Which ratings/paygrades get practice questions is decided by `readiness.py` (same bar
+  as the placement test). `python3 readiness.py` prints the table.
+
