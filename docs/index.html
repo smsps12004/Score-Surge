@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Score Surge — Navy advancement exam prep</title>
+<meta name="description" content="Navy advancement exam prep for Personnel Specialists. Every practice question shows the exact manual text behind the answer. Free FMS calculator and placement test. Built by a retired Personnel Specialist with 20 years of service.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Score Surge landing page. Built from the 7 Sep 2026 design; facts brought up to date
+     22 Oct 2026 (PS live, YN/NC coming soon, retired PS, quotes re-checked against
+     corpus.db and the verified bank). Every app link goes to the live app; "start"
+     buttons add ?signup=1 so the app opens on Create Account. -->
+<style>
+    :root{
+      --navy-deep:#0a1730;
+      --navy:#142b50;
+      --navy-mid:#1d3a66;
+      --navy-light:#2a4b7c;
+      --brass:#c9a96e;
+      --brass-bright:#e0c896;
+      --brass-dim:#9c8258;
+      --cream:#f0e6d2;
+      --cream-dim:#c9c0ab;
+    }
+    *{box-sizing:border-box;}
+    html{scroll-behavior:smooth;}
+    body{margin:0;background:var(--navy-deep);font-family:'Manrope',system-ui,sans-serif;color:var(--cream);}
+    h1,h2,h3{font-family:'Newsreader',Georgia,serif;font-weight:500;margin:0;}
+    p{margin:0;}
+    a{color:var(--brass-bright);text-decoration:none;}
+    a:hover{color:var(--cream);}
+    button{font-family:inherit;cursor:pointer;border:none;}
+    #how,#ratings,#pricing{scroll-margin-top:90px;}
+    .wrap{max-width:1180px;margin:0 auto;padding:0 48px;}
+    .eyebrow{
+      display:inline-flex;align-items:center;gap:8px;
+      font-size:12.5px;letter-spacing:0.14em;text-transform:uppercase;
+      color:var(--brass);font-weight:700;
+    }
+    .btn-primary{
+      background:linear-gradient(180deg,var(--brass-bright),var(--brass));
+      color:var(--navy-deep);font-weight:700;font-size:15.5px;
+      padding:15px 30px;border-radius:8px;
+      box-shadow:0 1px 0 rgba(255,255,255,0.4) inset, 0 10px 24px -8px rgba(201,169,110,0.55);
+      transition:transform .15s ease, box-shadow .15s ease;
+    }
+    .btn-primary:hover{transform:translateY(-1px);box-shadow:0 1px 0 rgba(255,255,255,0.5) inset, 0 14px 30px -8px rgba(201,169,110,0.7);}
+    .btn-primary:active{transform:translateY(0);box-shadow:0 1px 0 rgba(255,255,255,0.4) inset, 0 4px 12px -6px rgba(201,169,110,0.6);}
+    .btn-ghost{
+      background:transparent;color:var(--cream);font-weight:600;font-size:14.5px;
+      padding:13px 22px;border-radius:8px;border:1px solid rgba(240,230,210,0.22);
+      transition:border-color .15s ease, background .15s ease;
+      display:inline-block;
+    }
+    .btn-ghost:hover{border-color:rgba(240,230,210,0.5);background:rgba(240,230,210,0.05);}
+    .btn-ghost:active{background:rgba(240,230,210,0.1);}
+    .hamburger-btn{
+      display:none;background:transparent;border:none;padding:8px;
+      align-items:center;justify-content:center;
+    }
+    .mobile-menu{
+      position:fixed;top:76px;left:0;right:0;z-index:39;
+      background:rgba(10,23,48,0.98);backdrop-filter:blur(10px);
+      border-bottom:1px solid rgba(201,169,110,0.25);
+      display:flex;flex-direction:column;padding:8px 24px 20px;
+      box-shadow:0 20px 40px -20px rgba(0,0,0,0.7);
+    }
+    .mobile-menu a{padding:14px 0;font-size:16px;font-weight:600;color:var(--cream);border-bottom:1px solid rgba(240,230,210,0.08);}
+    .toast{
+      position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(0);
+      background:var(--navy-mid);border:1px solid var(--brass);border-radius:12px;
+      padding:14px 18px;box-shadow:0 20px 50px -14px rgba(0,0,0,0.7);
+      display:flex;align-items:center;gap:14px;z-index:60;max-width:90vw;
+    }
+    .toast p{font-size:13.5px;color:var(--cream);}
+    .toast button{background:transparent;color:var(--brass-bright);font-weight:700;font-size:13px;padding:4px 8px;flex-shrink:0;}
+    .citation-card{
+      background:linear-gradient(160deg,var(--navy-light),var(--navy-mid));
+      border:1px solid rgba(201,169,110,0.35);
+      border-radius:14px;padding:20px 22px;
+      box-shadow:0 30px 60px -20px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.06);
+      backface-visibility:hidden;
+    }
+    .citation-tag{
+      font-family:'Manrope',sans-serif;font-size:11px;font-weight:800;letter-spacing:0.06em;
+      color:var(--navy-deep);background:var(--brass);display:inline-block;
+      padding:3px 8px;border-radius:5px;margin-bottom:10px;
+    }
+    .feature-panel{
+      background:linear-gradient(165deg,rgba(42,75,124,0.55),rgba(20,43,80,0.75));
+      border:1px solid rgba(201,169,110,0.22);
+      border-radius:18px;padding:34px 30px;
+      box-shadow:0 24px 48px -24px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05);
+      transition:transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+    }
+    .feature-panel:hover{
+      transform:perspective(900px) rotateX(2deg) translateY(-4px);
+      border-color:rgba(201,169,110,0.5);
+      box-shadow:0 30px 60px -20px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    .icon-badge{
+      width:52px;height:52px;border-radius:12px;
+      background:linear-gradient(160deg,var(--brass-bright),var(--brass-dim));
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 10px 20px -8px rgba(201,169,110,0.5), inset 0 1px 0 rgba(255,255,255,0.5);
+    }
+    .rate-tile{
+      background:var(--navy-mid);border:1px solid rgba(201,169,110,0.25);
+      border-radius:16px;padding:28px 24px;text-align:center;
+      box-shadow:0 20px 40px -20px rgba(0,0,0,0.6);
+    }
+    .price-card{
+      background:var(--navy-mid);border:1px solid rgba(201,169,110,0.22);
+      border-radius:18px;padding:32px 28px;
+      box-shadow:0 20px 44px -20px rgba(0,0,0,0.6);
+      transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+    }
+    .price-card.featured{
+      background:linear-gradient(165deg,var(--navy-light),var(--navy-mid));
+      border:1px solid var(--brass);
+      transform:scale(1.04);
+      box-shadow:0 30px 70px -20px rgba(0,0,0,0.75), 0 0 0 1px rgba(201,169,110,0.15);
+    }
+    .price-card:hover{transform:translateY(-4px) scale(1.04);}
+    .divider-line{height:1px;background:linear-gradient(90deg,transparent,rgba(201,169,110,0.35),transparent);}
+    ::selection{background:var(--brass);color:var(--navy-deep);}
+
+    @media (max-width: 900px){
+      .wrap{padding:0 24px;}
+      #hero-section .wrap{grid-template-columns:1fr !important;gap:48px !important;}
+      #hero-section h1{font-size:40px !important;}
+      .grid-3{grid-template-columns:1fr !important;}
+      .grid-2{grid-template-columns:1fr !important;}
+      .price-card.featured{transform:none !important;}
+      .nav-links{display:none !important;}
+      .hamburger-btn{display:flex !important;}
+    }
+    @media (max-width: 700px){
+      .hero-3d-stack{height:280px !important;}
+      .hero-3d-inner{width:260px !important;height:260px !important;}
+      .citation-card{width:220px !important;padding:15px 16px !important;}
+      .citation-card p{font-size:12px !important;}
+    }
+    @media (max-width: 560px){
+      #hero-section h1{font-size:32px !important;}
+      h2{font-size:26px !important;}
+    }
+  
+    .mobile-menu[hidden]{display:none !important;}
+    .price-card a{display:block;}
+    .btn-primary{display:inline-block;}
+    .hero-3d-inner{transition:transform .12s ease-out;}
+    @keyframes ss-float{0%,100%{transform:rotateX(4deg) rotateY(-8deg)}50%{transform:rotateX(-3deg) rotateY(8deg)}}
+    @media (hover:none){.hero-3d-inner{animation:ss-float 9s ease-in-out infinite;}}
+    @media (prefers-reduced-motion:reduce){.hero-3d-inner{animation:none !important;transition:none !important;}}
+</style>
+</head>
+<body>
+<div style="width:100%;background:var(--navy-deep);overflow:hidden;">
+
+  <!-- ============ NAV ============ -->
+  <div style="position:sticky;top:0;z-index:40;background:rgba(10,23,48,0.85);backdrop-filter:blur(10px);border-bottom:1px solid rgba(201,169,110,0.18);">
+    <div class="wrap" style="display:flex;align-items:center;justify-content:space-between;height:76px;">
+      <div style="display:flex;align-items:center;gap:11px;">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#c9a96e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="6" r="2.4"></circle>
+          <line x1="12" y1="8.4" x2="12" y2="19"></line>
+          <path d="M5 12c0 3.6 3 6 7 7"></path>
+          <path d="M19 12c0 3.6-3 6-7 7"></path>
+          <line x1="8" y1="12" x2="16" y2="12"></line>
+        </svg>
+        <span style="font-family:'Newsreader',serif;font-size:20px;font-weight:600;letter-spacing:0.01em;">Score Surge</span>
+      </div>
+      <div class="nav-links" style="display:flex;align-items:center;gap:36px;">
+        <a href="#" data-go="how" style="font-size:14.5px;font-weight:600;color:var(--cream-dim);">How it works</a>
+        <a href="#" data-go="ratings" style="font-size:14.5px;font-weight:600;color:var(--cream-dim);">Ratings</a>
+        <a href="#" data-go="pricing" style="font-size:14.5px;font-weight:600;color:var(--cream-dim);">Pricing</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;">
+        <a href="https://score-surge.streamlit.app/" class="nav-links" style="font-size:14.5px;font-weight:600;">Sign in</a>
+        <a href="https://score-surge.streamlit.app/?signup=1" class="btn-primary nav-links" style="padding:10px 20px;font-size:14px;">Start Free</a>
+        <button class="hamburger-btn" id="menu-btn" aria-expanded="false" aria-label="Menu">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f0e6d2" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+    <div class="mobile-menu" id="mobile-menu" hidden>
+        <a href="#" data-go="how">How it works</a>
+        <a href="#" data-go="ratings">Ratings</a>
+        <a href="#" data-go="pricing">Pricing</a>
+        <a href="https://score-surge.streamlit.app/">Sign in</a>
+        <a href="https://score-surge.streamlit.app/?signup=1" class="btn-primary" style="text-align:center;margin-top:16px !important;padding:15px 30px !important;border:none !important;">Start Free</a>
+    </div>
+  </div>
+
+  <!-- ============ HERO ============ -->
+  <div id="hero-section" style="position:relative;padding:96px 0 120px;">
+    <div style="position:absolute;top:-120px;right:-160px;width:640px;height:640px;border-radius:50%;background:radial-gradient(circle,rgba(201,169,110,0.16),transparent 70%);pointer-events:none;"></div>
+    <div class="wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center;position:relative;">
+
+      <div style="display:flex;flex-direction:column;gap:26px;">
+        <div class="eyebrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c9a96e" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path></svg>
+          Navy Advancement Exam Prep · PS now, YN &amp; NC coming soon
+        </div>
+        <h1 style="font-size:52px;line-height:1.08;letter-spacing:-0.01em;color:var(--cream);">
+          Study from the<br>actual manual —<br><span style="color:var(--brass-bright);font-style:italic;">not a guess.</span>
+        </h1>
+        <p style="font-size:17.5px;line-height:1.6;color:var(--cream-dim);max-width:460px;">
+          Every practice question in Score Surge shows the exact manual text behind
+          its answer, from the real MILPERSMAN, BUPERSINST and DoD pay regulations, so
+          you can see for yourself where it came from. Built by a retired Personnel
+          Specialist with 20 years of service.
+        </p>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:6px;flex-wrap:wrap;">
+          <a href="https://score-surge.streamlit.app/?signup=1" class="btn-primary">Calculate My FMS Score — Free</a>
+          <a href="#" data-go="how" class="btn-ghost">See how it works</a>
+        </div>
+        <p style="font-size:13px;color:var(--cream-dim);opacity:0.75;">Free account · No card required · Works from your phone · 3-day full-access trial</p>
+      </div>
+
+      <div class="hero-3d-stack" style="position:relative;height:440px;display:flex;align-items:center;justify-content:center;perspective:1400px;">
+        <div class="hero-3d-inner" style="position:relative;width:340px;height:340px;transform-style:preserve-3d;transition:transform .12s ease-out;">
+
+          <div class="citation-card" style="position:absolute;width:280px;top:10px;left:-10px;transform:translateZ(20px) rotate(-9deg);">
+            <span class="citation-tag">MILPERSMAN 1050-010</span>
+            <p style="font-size:13.5px;line-height:1.5;color:var(--cream-dim);">"The account balance of ordinary earned or accrued leave must be reduced to 60 days at the end of the fiscal year (FY), except in the case of special accrual."</p>
+          </div>
+
+          <div class="citation-card" style="position:absolute;width:280px;top:70px;left:40px;transform:translateZ(60px) rotate(3deg);">
+            <span class="citation-tag">FMR VOL 7A, CH 26</span>
+            <p style="font-size:13.5px;line-height:1.5;color:var(--cream-dim);">"Housing allowances include Basic Allowance for Housing (BAH), Overseas Housing Allowance (OHA), and Family Separation Housing (FSH) Allowance."</p>
+          </div>
+
+          <div class="citation-card" style="position:absolute;width:280px;top:150px;left:-30px;transform:translateZ(100px) rotate(-4deg);box-shadow:0 40px 80px -20px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.08);">
+            <span class="citation-tag" style="background:var(--brass-bright);">BUPERSINST 1430.16H</span>
+            <p style="font-size:13.5px;line-height:1.5;color:var(--cream);">"Maximum award points authorized are 10 points for E-5 candidates and 12 points for E-6 candidates."</p>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:6px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c9a96e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              <span style="font-size:11.5px;color:var(--brass);font-weight:700;">Quote checked word for word against the manual</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="wrap"><div class="divider-line"></div></div>
+
+  <!-- ============ THE DIFFERENCE ============ -->
+  <div style="padding:100px 0;">
+    <div class="wrap">
+      <div style="text-align:center;max-width:640px;margin:0 auto 56px;">
+        <div class="eyebrow" style="justify-content:center;display:flex;">The problem with most study apps</div>
+        <h2 style="font-size:34px;margin-top:14px;color:var(--cream);">They write questions from memory.<br>Memory is where mistakes live.</h2>
+      </div>
+      <div class="grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:28px;">
+        <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(240,230,210,0.1);border-radius:16px;padding:30px;">
+          <p style="font-size:12.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--cream-dim);font-weight:700;margin-bottom:16px;">Typical AI study app</p>
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <p style="font-size:15px;color:var(--cream-dim);">✕ Invents a plausible-sounding rule</p>
+            <p style="font-size:15px;color:var(--cream-dim);">✕ No citation, no way to check it</p>
+            <p style="font-size:15px;color:var(--cream-dim);">✕ You find out it was wrong on test day</p>
+          </div>
+        </div>
+        <div style="background:linear-gradient(165deg,var(--navy-light),var(--navy-mid));border:1px solid var(--brass);border-radius:16px;padding:30px;box-shadow:0 24px 50px -20px rgba(0,0,0,0.6);">
+          <p style="font-size:12.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--brass);font-weight:700;margin-bottom:16px;">Score Surge</p>
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <p style="font-size:15px;color:var(--cream);">✓ Every question carries the manual sentence that proves it</p>
+            <p style="font-size:15px;color:var(--cream);">✓ Shows you that text, and where it came from</p>
+            <p style="font-size:15px;color:var(--cream);">✓ If it isn't in the manual, it says so and doesn't guess</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HOW IT WORKS ============ -->
+  <div id="how" style="padding:20px 0 110px;">
+    <div class="wrap">
+      <div style="text-align:center;max-width:600px;margin:0 auto 52px;">
+        <div class="eyebrow" style="justify-content:center;display:flex;">How it works</div>
+        <h2 style="font-size:34px;margin-top:14px;color:var(--cream);">Three tools. One growing rank.</h2>
+      </div>
+      <div class="grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:26px;">
+
+        <div class="feature-panel">
+          <div class="icon-badge">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0a1730" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"></rect><line x1="8" y1="8" x2="16" y2="8"></line><line x1="8" y1="12" x2="16" y2="12"></line><line x1="8" y1="16" x2="12" y2="16"></line></svg>
+          </div>
+          <h3 style="font-size:20px;margin:20px 0 10px;color:var(--cream);">FMS Calculator</h3>
+          <p style="font-size:14.5px;line-height:1.6;color:var(--cream-dim);">Snap a photo of your profile sheet and it reads your scores for you. Free with any account.</p>
+        </div>
+
+        <div class="feature-panel">
+          <div class="icon-badge">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0a1730" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+          </div>
+          <h3 style="font-size:20px;margin:20px 0 10px;color:var(--cream);">AI Study Guide &amp; Tutor</h3>
+          <p style="font-size:14.5px;line-height:1.6;color:var(--cream-dim);">A study plan and a tutor that name their source when they can, and tell you plainly when they can't. Petty Officer plan.</p>
+        </div>
+
+        <div class="feature-panel">
+          <div class="icon-badge">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0a1730" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+          </div>
+          <h3 style="font-size:20px;margin:20px 0 10px;color:var(--cream);">Full Mock Exam &amp; Planner</h3>
+          <p style="font-size:14.5px;line-height:1.6;color:var(--cream-dim);">Practice exams graded against the manual, a day-by-day study plan, and the BBA Strategy Hub. Chief plan.</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RATINGS ============ -->
+  <div id="ratings" style="padding:0 0 110px;">
+    <div class="wrap">
+      <div style="text-align:center;max-width:600px;margin:0 auto 48px;">
+        <div class="eyebrow" style="justify-content:center;display:flex;">Currently covered</div>
+        <h2 style="font-size:34px;margin-top:14px;color:var(--cream);">Built rating by rating — done right, not done fast.</h2>
+        <p style="font-size:15px;color:var(--cream-dim);margin-top:14px;">A rating goes live only when its questions can be backed by real manual text. YN and NC are being built now.</p>
+      </div>
+      <div class="grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;">
+        <div class="rate-tile">
+          <div style="font-family:'Newsreader',serif;font-size:30px;color:var(--brass-bright);margin-bottom:8px;">PS</div>
+          <p style="font-size:14px;color:var(--cream-dim);">Personnel Specialist</p>
+          <p style="font-size:12px;color:var(--brass);font-weight:700;margin-top:10px;letter-spacing:0.08em;text-transform:uppercase;">Live now</p>
+        </div>
+        <div class="rate-tile">
+          <div style="font-family:'Newsreader',serif;font-size:30px;color:var(--brass-bright);margin-bottom:8px;">YN</div>
+          <p style="font-size:14px;color:var(--cream-dim);">Yeoman</p>
+          <p style="font-size:12px;color:var(--cream-dim);font-weight:700;margin-top:10px;letter-spacing:0.08em;text-transform:uppercase;opacity:.75;">Coming soon</p>
+        </div>
+        <div class="rate-tile">
+          <div style="font-family:'Newsreader',serif;font-size:30px;color:var(--brass-bright);margin-bottom:8px;">NC</div>
+          <p style="font-size:14px;color:var(--cream-dim);">Navy Counselor</p>
+          <p style="font-size:12px;color:var(--cream-dim);font-weight:700;margin-top:10px;letter-spacing:0.08em;text-transform:uppercase;opacity:.75;">Coming soon</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PRICING ============ -->
+  <div id="pricing" style="padding:0 0 120px;">
+    <div class="wrap">
+      <div style="text-align:center;max-width:600px;margin:0 auto 52px;">
+        <div class="eyebrow" style="justify-content:center;display:flex;">Pricing</div>
+        <h2 style="font-size:34px;margin-top:14px;color:var(--cream);">Start free. Upgrade when it's paying off.</h2>
+      </div>
+      <div class="grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start;">
+
+        <div class="price-card">
+          <p style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:var(--cream-dim);font-weight:700;">Seaman</p>
+          <div style="display:flex;align-items:baseline;gap:6px;margin:14px 0 20px;">
+            <span style="font-family:'Newsreader',serif;font-size:38px;color:var(--cream);">Free</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:11px;margin-bottom:26px;">
+            <p style="font-size:14px;color:var(--cream-dim);">✓ FMS Calculator + profile reader</p>
+            <p style="font-size:14px;color:var(--cream-dim);">✓ 40-question placement test (PS E6)</p>
+            <p style="font-size:14px;color:var(--cream-dim);">✓ Exam cycle &amp; deadline info</p>
+          </div>
+          <a href="https://score-surge.streamlit.app/?signup=1" class="btn-ghost" style="width:100%;text-align:center;">Get started</a>
+        </div>
+
+        <div class="price-card featured">
+          <p style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:var(--brass);font-weight:700;">Petty Officer</p>
+          <div style="display:flex;align-items:baseline;gap:6px;margin:14px 0 20px;">
+            <span style="font-family:'Newsreader',serif;font-size:38px;color:var(--cream);">$12.99</span>
+            <span style="font-size:14px;color:var(--cream-dim);">/mo</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:11px;margin-bottom:26px;">
+            <p style="font-size:14px;color:var(--cream);">✓ Everything in Seaman</p>
+            <p style="font-size:14px;color:var(--cream);">✓ AI Study Guide</p>
+            <p style="font-size:14px;color:var(--cream);">✓ Interactive AI Tutor</p>
+          </div>
+          <a href="https://score-surge.streamlit.app/?signup=1" class="btn-primary" style="width:100%;text-align:center;">Start free trial</a>
+        </div>
+
+        <div class="price-card">
+          <p style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:var(--cream-dim);font-weight:700;">Chief</p>
+          <div style="display:flex;align-items:baseline;gap:6px;margin:14px 0 20px;">
+            <span style="font-family:'Newsreader',serif;font-size:38px;color:var(--cream);">$19.99</span>
+            <span style="font-size:14px;color:var(--cream-dim);">/mo</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:11px;margin-bottom:26px;">
+            <p style="font-size:14px;color:var(--cream-dim);">✓ Everything in Petty Officer</p>
+            <p style="font-size:14px;color:var(--cream-dim);">✓ Full Mock Exam</p>
+            <p style="font-size:14px;color:var(--cream-dim);">✓ Smart Advancement Planner</p>
+            <p style="font-size:14px;color:var(--cream-dim);">✓ BBA Strategy Hub</p>
+          </div>
+          <a href="https://score-surge.streamlit.app/?signup=1" class="btn-ghost" style="width:100%;text-align:center;">Start free trial</a>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ FINAL CTA ============ -->
+  <div style="padding:90px 0;background:linear-gradient(180deg,var(--navy-mid),var(--navy-deep));border-top:1px solid rgba(201,169,110,0.18);">
+    <div class="wrap" style="text-align:center;">
+      <h2 style="font-size:36px;color:var(--cream);margin-bottom:18px;">Ready to stop guessing?</h2>
+      <p style="font-size:16px;color:var(--cream-dim);margin-bottom:32px;">Run your FMS score in under a minute. Free account, no card required.</p>
+      <a href="https://score-surge.streamlit.app/?signup=1" class="btn-primary" style="padding:17px 36px;font-size:16px;">Calculate My FMS Score — Free</a>
+    </div>
+  </div>
+
+  <!-- ============ FOOTER ============ -->
+  <div style="padding:36px 0;border-top:1px solid rgba(240,230,210,0.08);">
+    <div class="wrap" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+      <div style="display:flex;align-items:center;gap:9px;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9c8258" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="6" r="2.4"></circle><line x1="12" y1="8.4" x2="12" y2="19"></line>
+          <path d="M5 12c0 3.6 3 6 7 7"></path><path d="M19 12c0 3.6-3 6-7 7"></path><line x1="8" y1="12" x2="16" y2="12"></line>
+        </svg>
+        <span style="font-size:13.5px;color:var(--cream-dim);">Score Surge</span>
+      </div>
+      <p style="font-size:12px;color:var(--cream-dim);opacity:0.65;max-width:520px;text-align:right;">
+        Score Surge is an independent exam-prep tool. Not affiliated with or endorsed by the U.S. Navy or DoD.
+        AI-generated study material can contain errors; advancement is not guaranteed.<br>
+        <a href="https://score-surge.streamlit.app/?page=terms">Terms of Use</a> · <a href="https://score-surge.streamlit.app/?page=privacy">Privacy Notice</a> · <a href="https://score-surge.streamlit.app/?page=refunds">Refund Policy</a> · <a href="mailto:strategicsailor@gmail.com">strategicsailor@gmail.com</a>
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var menu=document.getElementById('mobile-menu'), btn=document.getElementById('menu-btn');
+  btn.addEventListener('click',function(){var open=menu.hidden;menu.hidden=!open;btn.setAttribute('aria-expanded',String(open));});
+  document.querySelectorAll('[data-go]').forEach(function(a){
+    a.addEventListener('click',function(e){e.preventDefault();menu.hidden=true;btn.setAttribute('aria-expanded','false');
+      var el=document.getElementById(a.getAttribute('data-go'));if(el)el.scrollIntoView({behavior:'smooth',block:'start'});});
+  });
+  var hero=document.getElementById('hero-section'), inner=document.querySelector('.hero-3d-inner');
+  if(window.matchMedia('(hover:hover)').matches && !window.matchMedia('(prefers-reduced-motion:reduce)').matches){
+    hero.addEventListener('mousemove',function(e){var r=hero.getBoundingClientRect();
+      var px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
+      inner.style.transform='rotateX('+((0.5-py)*10)+'deg) rotateY('+((px-0.5)*16)+'deg)';});
+    hero.addEventListener('mouseleave',function(){inner.style.transform='rotateX(0deg) rotateY(0deg)';});
+  }
+})();
+</script>
+</body>
+</html>

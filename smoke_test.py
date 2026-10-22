@@ -444,6 +444,12 @@ def main():
     _start[0].click().run()
     check("...which opens the Create Account tab",
           at.session_state["auth_tab"], "Create Account")
+    at = build_app()
+    at.session_state["user"] = None
+    at.query_params["signup"] = "1"
+    at.run()
+    check("a ?signup=1 link from the landing page opens Create Account",
+          at.session_state["auth_tab"], "Create Account")
     check("signup asks how they heard about us, optionally",
           [s.value for s in at.selectbox if s.label.startswith("How did you hear")], [None])
 

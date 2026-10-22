@@ -21,11 +21,12 @@ EFFECTIVE_DATE = "22 October 2026"
 # Checked 22 Oct 2026: the verified question bank has 0 YN and 0 NC questions, so
 # "exam prep for PS, YN and NC" would sell YN and NC sailors practice questions that
 # don't exist yet. Adjusted to what is true today. When YN or NC questions go live,
-# change this one line.
+# change this one line. "retired PS1" -> "retired Personnel Specialist" at Shawn's
+# request, 22 Oct 2026 (no rank, so a senior sailor isn't put off by "first class").
 TAGLINE = (
     "Advancement exam prep for Navy Personnel Specialists (PS), with YN and NC coming "
     "soon. Every practice question shows the exact manual text behind the answer. "
-    "Built by a retired PS1 with 20 years of service."
+    "Built by a retired Personnel Specialist with 20 years of service."
 )
 
 INDEPENDENCE_LINE = (

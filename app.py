@@ -761,6 +761,12 @@ if _qp.get("confirmed") == "1" or _qp.get("confirm_error") == "1":
     st.query_params.clear()
     st.rerun()
 
+# ── ?signup=1 from the landing page's "Start free trial" buttons ──────────────
+if _qp.get("signup") == "1" and not st.session_state.user:
+    st.session_state["auth_tab"] = AUTH_TAB_SIGNUP
+    st.query_params.clear()
+    st.rerun()
+
 # ── PUBLIC LEGAL PAGES: ?page=terms | privacy | refunds ───────────────────────
 if _qp.get("page") in site.LEGAL_PAGES:
     _title, _body = site.LEGAL_PAGES[_qp.get("page")]
