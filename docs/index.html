@@ -148,6 +148,13 @@
       h2{font-size:26px !important;}
     }
   
+    /* The hero's soft brass glow. Was an inline radial-gradient on a 640px circle;
+       Safari on iPhone drew it as a solid brass disc over the headline (seen
+       22 Oct 2026). Now the colour stops are explicit (no "transparent"), the glow
+       is a box-shadow-free gradient on a non-rounded box, and phones skip it. */
+    .hero-glow{position:absolute;top:-200px;right:-240px;width:720px;height:720px;pointer-events:none;
+      background:radial-gradient(closest-side,rgba(201,169,110,0.16) 0%,rgba(201,169,110,0.06) 45%,rgba(201,169,110,0) 100%);}
+    @media (max-width: 900px){.hero-glow{display:none;}}
     .mobile-menu[hidden]{display:none !important;}
     .price-card a{display:block;}
     .btn-primary{display:inline-block;}
@@ -197,7 +204,7 @@
 
   <!-- ============ HERO ============ -->
   <div id="hero-section" style="position:relative;padding:96px 0 120px;">
-    <div style="position:absolute;top:-120px;right:-160px;width:640px;height:640px;border-radius:50%;background:radial-gradient(circle,rgba(201,169,110,0.16),transparent 70%);pointer-events:none;"></div>
+    <div class="hero-glow" aria-hidden="true"></div>
     <div class="wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center;position:relative;">
 
       <div style="display:flex;flex-direction:column;gap:26px;">
