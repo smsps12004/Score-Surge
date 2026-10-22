@@ -146,7 +146,10 @@ def main():
         check("ZERO Stripe sessions created on render", len(stripe_calls), 0)
 
         upgrades = [b for b in at.button if "Upgrade to" in b.label]
-        check("every locked tab offers an upgrade button", len(upgrades), 5)
+        check("every locked tab offers an upgrade button",
+              len([b for b in upgrades if not b.key.endswith("_profile")]), 5)
+        check("...and My Profile offers both plans to a free sailor",
+              len([b for b in upgrades if b.key.endswith("_profile")]), 2)
         # AppTest does not model st.link_button, so the checkout link is checked via
         # the caption that only renders once a session URL exists.
         paid = lambda: len([c for c in at.caption if "Opens Stripe" in c.value])
@@ -375,6 +378,131 @@ def main():
     _sg = [s for s in at.selectbox if s.label.startswith("Topic (used by")]
     check("...and the Study Guide opens on their weakest topic",
           _sg[0].value if _sg else None, "Education Services")
+
+    # ── 10. TRIAL SAILORS CAN PAY (22 Oct 2026) ─────────────────────────────
+    # A trial account has every tab open, so no locked tab ever offered Upgrade, and
+    # My Profile only had "Manage subscription / cancel", which told someone who had
+    # never paid that no billing account was linked. They had no way to pay at all.
+    print("\n10. A SAILOR ON THE FREE TRIAL CAN UPGRADE")
+    stripe_calls = []
+
+    def _fake_session2(**kwargs):
+        stripe_calls.append(kwargs)
+        return types.SimpleNamespace(url="https://checkout.stripe.test/session")
+
+    at = build_app(tier="trial")
+    at.session_state["_billing_customer"] = False
+    with patch("stripe.checkout.Session.create", side_effect=_fake_session2):
+        at.run()
+        for exc in at.exception:
+            print(f"  EXCEPTION: {str(exc.value)[:300]}")
+        check("trial page renders", len(at.exception), 0)
+        _banners = [m for m in at.markdown if "Free trial" in m.value and "$12.99/mo" in m.value]
+        check("every tab carries the trial banner with real prices", len(_banners), 7)
+        check("...naming both plans", all("$19.99/mo" in m.value for m in _banners), True)
+        check("...with a way to the plans from each of the other six",
+              len([b for b in at.button if b.label == "See plans & upgrade"]), 6)
+        _ups = [b for b in at.button if "Upgrade to" in b.label]
+        check("My Profile shows an Upgrade button for each plan", len(_ups), 2)
+        check("...and NOT 'Manage subscription' to someone who never paid",
+              any(b.key == "manage_subscription" for b in at.button), False)
+        check("no Stripe call on render", len(stripe_calls), 0)
+        [c for c in at.checkbox if "Petty Officer costs" in c.label][0].check()
+        [b for b in at.button if b.key == "upgrade_petty_officer_profile"][0].click().run()
+        check("tapping Upgrade opens exactly one checkout", len(stripe_calls), 1)
+        check("...for the $12.99 plan's price",
+              stripe_calls[0]["line_items"][0]["price"], "price_1TxgMkDP0fFhPzMl2MEk9OZk")
+        check("...and comes back to the app on success",
+              "stripe_success=true" in stripe_calls[0]["success_url"], True)
+        check("...tagged with this sailor's account",
+              stripe_calls[0]["metadata"]["user_id"], "smoke-test-user")
+
+    at = build_app(tier="petty_officer")
+    at.run()
+    check("a paying sailor still gets Manage subscription",
+          any(b.key == "manage_subscription" for b in at.button), True)
+    check("...and no trial banner", any("Free trial" in m.value for m in at.markdown), False)
+
+    # ── 11. PUBLIC PAGE BEFORE LOGIN (22 Oct 2026) ──────────────────────────
+    print("\n11. WHAT A FIRST-TIME VISITOR SEES")
+    import public_site as site
+    at = build_app()
+    at.session_state["user"] = None
+    at.run()
+    check("logged-out page renders", len(at.exception), 0)
+    _all = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    check("the tagline is above the login", site.TAGLINE in _all, True)
+    check("both prices shown, read from the app's own plan table",
+          "$12.99/mo" in _all and "$19.99/mo" in _all, True)
+    check("trial terms shown", "3-day free trial, no card required" in _all, True)
+    check("placement coverage stated exactly", "Covers PS E6 today" in _all, True)
+    check("the independence line is on the login page", site.INDEPENDENCE_LINE in _all, True)
+    for _slug in ("terms", "privacy", "refunds"):
+        check(f"...and so is the {_slug} link", f"?page={_slug}" in _all, True)
+    _start = [b for b in at.button if b.label == "Start free trial"]
+    check("a Start free trial button", len(_start), 1)
+    _start[0].click().run()
+    check("...which opens the Create Account tab",
+          at.session_state["auth_tab"], "Create Account")
+    at = build_app()
+    at.session_state["user"] = None
+    at.query_params["signup"] = "1"
+    at.run()
+    check("a ?signup=1 link from the landing page opens Create Account",
+          at.session_state["auth_tab"], "Create Account")
+    check("signup asks how they heard about us, optionally",
+          [s.value for s in at.selectbox if s.label.startswith("How did you hear")], [None])
+
+    for _slug, (_title, _) in site.LEGAL_PAGES.items():
+        at = build_app()
+        at.session_state["user"] = None
+        at.query_params["page"] = _slug
+        at.run()
+        _txt = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+        check(f"{_title} page renders before login", len(at.exception), 0)
+        check(f"...shows its own text", f"# {_title}" in _txt, True)
+        check(f"...with the footer", site.INDEPENDENCE_LINE in _txt, True)
+    check("refund policy states the 7-day full refund on the latest charge",
+          "within 7 days of a charge and we'll refund that charge in full" in site.REFUNDS_MD
+          and "your latest charge" in site.REFUNDS_MD, True)
+
+    at = build_app()
+    at.run()
+    _all = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    check("the independence line is on the logged-in app too", site.INDEPENDENCE_LINE in _all, True)
+
+    # ── 12. COMING SOON INSTEAD OF THIN CONTENT (22 Oct 2026) ───────────────
+    print("\n12. PRACTICE QUESTIONS ONLY WHERE THE VERIFIED BANK CAN CARRY THEM")
+    with patch("anthropic.Anthropic", side_effect=AssertionError("unexpected AI call")) as ai:
+        at = build_app(tier="chief")
+        at.session_state["locked_rating"] = "YN"
+        at.run()
+        check("a YN sailor's app renders", len(at.exception), 0)
+        check("YN Mock Exam says coming soon",
+              any("YN E5 practice questions are coming soon" in i.value
+                  or "YN E6 practice questions are coming soon" in i.value for i in at.info), True)
+        check("...and offers no Generate button",
+              any(b.label == "Generate Mock Exam" for b in at.button), False)
+        at = build_app(tier="chief")
+        at.session_state["locked_rating"] = "PS"
+        at.run()
+        _pg = [s for s in at.selectbox if s.key == "pq_paygrade"][0]
+        check("PS Mock Exam opens on a paygrade that's live (E6)", _pg.value, "E6")
+        _pg.select("E5").run()
+        check("PS E5 says coming soon",
+              any("PS E5 practice questions are coming soon" in i.value for i in at.info), True)
+    check("none of that made an AI call", ai.call_count, 0)
+
+    # ── 13. NO PAST EXAM DATES (22 Oct 2026) ────────────────────────────────
+    print("\n13. EXAM DATES BETWEEN CYCLES")
+    at = build_app()
+    at.run()
+    _all = " ".join([m.value for m in at.markdown] + [i.value for i in at.info]
+                    + [c.value for c in at.caption] + [h.value for h in at.subheader])
+    check("says spring 2027 dates aren't out", "Spring 2027 exam dates not yet announced" in _all, True)
+    check("no past Cycle 272 exam date on screen",
+          "3 September 2026" in _all or "10 September 2026" in _all
+          or "September 3, 2026" in _all or "September 10, 2026" in _all, False)
 
     print("\n" + "=" * 68)
     if FAIL:
