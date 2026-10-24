@@ -279,3 +279,28 @@ Until then every screen says "Spring 2027 exam dates not yet announced."
 - Which ratings/paygrades get practice questions is decided by `readiness.py` (same bar
   as the placement test). `python3 readiness.py` prints the table.
 
+
+## Always-on hosting on Render (added 24 Oct 2026)
+
+Streamlit Community Cloud puts the app to sleep when nobody uses it (a sailor waits 1–2
+minutes on a "wake up" screen). Render's Standard plan ($25/mo, 1 CPU / 2 GB) stays awake.
+Measured 22 Oct: one session ≈345 MB, OCR adds ≈240 MB, so the 512 MB tier is too small.
+
+- **How it builds:** Render's **Docker** runtime uses `Dockerfile` (Python 3.11, plus the
+  `packages.txt` system packages — Tesseract OCR — then `requirements.txt`). `start.sh`
+  starts Streamlit on Render's `$PORT`. Streamlit Cloud ignores both files.
+- **Secrets:** Render → the service → Environment → **Secret Files** → filename
+  `secrets.toml`, contents = the same text as Streamlit Cloud's Secrets box (plus
+  `APP_URL = "<the Render address>"`). `start.sh` copies `/etc/secrets/secrets.toml` to
+  `.streamlit/secrets.toml` at startup. Never commit secrets.
+- **Health check path:** `/_stcore/health`.
+- **Switching over** (only after the Render address passes a live test: log in, FMS,
+  profile-sheet upload, Tutor, Upgrade button opens Stripe):
+  1. Supabase → Authentication → URL Configuration: Site URL = the new address; add it to
+     Redirect URLs. (Confirmation emails use `{{ .SiteURL }}`.)
+  2. Landing page (`docs/index.html`) links: change `score-surge.streamlit.app` to the new
+     address.
+  3. Keep score-surge.streamlit.app running about a week as a backup, then retire it.
+- Before every deploy: the same suites as always (`run_checks.py`, `smoke_test.py`, …).
+  A fresh Docker build installs the newest `anthropic` and `supabase` (still unpinned,
+  T4); suites passed on anthropic 2.3.0 / supabase 2.33.0 on 24 Oct.
