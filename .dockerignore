@@ -1,0 +1,25 @@
+# Keep the Docker image to what the app needs at runtime. Added 24 Oct 2026.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+__pycache__/
+*.pyc
+.env
+.claude/
+.DS_Store
+.backups/
+_to_delete/
+
+# Secrets come from Render's Secret File at startup, never from the build.
+.streamlit/secrets.toml
+.streamlit/secrets.toml.*
+
+# Not used by the running app
+docs/
+probes/
+test-profile-sheets/
+supabase/
+launch/
+HANDOFF_*.md
+NEXT_SESSION.md
