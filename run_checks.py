@@ -65,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 467
+EXPECTED_TOTAL = 481
 
 
 def skip(reason):
@@ -286,6 +286,86 @@ def main():
           "awards" not in photographed_awards[1], True)
     check("an out-of-range labelled Awards integer is still rejected",
           "awards" in parse("Awards: 30")[1], True)
+
+    # 26 Oct 2026, real iPhone photo of an ESR "Exam Profile Data" sheet (PS2 testing
+    # for PS1, cycle 271). The OCR text below is that photo's real Tesseract output
+    # (both passes of ocr_text) for the multiple block -- name, UIC and serial left out. The sheet prints:
+    # SS 46.48 | PMA 66.00 / 4.20 | SIPG 0.80 / 0400 | Awards 2 | Edu 0.00 | PNA (blank)
+    # | Final 115.28, and beside it the PNA points EARNED this exam (From PMA: 1.5,
+    # Final Status PNA-PTS 0.0/1.5) -- banked for future cycles, not counted now.
+    esr = ('_|Final Multiple / PNA Point Breakdown 1 Ze oe\n'
+           'Your Multiple: Average of Advanced : LEE\n'
+           'ee (Same Rating): — PNA Points Applied: La\n'
+           '__PMA/ Eval Average: 66.00 / 4.20 / PNA Points Earned this Cae\n'
+           '; Exam: .\n'
+           'Service in Paygrade / YYMM: 0.80 / 0400 / 0009 From Standard Score: :\n'
+           'Awards: > From PMA: 1.5\n'
+           '__Edueation Points: 0.00\n'
+           '‘PNA: :\n'
+           '_ Final / Min Multiple Required: 115.28 / 999.99 :\n'
+           '_ Final Status: PNA-PTS 0.0/1.5\n'
+           'Lied\n'
+           'Final al Multiple / / PNA “ati t Breakdown\n'
+           'eA\n'
+           '_w\n'
+           'ee\n'
+           'Yo\n'
+           'Average of Advanced\n'
+           'ur Multiple:\n'
+           '(Same Rating)\n'
+           'PNA Points Applied\n'
+           'Exam Standard Score:\n'
+           '46.48\n'
+           'Cycle: 267\n'
+           'PMA / Eval Average:\n'
+           'PNA Points Earned this\n'
+           '66.00 / 4.20\n'
+           'Exam:\n'
+           'Service in Paygrade / YYMM\n'
+           '0.80\n'
+           '/ 0400\n'
+           '/ 0006\n'
+           'From Standard Score:\n'
+           'Awards:\n'
+           '2\n'
+           'From PMA\n'
+           '1.5\n'
+           'Education Points:\n'
+           '0.00\n'
+           'PNA\n'
+           'Final / Min Multiple Required\n'
+           '115.28 / 999.99\n'
+           'Final Status:\n'
+           'PNA-PTS 0.0/1.5\n')
+    ev, emiss = parse(esr)
+    check("ESR sheet: PMA 4.20 read past a stray '__' before the label", ev["pma"], 4.2)
+    check("ESR sheet: 'From PMA: 1.5' (PNA earned) is not read as PMA",
+          ev["pma"] != 1.5, True)
+    check("ESR sheet: SIPG read from the YYMM code 0400 = 4 years", ev["tir"], 4.0)
+    check("ESR sheet: earned 1.5 not borrowed into Awards", ev["awards"], 2.0)
+    check("ESR sheet: 'Final / Min Multiple Required' printed total is read",
+          extract_fm(esr), 115.28)
+    check("ESR sheet: blank PNA line is reported missing by the label search",
+          "pna" in emiss, True)
+    check("ESR sheet: blank PNA proven zero by the printed total",
+          L["infer_blank_pna"]("E6", ev, emiss, esr), True)
+    check("ESR sheet: the whole read reconciles to 115.28",
+          reconciles("E6", ev, esr)[0], True)
+    earned_both = esr.replace("PNA-PTS 0.0/1.5", "PNA-PTS 1.5/1.5").replace(
+        "From Standard Score: :", "From Standard Score: 1.5")
+    check("PNA-PTS / 'From Standard Score' earned points never read as applied PNA",
+          parse(earned_both)[0]["pna"], 0.0)
+    check("...and 'From Standard Score' is not read as the exam score",
+          parse(earned_both)[0]["exam_score"], 46.48)
+    off_by = esr.replace("115.28", "117.28")
+    check("a blank PNA is NOT assumed zero when the total doesn't match",
+          L["infer_blank_pna"]("E6", parse(off_by)[0], parse(off_by)[1], off_by), False)
+    check("a blank PNA is NOT assumed zero with no printed total",
+          L["infer_blank_pna"]("E6", ev, emiss, esr.replace("115.28 / 999.99", "")), False)
+    check("a blank PNA is NOT assumed zero when another field is missing",
+          L["infer_blank_pna"]("E6", ev, emiss + ["tir"], esr), False)
+    check("plain 'SIPG 3.50' with no YYMM code still reads as years",
+          parse("SERVICE IN PAYGRADE 3.50\nAWARDS POINTS 4.00")[0]["tir"], 3.5)
 
     print("\n5. PAYGRADE DETECTION")
     # Navy systems print the same paygrade as E6, E-6 and E06, and often name the
