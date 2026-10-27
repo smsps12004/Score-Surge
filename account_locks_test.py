@@ -220,10 +220,15 @@ class AppTests(unittest.TestCase):
 
     def _start_lesson(self, db):
         app = run_app(db)
-        fake = types.SimpleNamespace(content=[types.SimpleNamespace(text="LESSON BODY")])
+        # The Tutor lesson streams (T14, 26 Oct 2026): messages.stream(...) used as a
+        # context manager whose text_stream yields the lesson in pieces.
+        class FakeStream:
+            text_stream = iter(["LESSON ", "BODY"])
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
         with patch("supabase.create_client", return_value=db), \
              patch("anthropic.Anthropic") as ai:
-            ai.return_value.messages.create.return_value = fake
+            ai.return_value.messages.stream.return_value = FakeStream()
             [b for b in app.button if "Start Lesson" in b.label][0].click().run()
         return app, ai
 
@@ -232,13 +237,14 @@ class AppTests(unittest.TestCase):
         app, ai = self._start_lesson(db)
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(ai.return_value.messages.create.call_count, 0)
+        self.assertEqual(ai.return_value.messages.stream.call_count, 0)
         self.assertIn("used this month's AI-written study material", _texts(app))
 
     def test_ai_use_is_counted_once(self):
         db = FakeSupabase(ai_left=5)
         app, ai = self._start_lesson(db)
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(ai.return_value.messages.create.call_count, 1)
+        self.assertEqual(ai.return_value.messages.stream.call_count, 1)
         self.assertEqual([r for r in db.rpcs if r[0] == "consume_usage"],
                          [("consume_usage", {"p_kind": "ai"})])
 

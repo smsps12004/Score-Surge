@@ -39,4 +39,30 @@ class LaunchUITests(unittest.TestCase):
         self.assertTrue(any('could not be opened' in e.value for e in app.error))
         self.assertEqual(len([l for l in app.get('link_button') if 'Open Stripe' in l.proto.label]), 0)
 
+    def test_tutor_lesson_streams_and_is_saved(self):
+        # T14: the lesson must come from messages.stream (text shows as it is
+        # written), keep its grounded/from-memory label, and still be saved for
+        # follow-up questions and the download.
+        chunks = ['## How it works\n', 'First part. ', 'Second part.']
+
+        class FakeStream:
+            text_stream = iter(chunks)
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        client = MagicMock()
+        client.messages.stream.return_value = FakeStream()
+        client.messages.create.side_effect = AssertionError('lesson should stream, not wait')
+        app = build_app()
+        app.run()
+        with patch('anthropic.Anthropic', return_value=client), \
+                patch('account_locks.has_left', return_value=True), patch('account_locks.consume'):
+            [b for b in app.button if 'Start Lesson' in b.label][0].click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(client.messages.stream.call_count, 1)
+        self.assertEqual(client.messages.stream.call_args.kwargs['max_tokens'], 2000)
+        self.assertEqual(app.session_state['tutor_history'][1]['content'], ''.join(chunks))
+        labels = [e.value for e in list(app.info) + list(app.warning)]
+        self.assertTrue(any('excerpts supplied' in v or 'written from memory' in v for v in labels))
+
 if __name__ == '__main__': unittest.main()
