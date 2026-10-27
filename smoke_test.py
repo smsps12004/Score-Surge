@@ -311,7 +311,7 @@ def main():
     # The heading itself is an expander label, which AppTest doesn't surface as text —
     # so assert on the copy inside it, which only renders if the flow is really there.
     check("...and offers a way back in for a forgotten password",
-          "six-digit code" in _blob, True)
+          "email you a reset code" in _blob, True)
     # The reset widgets live inside an expander, so they are in the tree even while
     # it is collapsed. If the email field is missing, the flow is unreachable.
     check("...with somewhere to enter the account email",
