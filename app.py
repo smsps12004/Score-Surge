@@ -1208,13 +1208,20 @@ def compute_fms(paygrade, exam_score, pma, years_in_rate, awards, education, pna
 LABEL_PATTERNS = {
     "exam_score": [
         r"exam\s*standard\s*score",
-        r"standard\s*score",
+        # Not "From Standard Score:" -- on the ESR "Exam Profile Data" sheet that is
+        # the PNA points EARNED from the exam (0 or 1.5), banked for future cycles.
+        r"(?<!from\s)standard\s*score",
         r"exam\s*score",
         r"written\s*exam",
     ],
     "pma": [
         r"performance\s*mark\s*average",
-        r"\bpma\b",
+        # (?<![a-z]) rather than \b: OCR often prints a stray underscore before a
+        # label ("__PMA/ Eval Average"), and "_" counts as a word character, so \b
+        # failed there and the search fell through to "From PMA: 1.5" further down --
+        # PNA points EARNED from PMA, not the sailor's PMA. Seen on a real iPhone
+        # photo, 26 Oct 2026. "From PMA" is excluded outright for the same reason.
+        r"(?<![a-z])(?<!from\s)pma\b",
         r"eval\s*avg",
         r"eval\s*average",
     ],
@@ -1238,10 +1245,20 @@ LABEL_PATTERNS = {
     ],
     "pna": [
         r"passed\s*not\s*advanced",
-        r"\bpna\b",
-        r"pna\s*points?",
+        # The FMS counts only PNA points APPLIED this cycle. The ESR "Exam Profile
+        # Data" sheet also prints PNA points EARNED this exam ("PNA Points Earned this
+        # Exam", "From PMA: 1.5", and again as "Final Status: PNA-PTS 0.0/1.5") -- those
+        # are banked for FUTURE cycles and must never be read as this cycle's PNA.
+        # The section heading "Final Multiple / PNA Point Breakdown" is not a value.
+        r"\bpna\b(?!\s*-?\s*pts)(?!\s*points?\s*(?:earned|breakdown))",
+        r"pna\s*points?(?!\s*(?:earned|breakdown))",
     ],
 }
+
+# Phrases that end ANY field's search window even though they are not one of the six
+# labels: the PNA-earned block of the ESR sheet sits right beside the multiple, and a
+# field whose own value is blank must not borrow a number from it.
+_ALWAYS_STOP = r"from\s*(?:standard\s*score|pma)|pna\s*points?\s*earned|pna\s*-?\s*pts"
 
 DEFAULT_VALUES = {
     "exam_score": 42.0,
@@ -1301,7 +1318,8 @@ _NUMBER_TOKEN = re.compile(r"\b\d{1,3}(?:\.\d+|,\d{2}(?!\d))?\b")
 # search before the next row begins, so a field whose value is genuinely missing
 # does not quietly borrow the number belonging to the row underneath it.
 _OTHER_LABELS = {
-    field: re.compile("|".join(p for f, ps in LABEL_PATTERNS.items() if f != field for p in ps))
+    field: re.compile("|".join([p for f, ps in LABEL_PATTERNS.items() if f != field for p in ps]
+                               + [_ALWAYS_STOP]))
     for field in LABEL_PATTERNS
 }
 
@@ -1374,6 +1392,40 @@ def extract_labelled_awards_integer(raw_text):
     return value if lo <= value <= hi else None
 
 
+_SIPG_POINTS_THEN_YYMM = re.compile(r"\b\d{1,2}[.:,]\d{2}\s*(?:/|\()\s*(\d{4})\b")
+
+
+def extract_sipg_years_from_yymm(raw_text, window=60):
+    """Years in paygrade from the YYMM code the sheet prints beside SIPG, or None.
+
+    The ESR sheet prints "Service in Paygrade / YYMM: 0.80 / 0400" -- 0.80 is the
+    SIPG POINTS already worked out, 0400 is 4 years 0 months. The calculator's field
+    takes YEARS (points = years / 5), so reading the first decimal put 0.80 years in
+    the box, worth 0.16 points instead of 0.80: an FMS 0.64 low with nothing on
+    screen saying so (real iPhone photo, 26 Oct 2026). When the YYMM code is there,
+    it is the unambiguous figure.
+    """
+    text_lower = raw_text.lower()
+    stop_re = _OTHER_LABELS.get("tir")
+    for pattern in LABEL_PATTERNS["tir"]:
+        match = re.search(pattern, text_lower)
+        if not match:
+            continue
+        start = match.end()
+        segment = text_lower[start: start + window]
+        if stop_re:
+            nxt = stop_re.search(segment)
+            if nxt:
+                segment = segment[: nxt.start()]
+        found = _SIPG_POINTS_THEN_YYMM.search(segment)
+        if found:
+            years = _yymm_to_years(found.group(1))
+            lo, hi = FIELD_RANGES["tir"]
+            if years is not None and lo <= years <= hi:
+                return years
+    return None
+
+
 def parse_ocr_text(raw_text):
     """Return (values, missing_fields). Every value is guaranteed in-range."""
     results = {}
@@ -1381,6 +1433,10 @@ def parse_ocr_text(raw_text):
     for field, patterns in LABEL_PATTERNS.items():
         rng = FIELD_RANGES.get(field)
         value = extract_number_near_label(raw_text, patterns, valid_range=rng, field=field)
+        if field == "tir":
+            yymm_years = extract_sipg_years_from_yymm(raw_text)
+            if yymm_years is not None:
+                value = yymm_years
         if value is None and field == "awards":
             value = extract_labelled_awards_integer(raw_text)
         if value is not None:
@@ -1401,6 +1457,10 @@ def parse_ocr_text(raw_text):
 # a check a bad read is very unlikely to pass by accident, and it costs nothing extra
 # to ask for.
 _FINAL_MULTIPLE_PATTERNS = [
+    # ESR "Exam Profile Data" sheet: "Final / Min Multiple Required: 115.28 / 999.99".
+    # First, because the same sheet's section heading "Final Multiple / PNA Point
+    # Breakdown" also matches the plainer patterns below and carries no total.
+    r"final\s*/\s*min\s*multiple(?:\s*required)?",
     r"your\s*final\s*multiple\s*(?:score)?",
     r"final\s*multiple\s*score",
     r"final\s*multiple",
@@ -1446,6 +1506,31 @@ def reading_reconciles(paygrade, extracted_data, raw_text, tol=0.02):
     if printed is None:
         return None, None, computed
     return (abs(printed - computed) <= tol), printed, computed
+
+
+def infer_blank_pna(paygrade, extracted_data, missing_fields, raw_text, tol=0.02):
+    """Is a "not found" PNA really a printed blank, i.e. zero PNA applied?
+
+    The ESR sheet leaves the PNA line of "Your Multiple" EMPTY when no PNA points
+    are applied this cycle -- there is no "0.00" to read, so the label search
+    reports PNA as missing and the sailor is told to type a number they don't have.
+    A blank is only trusted as zero when the sheet itself proves it: the other five
+    fields were all read, and with PNA = 0 they add up to the Final Multiple the
+    sheet prints (within 0.02). Anything else stays "not found" -- this never
+    invents a non-zero PNA, and never fills PNA in by subtracting from the total.
+    """
+    if "pna" not in missing_fields or paygrade not in FMS_RULES or paygrade == "E7":
+        return False
+    if any(f in missing_fields for f in ("exam_score", "pma", "tir", "awards", "education")):
+        return False
+    printed = extract_final_multiple(raw_text)
+    if printed is None:
+        return False
+    computed, _ = compute_fms(
+        paygrade, extracted_data["exam_score"], extracted_data["pma"],
+        extracted_data["tir"], extracted_data["awards"], extracted_data["education"], 0.0,
+    )
+    return abs(printed - computed) <= tol
 
 
 # ── COORDINATE-BASED PARSING — the root-cause fix ─────────────────────────────
@@ -2399,6 +2484,13 @@ with tab1:
                 st.session_state["fms_paygrade"] = detected_paygrade
                 st.session_state["_pg_src"] = file_id
 
+            # A blank PNA line that the sheet's own total proves is zero.
+            _pna_blank_zero = (detected_paygrade in PAYGRADES and infer_blank_pna(
+                detected_paygrade, extracted_data, missing_fields, raw_text))
+            if _pna_blank_zero:
+                extracted_data = {**extracted_data, "pna": 0.0}
+                missing_fields = [f for f in missing_fields if f != "pna"]
+
             FIELD_LABELS = FIELD_TITLES
             found = [FIELD_LABELS[f] for f in extracted_data if f not in missing_fields]
 
@@ -2406,6 +2498,15 @@ with tab1:
                 st.caption(
                     "📐 Read using your sheet's own table layout, not just text search — "
                     "checked against the total your sheet prints."
+                )
+
+            if _pna_blank_zero:
+                st.caption(
+                    "ℹ️ **PNA = 0.** Your sheet's PNA line is blank, meaning no PNA points "
+                    "were applied this cycle — and the other five numbers add up exactly to "
+                    "the Final Multiple your sheet prints. Points listed under \"PNA Points "
+                    "Earned this Exam\" (also shown as PNA-PTS on the Final Status line) are "
+                    "banked for future cycles; they don't count toward this one."
                 )
 
             if not missing_fields:
@@ -2471,9 +2572,10 @@ with tab1:
                 )
 
             st.caption(
-                "Always check these against your sheet before trusting the FMS. Your profile "
-                "sheet lists **Service in Paygrade (SIPG)** — that is the same figure the FMS "
-                "chart calls Time in Rate, and it is what goes in the SIPG field below."
+                "Always check these against your sheet before trusting the FMS. The Service "
+                "in Paygrade box below takes **years**. If your sheet prints SIPG as points "
+                "with a YYMM code — e.g. **0.80 / 0400** — the code is the years (0400 = 4 "
+                "years, 0 months), so the box should say 4.00, not 0.80."
             )
 
             with st.expander("🔍 What was read from your sheet"):
@@ -2567,8 +2669,10 @@ with tab1:
                 "Service in Paygrade / Time in Rate (Years)", min_value=0.0, max_value=30.0,
                 value=safe_value(extracted_data["tir"], 0.0, 30.0, 0.0), step=0.5,
                 disabled=is_e7,
-                help="Your profile sheet calls this Service in Paygrade (SIPG); the FMS chart "
-                     "calls it Time in Rate. Same number. Points = years / 5, capped at "
+                help="Years in your current paygrade (your sheet: Service in Paygrade, SIPG; "
+                     "the FMS chart: Time in Rate). If your sheet shows points and a YYMM code, "
+                     "like 0.80 / 0400, enter the years from the code (0400 = 4). "
+                     "Points = years / 5, capped at "
                      f"{rules['tir_max']:.0f}." if not is_e7 else "Not used for E7.",
             )
         with col2:
