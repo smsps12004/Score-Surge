@@ -5408,7 +5408,19 @@ with tab7:
 
     if _has_billing:
         st.caption("Manage payment details, invoices and cancellation in Stripe. Cancellation options depend on the subscription's billing terms.")
+    # T13, 23 Oct 2026: Shawn tapped "Manage subscription / cancel", saw nothing obvious
+    # happen, and thought the button was broken. It wasn't -- it had quietly added a
+    # second button underneath -- but a sailor trying to cancel who believes the button
+    # is dead disputes the charge with their bank instead. Streamlit cannot send the
+    # browser to Stripe from a button press, and Stripe's portal links are short-lived
+    # ("sessions are short-lived and will expire if the customer does not visit the
+    # URL"), so a link made ahead of time could be dead by the time it's tapped. So:
+    # the first tap makes a fresh link, and the next thing on screen is a large, plainly
+    # worded button that goes straight to Stripe, which stays put across reruns for a
+    # few minutes instead of vanishing on the next tap anywhere in the app.
+    _PORTAL_LINK_MINUTES = 4
     if _has_billing and st.button("Manage subscription / cancel", key="manage_subscription"):
+        st.session_state.pop("_portal_link", None)
         try:
             profile_rows = supabase.table("profiles").select("stripe_customer_id").eq("id", st.session_state.user.id).execute().data or []
             customer_id = profile_rows[0].get("stripe_customer_id") if len(profile_rows) == 1 else None
@@ -5419,9 +5431,20 @@ with tab7:
                 if customer.get("deleted") or (customer.get("email") or "").strip().casefold() != (st.session_state.user.email or "").strip().casefold():
                     raise ValueError("Billing account ownership could not be confirmed")
                 portal = stripe.billing_portal.Session.create(customer=customer_id, return_url=get_app_base_url())
-                st.link_button("Open secure billing management", url=portal.url, width="stretch")
+                st.session_state["_portal_link"] = (portal.url, time.time())
         except Exception:
             st.error("Billing management could not be opened. Contact support for help with cancellation; do not start another subscription.")
+    _portal = st.session_state.get("_portal_link")
+    if _portal and time.time() - _portal[1] > _PORTAL_LINK_MINUTES * 60:
+        st.session_state.pop("_portal_link", None)
+        _portal = None
+    if _has_billing and _portal:
+        st.success("Your secure Stripe billing page is ready. **Tap the button below to open "
+                   "it** — that's where you change your card, see invoices, or cancel.")
+        st.link_button("➡️ Open Stripe: manage or cancel my subscription", url=_portal[0],
+                       type="primary", width="stretch")
+        st.caption("For your security this link works for a few minutes. If it has "
+                   "expired, tap Manage subscription / cancel again.")
     st.caption("Your personal score history, weak spots, and what to study next.")
     with st.expander("Accuracy and data use"):
         st.write(EDUCATIONAL_NOTICE)
