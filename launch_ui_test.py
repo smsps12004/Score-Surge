@@ -65,4 +65,28 @@ class LaunchUITests(unittest.TestCase):
         labels = [e.value for e in list(app.info) + list(app.warning)]
         self.assertTrue(any('excerpts supplied' in v or 'written from memory' in v for v in labels))
 
+    def _login(self, email, error):
+        app = build_app()
+        app.session_state['user'] = None
+        app.run()
+        db = MagicMock()
+        db.auth.sign_in_with_password.side_effect = Exception(error)
+        with patch('supabase.create_client', return_value=db):
+            fields = [t for t in app.text_input if t.label in ('Email', 'Password')]
+            fields[0].input(email)
+            fields[1].input('not-the-real-one')
+            [b for b in app.button if b.label == 'Log In'][0].click().run()
+        return app, db
+
+    def test_login_sends_trimmed_lowercase_email(self):
+        app, db = self._login('  Sailor@Test.INVALID ', 'Invalid login credentials')
+        self.assertEqual(len(app.exception), 0)
+        sent = db.auth.sign_in_with_password.call_args.args[0]['email']
+        self.assertEqual(sent, 'sailor@test.invalid')
+        self.assertTrue(any('check your email and password' in e.value for e in app.error))
+
+    def test_unconfirmed_email_is_told_so(self):
+        app, _ = self._login('sailor@test.invalid', 'Email not confirmed')
+        self.assertTrue(any("isn't confirmed yet" in e.value for e in app.error))
+
 if __name__ == '__main__': unittest.main()

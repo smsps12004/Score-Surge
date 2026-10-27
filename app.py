@@ -482,9 +482,11 @@ def show_auth_page():
     if st.session_state.get("_email_confirmed"):
         st.success("✅ **Email confirmed.** Log in below to start your free trial.")
     if st.session_state.get("_confirm_failed"):
-        st.warning("That confirmation link didn't work — it may have expired or already "
-                   "been used. Try logging in below; if that fails, create the account "
-                   f"again or email {SUPPORT_EMAIL}.")
+        # The usual cause is tapping the same link twice: the first tap confirmed
+        # the account, the second finds the one-time code spent. Lead with that.
+        st.warning("That confirmation link has already been used or has expired. "
+                   "**If you already tapped it once, your email is confirmed — just log "
+                   f"in below.** If login still fails, email {SUPPORT_EMAIL}.")
     if st.session_state.get("_paid_logged_out"):
         st.success("✅ **Payment received.** Log in below and your new plan is switched on.")
     render_welcome()
@@ -510,7 +512,7 @@ def show_auth_page():
             else:
                 try:
                     res = supabase.auth.sign_in_with_password({
-                        "email": login_email,
+                        "email": site.clean_email(login_email),
                         "password": login_password,
                     })
                     st.session_state.user = res.user
@@ -524,8 +526,8 @@ def show_auth_page():
                     # other device signed in to this account is signed out within a minute.
                     locks.claim_session(supabase, res.user.id, st.session_state)
                     st.rerun()
-                except Exception:
-                    st.error("Login failed — check your email and password.")
+                except Exception as _login_exc:
+                    st.error(site.login_error_message(_login_exc))
 
         # ── FORGOT PASSWORD ──────────────────────────────────────────────────
         #
@@ -538,8 +540,10 @@ def show_auth_page():
         # URL's # fragment, which a browser never sends to the server — and Streamlit
         # only ever runs on the server, so the app cannot see it. The link would land
         # the sailor right back on this login page none the wiser. The e-mailed
-        # six-digit code goes through verify_otp() instead, which is a plain server
-        # call and works exactly the same on a phone as on a laptop.
+        # code goes through verify_otp() instead, which is a plain server call and
+        # works exactly the same on a phone as on a laptop. (The screens used to promise a
+        # 6-digit code; Supabase actually sends 8 characters, confirmed 3 Sep. The
+        # copy now says "the code from the email" so it can't be wrong either way.)
         #
         # Nothing here ever learns the sailor's password: they type the new one, the
         # Supabase client hashes and stores it, and it is never logged or echoed.
@@ -547,19 +551,20 @@ def show_auth_page():
         with st.expander("🔑 Forgot your password?"):
             if not st.session_state.get("pw_reset_sent"):
                 st.caption(
-                    "We'll email you a six-digit code. Enter it below with your new "
+                    "We'll email you a reset code. Enter it below with your new "
                     "password and you're back in."
                 )
                 with st.form("pw_reset_request"):
-                    reset_email = st.text_input("The email you signed up with")
+                    reset_email = st.text_input("The email you signed up with",
+                                                autocomplete="off")
                     reset_send = st.form_submit_button("Email me a reset code",
                                                        width="stretch")
                 if reset_send:
-                    if not reset_email.strip():
+                    if not site.clean_email(reset_email):
                         st.error("Enter your email address first.")
                     else:
                         try:
-                            supabase.auth.reset_password_email(reset_email.strip())
+                            supabase.auth.reset_password_email(site.clean_email(reset_email))
                         except Exception:
                             # Deliberately swallowed. Whether an address is registered
                             # is not something a login page should confirm to whoever
@@ -567,23 +572,27 @@ def show_auth_page():
                             # either way.
                             pass
                         st.session_state.pw_reset_sent = True
-                        st.session_state.pw_reset_email = reset_email.strip()
+                        st.session_state.pw_reset_email = site.clean_email(reset_email)
                         st.rerun()
             else:
+                # 23 Oct 2026: an autofilled, mistyped address got a silent "sent" and
+                # Shawn hunted for an email that never came. Show the address back and
+                # say plainly to check it -- still without confirming it has an account.
                 st.info(
-                    f"If **{st.session_state.get('pw_reset_email', 'that address')}** has "
-                    "an account, a six-digit code is on its way. Check your spam folder — "
-                    "the code expires after about an hour."
+                    f"If an account exists for **{st.session_state.get('pw_reset_email', 'that address')}**, "
+                    "a code is on its way. **Check that address is exactly right** — if it "
+                    "has a typo, tap Start over below. Look in spam/junk too; the code "
+                    "expires after about an hour."
                 )
                 with st.form("pw_reset_confirm"):
-                    reset_code = st.text_input("Six-digit code from the email")
+                    reset_code = st.text_input("Code from the email")
                     new_pw = st.text_input("New password", type="password")
                     new_pw2 = st.text_input("Confirm new password", type="password")
                     reset_confirm = st.form_submit_button("Set my new password",
                                                           width="stretch")
                 if reset_confirm:
                     if not reset_code.strip():
-                        st.error("Enter the six-digit code from your email.")
+                        st.error("Enter the code from your email.")
                     elif new_pw != new_pw2:
                         st.error("Those two passwords don't match.")
                     elif len(new_pw) < 6:
@@ -642,7 +651,8 @@ def show_auth_page():
             else:
                 try:
                     _heard = site.clean_heard_from(signup_heard)
-                    _signup = {"email": signup_email, "password": signup_password}
+                    _signup = {"email": site.clean_email(signup_email),
+                               "password": signup_password}
                     if _heard:
                         # Kept on the login itself too: with email confirmation on,
                         # the profile row is only created at first login.

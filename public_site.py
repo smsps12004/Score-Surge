@@ -52,6 +52,33 @@ HEARD_FROM_CHOICES = {
 }
 
 
+def clean_email(value):
+    """An email as Supabase stores it: no spaces around it, all lowercase.
+
+    T12, 22-23 Oct 2026: the login sent the address exactly as typed. A phone
+    keyboard that capitalises the first letter, or autofill that adds a trailing
+    space, turned a correct email into "Login failed" with nothing to say why.
+    """
+    return (value or "").strip().lower()
+
+
+def login_error_message(exc):
+    """Plain-English reason a login failed, from Supabase's own error text.
+
+    Only three cases are told apart, because only these change what the sailor
+    should do next. It never says whether an address has an account.
+    """
+    text = str(exc).lower()
+    if "not confirmed" in text:
+        return ("Your email isn't confirmed yet. Open the confirmation email we sent "
+                "(check spam/junk), tap the link, then log in here.")
+    if "rate limit" in text or "too many" in text:
+        return ("Too many login attempts in a short time. Wait a few minutes, then "
+                "try again.")
+    return ("Login failed — check your email and password. Forgot your password? "
+            "Use \"Forgot your password?\" below.")
+
+
 def clean_heard_from(value):
     """A stored value, or None. Anything not on the list is dropped, never stored."""
     value = (value or "").strip().lower()

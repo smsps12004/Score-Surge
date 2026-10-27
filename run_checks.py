@@ -65,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 481
+EXPECTED_TOTAL = 490
 
 
 def skip(reason):
@@ -1396,7 +1396,7 @@ def main():
           _auth.count("at least 6 characters"), 2)
     # A login page must not confirm to a stranger whether an address is registered.
     check("reset does not reveal whether the email exists",
-          "If **{st.session_state.get('pw_reset_email', 'that address')}** has" in _auth,
+          "If an account exists for **{st.session_state.get('pw_reset_email', 'that address')}**" in _auth,
           True)
 
     # (e) The app stops handing out its own source.
@@ -1837,6 +1837,32 @@ def main():
     check("trial banner: never promises full access at the $12.99 price",
           "full access with Chief at \\$19.99/mo" in _site.trial_banner_text(2, "$12.99/mo", "$19.99/mo"),
           True)
+
+    # ── 26. Clearer login (T12, 26 Oct 2026) ─────────────────────────────────
+    print("\n26. CLEARER LOGIN AND RESET (T12)")
+    check("email is trimmed and lowercased before it reaches Supabase",
+          _site.clean_email("  Sailor.Smith@Navy.MIL "), "sailor.smith@navy.mil")
+    check("an empty email stays empty", _site.clean_email(None), "")
+    check("'Email not confirmed' gets its own message",
+          "isn't confirmed yet" in _site.login_error_message(Exception("Email not confirmed")), True)
+    check("a rate limit gets its own message",
+          "Too many login attempts" in _site.login_error_message(
+              Exception("Request rate limit reached")), True)
+    _bad = _site.login_error_message(Exception("Invalid login credentials"))
+    check("a wrong password points to Forgot your password",
+          "check your email and password" in _bad and "Forgot your password" in _bad, True)
+    check("...and never says whether the account exists",
+          any(w in _bad.lower() for w in ("no account", "not registered", "doesn't exist")), False)
+    _src26 = open(APP, encoding="utf-8").read()
+    check("login, signup and reset all send the cleaned email",
+          [_src26.count(f) for f in ('"email": site.clean_email(login_email)',
+                                     '{"email": site.clean_email(signup_email)',
+                                     "reset_password_email(site.clean_email(reset_email))")],
+          [1, 1, 1])
+    check("no screen promises a 'six-digit' code (Supabase sends 8 characters)",
+          "six-digit code from" in _src26.lower() or '"six-digit' in _src26.lower(), False)
+    check("a reused confirmation link tells the sailor to just log in",
+          "your email is confirmed — just log" in _src26, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
