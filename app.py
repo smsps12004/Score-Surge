@@ -4460,17 +4460,15 @@ telling the sailor to confirm it with PS Agent, naming the manual and the subjec
 A lesson that says "here is how this works, here is where the number lives, ask PS Agent
 for it" is worth more than one that guesses the number. It also cannot be wrong."""
 
+                # T14, 24 Oct 2026: the whole lesson used to be written before anything
+                # showed -- 30-60 s of a faded page with the spinner off screen on a
+                # phone, and Shawn took it for broken. The lesson now streams: the label
+                # saying whether it is grounded goes up first, then the text appears as
+                # it is written, within a few seconds of the tap.
                 with st.spinner("Chief is preparing your lesson..."):
                     try:
                         require_ai()
                         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                        message = client.messages.create(
-                            model="claude-opus-4-5", max_tokens=2000,
-                            messages=[{"role": "user", "content": lesson_prompt}]
-                        )
-                        lesson = message.content[0].text
-                        spend("ai")
-                        st.session_state._tutor_followups = 0
                         st.subheader(f"📚 Lesson: {tutor_subtopic}")
                         # The Tutor is the only tab that hands a sailor free-form Navy
                         # instruction, and a lesson reads with far more authority than a
@@ -4490,7 +4488,16 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                                 "numbers or approving authorities, because he cannot check them "
                                 "here. Get those from your bibliography and memorize them."
                             )
-                        st.markdown(lesson)
+                        with client.messages.stream(
+                            model="claude-opus-4-5", max_tokens=2000,
+                            messages=[{"role": "user", "content": lesson_prompt}]
+                        ) as lesson_stream:
+                            lesson = st.write_stream(lesson_stream.text_stream)
+                        if not isinstance(lesson, str):
+                            lesson = "".join(str(part) for part in lesson)
+                        # Counted only once the lesson actually arrived in full.
+                        spend("ai")
+                        st.session_state._tutor_followups = 0
                         st.session_state.tutor_history = [
                             {"role": "user", "content": lesson_prompt},
                             {"role": "assistant", "content": lesson}
