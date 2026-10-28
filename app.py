@@ -1144,6 +1144,25 @@ def cycle_facts_block(today=None):
     ])
 
 
+def exam_weight_rule():
+    """What the AI prompts may claim about how heavily a topic is tested.
+
+    Nothing the app hands the model says how many exam questions a topic gets, so
+    any number it gives is invented. Seen live on 28 Oct 2026: a Tutor lesson told
+    a sailor "Expect 3-5 questions" on leave and liberty. A sailor plans study time
+    around a number like that, so it is a fact shown as verified when it is not.
+    """
+    return (
+        "EXAM WEIGHTING: You have NOT been given how many exam questions any topic "
+        "gets, what share of the exam it is, or how often it is tested. Never state "
+        "or estimate a number of exam questions, a percentage of the exam, or which "
+        "topics \"appear most\" (no \"expect 3-5 questions\", no \"about 10% of the "
+        "exam\"). You may say the topic is on the sailor's bibliography and is fair "
+        "game. If the sailor asks how heavily a topic is tested, say you don't have "
+        "that information."
+    )
+
+
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
 # Official FMS computation per the MyNavyHR "E4 Through E7 Final Multiple Score"
 # chart (Cycle 104/243 forward), NAVADMIN 312/18, and BUPERSINST 1430.16G.
@@ -4017,7 +4036,7 @@ with tab3:
                 if sg_gap > 10:
                     strategy = "broad coverage — this sailor needs significant improvement across all areas"
                 elif sg_gap > 5:
-                    strategy = "high-yield focus — hit the heavy hitters that appear most on the exam"
+                    strategy = "high-yield focus — the core topics on their bibliography first, then the rest"
                 elif sg_gap > 0:
                     strategy = "precision mode — plug specific holes, every point counts"
                 else:
@@ -4078,6 +4097,8 @@ You are direct, blunt, and efficient. No fluff. No wasted words.
 {cycle_authority_line()}
 
 {cycle_facts_block()}
+
+{exam_weight_rule()}
 
 Generate a personalized Navy advancement study guide for:
 - Rating: {sg_rating}
@@ -4184,6 +4205,8 @@ one that guesses the number — and it cannot be wrong.{sg_questions_carve_out i
 {cycle_authority_line()}
 
 {cycle_facts_block()}
+
+{exam_weight_rule()}
 
 Write exactly {sgq_ask} NWAE-style multiple choice questions for:
 - Topic: {sg_topic}
@@ -4372,6 +4395,8 @@ You are teaching a Navy advancement exam lesson to a busy young sailor who needs
 {cycle_authority_line()}
 
 {cycle_facts_block()}
+
+{exam_weight_rule()}
 
 Explain everything like the sailor is smart but has never seen this material before.
 Be direct, clear, and use real Navy examples. No wasted words. No fluff.
@@ -4600,7 +4625,8 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                                     "above, do NOT defend it — say so plainly and send them to "
                                     "PS Agent to settle it.\n"
                                     "4. If you do not know, say you do not know. That is a "
-                                    "correct answer here."
+                                    "correct answer here.\n"
+                                    f"5. {exam_weight_rule()}"
                                 )
                             else:
                                 guarded = (
@@ -4621,7 +4647,8 @@ for it" is worth more than one that guesses the number. It also cannot be wrong.
                                     "plainly and tell them to ask PS Agent about that subject in "
                                     "the governing manual to settle it.\n"
                                     "3. If you do not know, say you do not know. That is a "
-                                    "correct answer here."
+                                    "correct answer here.\n"
+                                    f"4. {exam_weight_rule()}"
                                 )
                             history.append({"role": "user", "content": guarded})
                             message = client.messages.create(
@@ -4789,6 +4816,8 @@ with tab5:
         {cycle_authority_line()}
 
         {cycle_facts_block()}
+
+        {exam_weight_rule()}
 
         Write exactly {pq_ask} NWAE-style multiple choice questions for:
         - Topic: {pq_topic}
@@ -5243,7 +5272,9 @@ Structure the plan as follows:
 5. Final advice for exam week (days -7 through exam day)
 
 Be specific. Reference real {plan_rating} study materials where relevant.
-No fluff. Every line earns its place."""
+No fluff. Every line earns its place.
+
+{exam_weight_rule()}"""
 
             with st.spinner("Chief is building your study plan..."):
                 try:
@@ -5325,7 +5356,9 @@ Provide a clearly labeled preliminary planning checklist:
 2. List records and information to bring to their command career counselor or ESO.
 3. Suggest questions to confirm eligibility, available billets and current deadlines.
 4. Explain which details cannot be established from the information supplied.
-Avoid presenting unverified policy or timelines as facts."""
+Avoid presenting unverified policy or timelines as facts.
+
+{exam_weight_rule()}"""
 
             with st.spinner("Chief is reviewing your BBA situation..."):
                 try:

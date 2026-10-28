@@ -65,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 490
+EXPECTED_TOTAL = 499
 
 
 def skip(reason):
@@ -696,6 +696,7 @@ def main():
             # accuracy rules and not about dates, which section 8 already covers.
             "cycle_authority_line": lambda: "AUTHORITY LINE",
             "cycle_facts_block": lambda: "CYCLE FACTS",
+            "exam_weight_rule": lambda: "EXAM WEIGHT RULE",  # section 27 covers it
             # Placement results (13 Oct 2026). No history here, so the brief is empty
             # and the prompt is exactly what it was before placement existed.
             "placement": __import__("placement"),
@@ -1863,6 +1864,37 @@ def main():
           "six-digit code from" in _src26.lower() or '"six-digit' in _src26.lower(), False)
     check("a reused confirmation link tells the sailor to just log in",
           "your email is confirmed — just log" in _src26, True)
+
+    # ── 27. No invented exam weighting ───────────────────────────────────────
+    # 28 Oct 2026, live on app.strategicsailor.com: a Tutor lesson told a sailor
+    # "Expect 3-5 questions" on leave and liberty. Nothing the app gives the model
+    # says how many questions a topic gets, so that number was invented. Every
+    # prompt that writes for a sailor now carries exam_weight_rule().
+    print("\n27. NO INVENTED EXAM WEIGHTING (question counts, % of exam)")
+    _rule = L["exam_weight_rule"]()
+    check("the rule forbids stating or estimating a number of exam questions",
+          "Never state or estimate a number of exam questions" in _rule
+          and "percentage of the exam" in _rule, True)
+    _src27 = open(APP, encoding="utf-8").read()
+
+    def _slab27(start_marker, end_marker):
+        a = _src27.index(start_marker)
+        return _src27[a: _src27.index(end_marker, a)]
+
+    for _name, _start, _end in [
+        ("study guide", 'prompt = f"""You are a senior {sg_rating}', 'if sg_is_deep_dive and sg_grounded:'),
+        ("study guide questions", 'sgq_prompt = f"""You are a senior {sg_rating}', 'Write exactly {sgq_ask}'),
+        ("AI tutor lesson", 'lesson_body = f"""You are a senior {tutor_rating}', 'Teach this lesson as follows'),
+        ("mock exam", 'pq_prompt = f"""You are a senior {pq_rating}', 'Write exactly {pq_ask}'),
+        ("study planner", 'planner_prompt = f"""You are a senior {plan_rating}', 'with st.spinner("Chief is building'),
+        ("BBA strategy", 'bba_prompt = f"""You are an AI study', 'with st.spinner("Chief is reviewing your BBA'),
+    ]:
+        check(f"{_name} prompt carries exam_weight_rule()",
+              "{exam_weight_rule()}" in _slab27(_start, _end), True)
+    check("both tutor follow-up STANDING RULES blocks carry the rule",
+          [_src27.count('f"5. {exam_weight_rule()}"'), _src27.count('f"4. {exam_weight_rule()}"')], [1, 1])
+    check("the study guide no longer tells the AI which topics 'appear most on the exam'",
+          "appear most on the exam" in _src27, False)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
