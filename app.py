@@ -86,6 +86,46 @@ def _token_expiring(token: str, within_seconds: int = 120) -> bool:
         return True
 
 
+def _restore_auth(client, state):
+    """Put the sailor's login back on this run's client. Returns which path ran.
+
+    Every sailor reaches Supabase from this server's one IP address, so Supabase's
+    per-IP auth limits are shared by everyone. The /auth/v1/user endpoint sits in the
+    sign-ups-and-sign-ins bucket (30 per 5 minutes per IP). The old code called
+    set_session() whenever a token was within 2 minutes of expiry, and set_session()
+    on a token that has NOT yet expired only checks it with /auth/v1/user; it does not
+    refresh it. So for the last 2 minutes of every hour, every click by every sailor
+    spent one of those 30 shared calls, and a handful of sailors on a mock exam could
+    lock everyone out of logging in (T11, found 28 Oct 2026).
+
+    Now an expiring token is swapped for a fresh pair in ONE call to /auth/v1/token
+    (its own bucket, 150 per 5 minutes per IP), and the next hour of clicks is local.
+
+      "refresh"      token expiring or expired: refresh_session(), one /token call
+      "set_session"  token still good but no user in memory: one /user call
+      "local"        token still good and user known: no network call at all
+    """
+    if _token_expiring(state["access_token"]):
+        res = client.auth.refresh_session(state["refresh_token"])
+        path = "refresh"
+    elif not state["user"]:
+        res = client.auth.set_session(state["access_token"], state["refresh_token"])
+        path = "set_session"
+    else:
+        # The token is still good — attach it to this run's client so database
+        # calls carry the sailor's identity. Local, no network round trip.
+        client.postgrest.auth(state["access_token"])
+        return "local"
+    state["user"] = res.user
+    # Both calls can hand back rotated tokens. Keeping the old ones would mean
+    # refreshing again on every rerun from here on.
+    if getattr(res, "session", None):
+        state["access_token"] = res.session.access_token
+        state["refresh_token"] = res.session.refresh_token
+        client.postgrest.auth(res.session.access_token)
+    return path
+
+
 # Streamlit re-executes this entire file on every interaction, and `create_client`
 # above returns a brand new, ANONYMOUS client each time. st.session_state survives
 # a rerun; the client's authentication does not.
@@ -102,21 +142,7 @@ def _token_expiring(token: str, within_seconds: int = 120) -> bool:
 # sailor's scores. The fix belongs here.
 if st.session_state.access_token:
     try:
-        if not st.session_state.user or _token_expiring(st.session_state.access_token):
-            res = supabase.auth.set_session(
-                st.session_state.access_token,
-                st.session_state.refresh_token
-            )
-            st.session_state.user = res.user
-            # set_session can hand back rotated tokens. Keeping the old ones would
-            # mean refreshing again on every rerun from here on.
-            if getattr(res, "session", None):
-                st.session_state.access_token = res.session.access_token
-                st.session_state.refresh_token = res.session.refresh_token
-        else:
-            # The token is still good — attach it to this run's client so database
-            # calls carry the sailor's identity. Local, no network round trip.
-            supabase.postgrest.auth(st.session_state.access_token)
+        _restore_auth(supabase, st.session_state)
     except Exception:
         st.session_state.access_token = None
         st.session_state.refresh_token = None
