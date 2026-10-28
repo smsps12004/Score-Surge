@@ -65,7 +65,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 499
+EXPECTED_TOTAL = 508
 
 
 def skip(reason):
@@ -1895,6 +1895,75 @@ def main():
           [_src27.count('f"5. {exam_weight_rule()}"'), _src27.count('f"4. {exam_weight_rule()}"')], [1, 1])
     check("the study guide no longer tells the AI which topics 'appear most on the exam'",
           "appear most on the exam" in _src27, False)
+
+    # ── 28. Login restore doesn't burn the shared auth limit (T11) ────────────
+    # Every sailor reaches Supabase from the server's one IP, so the per-IP auth
+    # limits are shared. Before 28 Oct 2026 a token within 2 minutes of expiry was
+    # re-checked with /auth/v1/user (sign-ins bucket, 30 per 5 min per IP) on EVERY
+    # click, without being refreshed. _restore_auth now refreshes it once via
+    # /auth/v1/token and the following clicks make no network call.
+    print("\n28. LOGIN RESTORE DOESN'T BURN THE SHARED AUTH LIMIT (T11)")
+    import base64 as _b64, json as _json, time as _time, types as _types
+    _src28 = open(APP, encoding="utf-8").read()
+    _ns28 = {"json": _json, "base64": _b64, "time": _time}
+    _a = _src28.index("def _token_expiring")
+    exec(_src28[_a: _src28.index("# Streamlit re-executes this entire file", _a)], _ns28)
+    _restore = _ns28["_restore_auth"]
+
+    def _jwt(seconds_left):
+        _body = _b64.urlsafe_b64encode(_json.dumps(
+            {"exp": int(_time.time() + seconds_left)}).encode()).decode().rstrip("=")
+        return f"hdr.{_body}.sig"
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = []
+            self.postgrest = _types.SimpleNamespace(
+                auth=lambda tok: self.calls.append(("postgrest.auth", tok)))
+            fresh = _jwt(3600)
+            def _refresh(rt):
+                self.calls.append(("refresh_session", rt))
+                return _types.SimpleNamespace(
+                    user="sailor", session=_types.SimpleNamespace(
+                        access_token=fresh, refresh_token="rt-2"))
+            def _set(at, rt):
+                self.calls.append(("set_session", at))
+                return _types.SimpleNamespace(user="sailor", session=None)
+            self.auth = _types.SimpleNamespace(refresh_session=_refresh, set_session=_set)
+
+        def network(self):
+            return [c[0] for c in self.calls if c[0] != "postgrest.auth"]
+
+    _c = _FakeClient()
+    _state = {"access_token": _jwt(60), "refresh_token": "rt-1", "user": "sailor"}
+    check("a token 60 s from expiry is refreshed through /token",
+          _restore(_c, _state), "refresh")
+    check("...with one refresh_session call and no /user call",
+          _c.network(), ["refresh_session"])
+    check("...and the rotated tokens are kept",
+          (_state["refresh_token"], _ns28["_token_expiring"](_state["access_token"])),
+          ("rt-2", False))
+    check("...and the database client gets the new token",
+          _c.calls[-1], ("postgrest.auth", _state["access_token"]))
+    _c.calls.clear()
+    for _ in range(25):
+        _restore(_c, _state)
+    check("25 clicks after the refresh make no auth network call",
+          _c.network(), [])
+    _c2 = _FakeClient()
+    _state2 = {"access_token": _jwt(-30), "refresh_token": "rt-1", "user": "sailor"}
+    check("an already-expired token is refreshed too",
+          (_restore(_c2, _state2), _c2.network()), ("refresh", ["refresh_session"]))
+    _c3 = _FakeClient()
+    _state3 = {"access_token": _jwt(3000), "refresh_token": "rt-1", "user": None}
+    check("a good token with no user in memory uses set_session once",
+          (_restore(_c3, _state3), _c3.network(), _state3["user"]),
+          ("set_session", ["set_session"], "sailor"))
+    check("a good token with the user known makes no network call",
+          (_restore(_c3, _state3), _c3.network()), ("local", ["set_session"]))
+    check("the app's restore block goes through _restore_auth",
+          "_restore_auth(supabase, st.session_state)" in _src28
+          and "supabase.auth.set_session(" not in _src28, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
