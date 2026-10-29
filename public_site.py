@@ -180,6 +180,9 @@ Privacy questions and requests: {SUPPORT_EMAIL}.
 - **Account:** your email address, login session, plan (trial, free or paid), when
   your trial started, your chosen rating, and which device is signed in. Used to run
   your account and enforce one-device, one-rating access. Stored with Supabase.
+- **If you sign in with Google:** Google tells us your email address, name and profile
+  picture. We use the email address to run your account and don't use the rest. We never
+  see your Google password.
 - **How you heard about us:** if you answer the optional signup question, we store your
   answer to understand which outreach works.
 - **Practice history:** placement and mock-exam results by topic, so the app can show
@@ -197,8 +200,8 @@ Privacy questions and requests: {SUPPORT_EMAIL}.
   the link between your account and your Stripe customer record so your plan works.
 
 ## Who processes it
-Supabase (accounts and database), Anthropic (AI responses), Stripe (payments) and our
-hosting provider. We don't sell your information and we don't use advertising
+Supabase (accounts and database), Anthropic (AI responses), Stripe (payments),
+Google (only if you choose to sign in with Google) and our hosting provider. We don't sell your information and we don't use advertising
 trackers in the app.
 
 ## Keeping and deleting it

@@ -19,6 +19,7 @@ import placement
 import account_locks as locks
 import public_site as site
 import readiness
+import google_signin as gsi
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -435,6 +436,8 @@ _SCRUB_TOKEN_JS = """
       if (!pat.test(h)) { return false; }
       var ok = !/error/.test(h);
       var q = ok ? "?confirmed=1" : "?confirm_error=1";
+      // A failed Google sign-in is not a confirmation link; say the right thing.
+      if (/google_flow=/.test(w.location.search || "")) { q = "?google_error=1"; }
       w.location.replace(w.location.pathname + q);
       return true;
     } catch (e) { return false; }
@@ -496,6 +499,69 @@ def _open_signup_tab():
     st.session_state["auth_tab"] = AUTH_TAB_SIGNUP
 
 
+# ── CONTINUE WITH GOOGLE (29 Oct 2026) ────────────────────────────────────────
+# How it works, and why the secret lives on the server: google_signin.py.
+# The button only shows once the Google provider is switched on in Supabase
+# (Authentication → Sign In / Providers → Google), so this can ship before that
+# setup is done. A GOOGLE_SIGNIN secret of "off" hides it; "on" forces it on.
+@st.cache_resource
+def _google_flows():
+    return gsi.PendingFlows()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _google_provider_on(url: str, key: str) -> bool:
+    """Ask Supabase's public settings endpoint whether Google is switched on.
+
+    Cached 5 minutes, so the login page costs at most one call per 5 minutes.
+    Any failure counts as "off": the email login is always there.
+    """
+    try:
+        import httpx
+        r = httpx.get(f"{url.rstrip('/')}/auth/v1/settings", headers={"apikey": key}, timeout=4)
+        return gsi.provider_enabled(r.json())
+    except Exception:
+        return False
+
+
+def google_signin_on() -> bool:
+    mode = str(st.secrets.get("GOOGLE_SIGNIN", "auto")).strip().lower()
+    if mode in ("off", "false", "0", "no"):
+        return False
+    if mode in ("on", "true", "1", "yes"):
+        return True
+    return _google_provider_on(SUPABASE_URL, SUPABASE_KEY)
+
+
+_GOOGLE_GO_JS = """
+<script>
+(function () {
+  var u = %s;
+  try { (window.top || window).location.assign(u); } catch (e) { window.location.assign(u); }
+})();
+</script>
+"""
+
+
+def render_google_button():
+    """One button for new and returning sailors: Google makes the account if needed."""
+    _failed = st.session_state.pop("_google_failed", None)
+    if _failed:
+        st.warning(gsi.failure_message(_failed, SUPPORT_EMAIL))
+    if st.button("Continue with Google", key="google_signin", type="primary",
+                 width="stretch"):
+        _flow_id, _verifier = _google_flows().start()
+        st.session_state["_google_url"] = gsi.authorize_url(
+            SUPABASE_URL, gsi.return_url(get_app_base_url(), _flow_id), _verifier)
+    # Popped, not read: the browser is sent to Google once, and coming back to this
+    # page (Back button) must not bounce the sailor straight there again.
+    _url = st.session_state.pop("_google_url", None)
+    if _url:
+        st.html(_GOOGLE_GO_JS % json.dumps(_url), unsafe_allow_javascript=True)
+        st.link_button("Opening Google… tap here if nothing happens", _url, width="stretch")
+    st.caption("New here? This starts your free 3-day trial too. Or use your email below.")
+
+
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
@@ -521,6 +587,8 @@ def show_auth_page():
         st.write(DATA_NOTICE)
         st.write(f"Support: {SUPPORT_EMAIL}")
     st.divider()
+    if google_signin_on():
+        render_google_button()
 
     tab_login, tab_signup = st.tabs([AUTH_TAB_LOGIN, AUTH_TAB_SIGNUP], key="auth_tab",
                                     on_change="rerun")
@@ -797,6 +865,52 @@ if _qp.get("confirmed") == "1" or _qp.get("confirm_error") == "1":
     st.query_params.clear()
     st.rerun()
 
+# ── BACK FROM GOOGLE: ?google_flow=...&code=... (29 Oct 2026) ─────────────────
+# Supabase sends the sailor here with a one-time code. It is traded, together with
+# the secret this server filed under google_flow (google_signin.py), for a normal
+# Supabase login -- the same kind the email login makes, so plans, Stripe, the
+# rating lock and the one-device rule all work unchanged. If the Google address
+# already has a Score Surge account, Supabase signs the sailor in to THAT account.
+def _created_just_now(user, minutes: int = 15) -> bool:
+    try:
+        made = getattr(user, "created_at", None)
+        if isinstance(made, str):
+            made = datetime.datetime.fromisoformat(made.replace("Z", "+00:00"))
+        return (datetime.datetime.now(datetime.timezone.utc) - made).total_seconds() < minutes * 60
+    except Exception:
+        return False
+
+
+if _qp.get(gsi.FLOW_PARAM) or _qp.get("google_error") == "1":
+    _flow, _code, _gerr = _qp.get(gsi.FLOW_PARAM), _qp.get("code"), _qp.get("error")
+    st.query_params.clear()   # the code is single-use; never leave it in the address bar
+    _verifier = _google_flows().take(_flow)
+    if not st.session_state.user:
+        try:
+            if _gerr or not _code:
+                raise ValueError(f"Google returned no code ({_gerr or 'none'})")
+            if not _verifier:
+                raise ValueError("unknown, used or expired google_flow")
+            _res = supabase.auth.exchange_code_for_session(
+                {"auth_code": _code, "code_verifier": _verifier})
+            if not (_res.user and _res.session):
+                raise ValueError("exchange returned no session")
+            st.session_state.user = _res.user
+            st.session_state.access_token = _res.session.access_token
+            st.session_state.refresh_token = _res.session.refresh_token
+            st.session_state.tier = get_user_tier(_res.user.id, _res.user.email or "",
+                                                  heard_from_of(_res.user))
+            # A Google signup never saw the "How did you hear about us?" question,
+            # so the rating screen asks it once instead.
+            st.session_state["_ask_heard_from"] = _created_just_now(_res.user)
+            for _k in ("_email_confirmed", "_confirm_failed", "_signed_out_elsewhere"):
+                st.session_state.pop(_k, None)
+            locks.claim_session(supabase, _res.user.id, st.session_state)
+        except Exception as _e:
+            print(f"[google] sign-in failed: {_e!r}")
+            st.session_state["_google_failed"] = gsi.failure_reason(_gerr)
+    st.rerun()
+
 # ── ?signup=1 from the landing page's "Start free trial" buttons ──────────────
 if _qp.get("signup") == "1" and not st.session_state.user:
     st.session_state["auth_tab"] = AUTH_TAB_SIGNUP
@@ -862,8 +976,25 @@ if st.session_state.get("locked_rating", "?") is None:
         f"You can change it yourself once every {locks.RATING_CHANGE_DAYS} days from My Profile. "
         f"If you convert ratings sooner, email {SUPPORT_EMAIL}."
     )
+    _heard_pick = None
+    if st.session_state.get("_ask_heard_from"):
+        _heard_pick = st.selectbox(
+            "How did you hear about us? (optional)",
+            list(site.HEARD_FROM_CHOICES), index=None,
+            format_func=lambda v: site.HEARD_FROM_CHOICES[v],
+            placeholder="Choose one, or skip", key="google_heard_from",
+        )
     if st.button(f"Lock in {_pick}", width="stretch"):
+        _heard = site.clean_heard_from(_heard_pick)
+        if _heard:
+            try:
+                supabase.table("profiles").update({"heard_from": _heard}).eq(
+                    "id", st.session_state.user.id).execute()
+            except Exception as _e:
+                # Optional marketing answer: never block the rating lock over it.
+                print(f"[google] could not save heard_from: {_e!r}")
         if locks.save_rating(supabase, st.session_state.user.id, _pick):
+            st.session_state.pop("_ask_heard_from", None)
             st.session_state.locked_rating = _pick
             st.session_state.rating_set_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             st.rerun()

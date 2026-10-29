@@ -46,6 +46,8 @@ It loads the pure logic out of app.py (no Streamlit needed), then checks:
  24. The placement test (placement.py): 40 verified-bank questions, no AI, honest
      about untested topics, results reach the Chief's prompt -- and every
      AI-generated question is saved to generated_questions as unverified
+ 29. Continue with Google (google_signin.py): PKCE secret held on the server,
+     single-use, expires in 10 minutes, and the login goes through the same steps
 
 Exit code 0 = safe to push. Exit code 1 = something is broken OR some checks did
 not run, read the output. A skipped check is never treated as a pass.
@@ -65,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 508
+EXPECTED_TOTAL = 525
 
 
 def skip(reason):
@@ -1964,6 +1966,65 @@ def main():
     check("the app's restore block goes through _restore_auth",
           "_restore_auth(supabase, st.session_state)" in _src28
           and "supabase.auth.set_session(" not in _src28, True)
+
+    # ── 29. Continue with Google (google_signin.py, 29 Oct 2026) ──────────────
+    # The secret that proves the returning browser is the one that left (PKCE
+    # verifier) lives on the server, filed under a random flow ID, because Streamlit
+    # starts a fresh session when the sailor comes back from Google.
+    print("\n29. CONTINUE WITH GOOGLE")
+    import hashlib as _h29, base64 as _b29, urllib.parse as _u29
+    sys.path.insert(0, HERE)
+    import google_signin as _g
+    _v = _g.make_verifier()
+    check("verifier is 43-128 URL-safe characters (PKCE spec)",
+          (43 <= len(_v) <= 128, bool(re.fullmatch(r"[A-Za-z0-9_\-]+", _v))), (True, True))
+    check("challenge is the S256 hash of the verifier",
+          _g.challenge_for(_v),
+          _b29.urlsafe_b64encode(_h29.sha256(_v.encode()).digest()).rstrip(b"=").decode())
+    _url29 = _g.authorize_url("https://x.supabase.co/", _g.return_url("https://app.test/", "F1"), _v)
+    _q29 = _u29.parse_qs(_u29.urlparse(_url29).query)
+    check("authorize URL goes to Supabase's /auth/v1/authorize",
+          _url29.split("?")[0], "https://x.supabase.co/auth/v1/authorize")
+    check("...asks for Google with an S256 challenge, never the verifier",
+          (_q29["provider"], _q29["code_challenge_method"], _v in _url29),
+          (["google"], ["s256"], False))
+    check("...and comes back to the app carrying the flow ID",
+          _q29["redirect_to"], ["https://app.test/?google_flow=F1"])
+    _now = [1000.0]
+    _flows = _g.PendingFlows(ttl=600, cap=3, clock=lambda: _now[0])
+    _fid, _ver = _flows.start()
+    check("a flow hands back its own verifier", _flows.take(_fid), _ver)
+    check("...exactly once", _flows.take(_fid), None)
+    check("an unknown or empty flow ID gets nothing",
+          (_flows.take("made-up"), _flows.take(""), _flows.take(None)), (None, None, None))
+    _fid2, _ = _flows.start()
+    _now[0] += 601
+    check("a flow older than 10 minutes is refused", _flows.take(_fid2), None)
+    for _ in range(10):
+        _flows.start()
+    check("the pending list never grows past its cap", len(_flows) <= 3, True)
+    check("flow IDs are random and long",
+          len({_g.PendingFlows().start()[0] for _ in range(50)}) == 50 and len(_fid) >= 24, True)
+    check("Supabase settings: Google on only when external.google is true",
+          [_g.provider_enabled(s) for s in ({"external": {"google": True}},
+                                            {"external": {"google": False}},
+                                            {"external": {}}, {}, None, "x")],
+          [True, False, False, False, False, False])
+    check("cancel on Google's page reads as cancelled, anything else as failed",
+          (_g.failure_reason("access_denied"), _g.failure_reason("server_error"),
+           _g.failure_reason(None)), ("cancelled", "failed", "failed"))
+    _src29 = open(APP, encoding="utf-8").read()
+    _cb = _src29[_src29.index("if _qp.get(gsi.FLOW_PARAM)"):_src29.index("# ── ?signup=1")]
+    check("the code is wiped from the address bar before anything else",
+          _cb.index("st.query_params.clear()") < _cb.index("exchange_code_for_session"), True)
+    check("the exchange always sends the server-held verifier",
+          '"code_verifier": _verifier' in _cb and "if not _verifier:" in _cb, True)
+    check("a Google login goes through the same tier, lock and session steps",
+          all(k in _cb for k in ("get_user_tier(", "locks.claim_session(",
+                                 "st.session_state.access_token", "st.session_state.refresh_token")),
+          True)
+    check("the button is hidden unless Google is switched on",
+          "if google_signin_on():\n        render_google_button()" in _src29, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
