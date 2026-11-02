@@ -65,6 +65,25 @@ class LaunchUITests(unittest.TestCase):
         labels = [e.value for e in list(app.info) + list(app.warning)]
         self.assertTrue(any('excerpts supplied' in v or 'written from memory' in v for v in labels))
 
+    def test_e7_sees_the_published_exam_date(self):
+        # T43: NAVADMIN 241/26 sets the January 2027 E7 exam for 21 Jan 2027. The
+        # app said "1 Feb 2027 estimated, NAVADMIN not yet released" to E7s.
+        app = build_app()
+        app.session_state['fms_paygrade'] = 'E7'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        metrics = {m.label: m for m in app.metric}
+        self.assertIn('E7 Exam', metrics)
+        self.assertIn('21 January 2027', metrics['E7 Exam'].proto.delta)
+        self.assertIn('30 November 2026', metrics['PMK-EE Deadline'].proto.delta)
+        self.assertIn('31 December 2026', metrics['ALDC Deadline'].proto.delta)
+        self.assertNotIn('E7 Exam (est.)', metrics)
+        self.assertNotIn('Official NAVADMIN', metrics)
+        shown = ' '.join(x.value for x in list(app.caption) + list(app.info) + list(app.success))
+        self.assertIn('NAVADMIN 241/26', shown)
+        self.assertIn('NAVADMIN 257/26', shown)   # SELRES are told their own window
+        self.assertNotIn('1 February 2027', shown)
+
     def _login(self, email, error):
         app = build_app()
         app.session_state['user'] = None

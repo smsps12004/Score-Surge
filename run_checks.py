@@ -67,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 543
+EXPECTED_TOTAL = 552
 
 
 def skip(reason):
@@ -2089,6 +2089,24 @@ def main():
           "_flow_src if _is_new else None" in _src30, True)
     check("the Privacy Notice says link source codes are stored",
           "source code" in _site.PRIVACY_MD and "totals" in _site.PRIVACY_MD, True)
+
+    # ── 31. E7 exam date from the published NAVADMIN (T43, 2 Nov 2026) ────────
+    # NAVADMIN 241/26 (R 151506Z OCT 26) set the January 2027 Cycle 274 E7 exam,
+    # but every E7 candidate was still shown "1 Feb 2027, estimated, NAVADMIN not
+    # yet released". These are the message's own dates (paras 3.a-3.c).
+    print("\n31. E7 EXAM DATE (T43)")
+    _cpo = L["CPO_EXAM"]
+    check("E7 exam date is NAVADMIN 241/26's", _cpo["date"], datetime.date(2027, 1, 21))
+    check("E7 date is marked as published, not estimated", _cpo["announced"], True)
+    check("E7 block names its NAVADMIN", _cpo["navadmin"], "NAVADMIN 241/26")
+    check("E7 cycle number", _cpo["cycle"], 274)
+    check("E7 PMK-EE deadline", _cpo["pmkee"], datetime.date(2026, 11, 30))
+    check("E7 ALDC deadline", _cpo["aldc"], datetime.date(2026, 12, 31))
+    check("SELRES E7s are pointed to their own NAVADMIN", "257/26" in _cpo["selres_window"], True)
+    _src31 = open(APP, encoding="utf-8").read()
+    check("no screen still calls the E7 exam a 'CPO Board Exam (est.)'",
+          "CPO Board Exam (est.)" in _src31, False)
+    check("no screen still reads the old estimate field", 'CPO_EXAM["est_date"]' in _src31, False)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

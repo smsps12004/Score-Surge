@@ -1259,9 +1259,26 @@ CYCLE = {
     "pma_window_e5": "1 June 2025 to 31 August 2026",
 }
 
-# FY28 CPO board exam. `announced` flips to True with a real date once the
-# NAVADMIN is published; until then the app calls it an estimate and says so.
-CPO_EXAM = {"fy": 28, "est_date": datetime.date(2027, 2, 1), "announced": False}
+# The next E7 exam. `announced` is True only when "date" comes from a published
+# NAVADMIN; while it is False the app calls the date an estimate and says so.
+#
+# 2 Nov 2026 (T43): NAVADMIN 241/26 (R 151506Z OCT 26) was out, but this still
+# said "1 Feb 2027, estimated, NAVADMIN not yet released" to every E7 candidate.
+# The real exam is 21 January 2027 (Cycle 274, NWAE and RKE, Active Duty and TAR).
+# Source PDF: Score Surge Data Base/manuals/e7-fy28/. SELRES E7s test on a
+# different window under NAVADMIN 257/26, so the app never shows them 21 Jan.
+#
+# HOW TO UPDATE: when the next E7 NAVADMIN is published, change every value below
+# to the new one. Until then, leave "announced" False and give an honest estimate.
+CPO_EXAM = {
+    "cycle": 274,
+    "navadmin": "NAVADMIN 241/26",
+    "date": datetime.date(2027, 1, 21),
+    "announced": True,
+    "pmkee": datetime.date(2026, 11, 30),   # para 3.a, passing score 80 or above
+    "aldc": datetime.date(2026, 12, 31),    # para 3.b, mandatory for all E7 candidates
+    "selres_window": "1–28 February 2027 (NAVADMIN 257/26)",
+}
 
 
 def _fmt_date(d):
@@ -3174,6 +3191,13 @@ with tab2:
             "[MyNavyHR](https://www.mynavyhr.navy.mil) for it. Your FMS calculator, "
             "study tools and score history all work in the meantime."
         )
+        # The E7 exam runs on its own NAVADMIN, which can be out while E5/E6's is not.
+        if sailor_paygrade() == "E7" and CPO_EXAM["announced"]:
+            st.success(
+                f"**E7 candidates:** your exam date is out — "
+                f"{_fmt_date(CPO_EXAM['date'])} ({CPO_EXAM['navadmin']}). "
+                "Your countdown and deadlines are in the CPO / E7 Exam Watch below."
+            )
         deadlines = []
     else:
         _pg = sailor_paygrade()
@@ -3187,12 +3211,16 @@ with tab2:
         elif _pg == "E6":
             _my_exam_label, _my_exam_date = "Your E6 Exam Day", CYCLE["exam_e6"]
         elif _pg == "E7":
-            _my_exam_label, _my_exam_date = "Your CPO Board Exam (est.)", CPO_EXAM["est_date"]
+            _my_exam_label = ("Your E7 Exam Day" if CPO_EXAM["announced"]
+                              else "Your E7 Exam (est.)")
+            _my_exam_date = CPO_EXAM["date"]
         else:
             _my_exam_label = _my_exam_date = None
 
         if _my_exam_date:
-            st.subheader(f"⏱️ Cycle {CYCLE['number']} — Your Countdown")
+            # E7 is its own cycle; it used to be headed with the E5/E6 cycle number.
+            _my_cycle = CPO_EXAM["cycle"] if _pg == "E7" else CYCLE["number"]
+            st.subheader(f"⏱️ Cycle {_my_cycle} — Your Countdown")
             _status, _date_line = deadline_tile(_my_exam_date, today)
             st.metric(_my_exam_label, _status)
             st.caption(f"📅 {_date_line}")
@@ -3320,7 +3348,7 @@ billet application, and what to do if you passed but weren't selected.
 
     # Prominent for the sailors it belongs to, one tap down for everyone else.
     # An E5 does not need the FY28 CPO estimate competing with their own exam date.
-    _cpo_title = f"⭐ CPO / E7 Exam Watch — FY{CPO_EXAM['fy']}"
+    _cpo_title = f"⭐ CPO / E7 Exam Watch — Cycle {CPO_EXAM['cycle']}"
     if _pg_now == "E7":
         st.subheader(_cpo_title)
         _cpo_box = st.container()
@@ -3328,43 +3356,47 @@ billet application, and what to do if you passed but weren't selected.
         _cpo_box = st.expander(_cpo_title)
 
     with _cpo_box:
-        st.caption(
-            f"The FY{CPO_EXAM['fy']} CPO board exam is typically held in January–February. "
-            + ("The date below is confirmed."
-               if CPO_EXAM["announced"] else
-               "The official NAVADMIN has not yet been released.")
-        )
-
-        _cpo_est_date = CPO_EXAM["est_date"]
-        _cpo_days_left = (_cpo_est_date - today).days
-        if _cpo_days_left < 0:
-            _cpo_status = "⛔ Est. date passed"
-        elif _cpo_days_left <= 14:
-            _cpo_status = f"🔴 ~{_cpo_days_left} days"
-        elif _cpo_days_left <= 30:
-            _cpo_status = f"🟡 ~{_cpo_days_left} days"
+        _cpo_date = CPO_EXAM["date"]
+        if CPO_EXAM["announced"]:
+            st.caption(
+                f"Active Duty and TAR E7 exam (NWAE and RKE), set by {CPO_EXAM['navadmin']}. "
+                f"Selected Reserve E7 candidates test {CPO_EXAM['selres_window']}."
+            )
+            _cpo_status, _cpo_line = deadline_tile(_cpo_date, today)
+            cpo_col1, cpo_col2, cpo_col3 = st.columns(3)
+            cpo_col1.metric("E7 Exam", _cpo_status, delta=_cpo_line, delta_color="off")
+            for _col, _label, _key in ((cpo_col2, "PMK-EE Deadline", "pmkee"),
+                                       (cpo_col3, "ALDC Deadline", "aldc")):
+                _s, _line = deadline_tile(CPO_EXAM[_key], today)
+                _col.metric(_label, _s, delta=_line, delta_color="off")
+            st.info(
+                f"📋 These dates are from **{CPO_EXAM['navadmin']}**. PMK-EE needs a passing "
+                "score of 80 or above, and ALDC completion is required for every E7 "
+                "candidate to take the exam. Confirm your own eligibility on your EAW with "
+                "your ESO. Full message: [MyNavyHR advancement page]"
+                "(https://www.mynavyhr.navy.mil/Career-Management/Community-Management/"
+                "Enlisted-Career-Admin/Advancement/)."
+            )
         else:
-            _cpo_status = f"🟢 ~{_cpo_days_left} days"
-
-        cpo_col1, cpo_col2 = st.columns(2)
-        cpo_col1.metric(
-            "CPO Exam" if CPO_EXAM["announced"] else "CPO Exam (est.)",
-            _cpo_status,
-            delta=f"{_fmt_date(_cpo_est_date)}"
-                  + ("" if CPO_EXAM["announced"] else " estimated"),
-            delta_color="off",
-        )
-        cpo_col2.metric("Official NAVADMIN",
-                        "✅ Released" if CPO_EXAM["announced"] else "⏳ Not yet released")
-        st.info(
-            f"📋 **FY{CPO_EXAM['fy']} CPO Board Exam** — Historically announced Oct–Nov and "
-            "administered Jan–Feb. "
-            + ("The date above is from the published NAVADMIN."
-               if CPO_EXAM["announced"] else
-               "Watch for the official NAVADMIN on "
-               "[MyNavyHR](https://www.mynavyhr.navy.mil). "
-               "This countdown will be updated once the date is confirmed.")
-        )
+            st.caption("The official NAVADMIN for the next E7 exam has not been released yet.")
+            _cpo_days_left = (_cpo_date - today).days
+            if _cpo_days_left < 0:
+                _cpo_status = "⛔ Est. date passed"
+            elif _cpo_days_left <= 14:
+                _cpo_status = f"🔴 ~{_cpo_days_left} days"
+            elif _cpo_days_left <= 30:
+                _cpo_status = f"🟡 ~{_cpo_days_left} days"
+            else:
+                _cpo_status = f"🟢 ~{_cpo_days_left} days"
+            cpo_col1, cpo_col2 = st.columns(2)
+            cpo_col1.metric("E7 Exam (est.)", _cpo_status,
+                            delta=f"{_fmt_date(_cpo_date)} estimated", delta_color="off")
+            cpo_col2.metric("Official NAVADMIN", "⏳ Not yet released")
+            st.info(
+                "📋 Watch for the official NAVADMIN on "
+                "[MyNavyHR](https://www.mynavyhr.navy.mil). "
+                "This countdown will be updated once the date is confirmed."
+            )
 
 
 # ── EXAM QUESTION ENGINE ───────────────────────────────────────────────────────
