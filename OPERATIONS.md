@@ -266,6 +266,19 @@ reaches the live site before it has run on his Mac.
 3. **Check Supabase → Authentication → URL Configuration → Site URL** is the app's real
    address (today `https://score-surge.streamlit.app`).
 
+## Signup source links (T2), 2 Nov 2026 — one-time setup
+
+1. **Run `supabase/migrations/20261102_signup_source.sql`** in the Supabase SQL editor
+   (additions only, safe to run twice). Best run **before** merging the app change: it
+   adds the new answers (YouTube, Podcast, Business card / QR code) and the `signup_src`
+   column. If the app goes live first, nothing breaks; new answers just stay on the login
+   until the script runs and copies them over.
+2. **Link codes** for posts, bios and QR codes: `?src=fb`, `ig`, `tt`, `yt`, `rd`, `dc`,
+   `pts` (podcast), `card` (business card). Example:
+   `https://app.strategicsailor.com/?src=ig` or, straight to the signup tab,
+   `https://app.strategicsailor.com/?signup=1&src=ig`. An unknown code is ignored.
+   When the hub moves to strategicsailor.com (T17), its links must pass `src` along.
+
 ## When the spring 2027 NAVADMIN is published
 
 Edit the `CYCLE = {` block near the top of `app.py` and nothing else: cycle number,

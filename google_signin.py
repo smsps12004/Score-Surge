@@ -52,37 +52,48 @@ class PendingFlows:
 
     def __init__(self, ttl: int = FLOW_TTL_SECONDS, cap: int = MAX_PENDING, clock=time.time):
         self._ttl, self._cap, self._clock = ttl, cap, clock
-        self._items: dict[str, tuple[str, float]] = {}
+        self._items: dict[str, tuple[str, float, str | None]] = {}
         self._lock = threading.Lock()
 
     def __len__(self):
         return len(self._items)
 
     def _prune(self, now: float):
-        for fid in [f for f, (_, t) in self._items.items() if now - t > self._ttl]:
+        for fid in [f for f, (_, t, _x) in self._items.items() if now - t > self._ttl]:
             del self._items[fid]
         while len(self._items) >= self._cap:            # oldest first
             del self._items[next(iter(self._items))]
 
-    def start(self) -> tuple[str, str]:
-        """Open a sign-in. Returns (flow_id, verifier)."""
+    def start(self, src: str | None = None) -> tuple[str, str]:
+        """Open a sign-in. Returns (flow_id, verifier).
+
+        `src` is the link code the sailor arrived with (?src=ig, T2). The browser
+        coming back from Google is a new Streamlit session that has forgotten it,
+        so it waits here with the verifier.
+        """
         flow_id, verifier = secrets.token_urlsafe(24), make_verifier()
         with self._lock:
             now = self._clock()
             self._prune(now)
-            self._items[flow_id] = (verifier, now)
+            self._items[flow_id] = (verifier, now, src)
         return flow_id, verifier
 
-    def take(self, flow_id: str | None) -> str | None:
-        """The verifier for this flow, once. None if unknown, used or expired."""
+    def take_flow(self, flow_id: str | None) -> tuple[str | None, str | None]:
+        """(verifier, src) for this flow, once. (None, None) if unknown, used or expired."""
         if not flow_id:
-            return None
+            return None, None
         with self._lock:
             item = self._items.pop(flow_id, None)
         if not item:
-            return None
-        verifier, started = item
-        return verifier if self._clock() - started <= self._ttl else None
+            return None, None
+        verifier, started, src = item
+        if self._clock() - started > self._ttl:
+            return None, None
+        return verifier, src
+
+    def take(self, flow_id: str | None) -> str | None:
+        """The verifier for this flow, once. None if unknown, used or expired."""
+        return self.take_flow(flow_id)[0]
 
 
 def return_url(app_base: str, flow_id: str) -> str:

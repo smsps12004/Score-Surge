@@ -67,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 525
+EXPECTED_TOTAL = 543
 
 
 def skip(reason):
@@ -1819,7 +1819,7 @@ def main():
     check("refund policy: full refund of the latest charge within 7 days",
           "within 7 days of a charge and we'll refund that charge in full" in _site.REFUNDS_MD, True)
     _mig25 = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
-                               "20261022_heard_from.sql"), encoding="utf-8").read()
+                               "20261102_signup_source.sql"), encoding="utf-8").read()
     check("every signup answer the form offers is allowed by the database",
           all(f"'{v}'" in _mig25 for v in _site.HEARD_FROM_CHOICES), True)
     check("an answer not on the list is never stored", _site.clean_heard_from("myspace"), None)
@@ -2025,6 +2025,70 @@ def main():
           True)
     check("the button is hidden unless Google is switched on",
           "if google_signin_on():\n        render_google_button()" in _src29, True)
+
+    # ── 30. Signup source links (T2, 2 Nov 2026) ──────────────────────────────
+    print("\n30. SIGNUP SOURCE LINKS (T2)")
+    check("the signup answers are Marketing's list, in Marketing's order",
+          list(_site.HEARD_FROM_CHOICES.values()),
+          ["Facebook", "Instagram", "TikTok", "YouTube", "Reddit", "Discord", "Google",
+           "Podcast", "Business card / QR code", "A friend or shipmate", "Other"])
+    check("the link codes are exactly Marketing's eight",
+          sorted(_site.SRC_CODES), sorted(["fb", "ig", "tt", "yt", "rd", "dc", "pts", "card"]))
+    check("every link code pre-fills a real signup answer",
+          all(v in _site.HEARD_FROM_CHOICES for v in _site.SRC_CODES.values()), True)
+    _con30 = _mig25[_mig25.index("profiles_signup_src_check\n"):]
+    check("every link code is allowed by the database",
+          all(f"'{c}'" in _con30.split(";")[0] for c in _site.SRC_CODES), True)
+    check("link codes are read case-blind; unknown, empty or missing codes are dropped",
+          [_site.clean_src(v) for v in ("IG", " pts ", "myspace", "", None, ["card", "fb"], [], 7)],
+          ["ig", "pts", None, None, None, "card", None, None])
+    check("a link code pre-fills its answer", (_site.heard_from_for_src("pts"),
+          _site.heard_from_for_src("card"), _site.heard_from_for_src("zz")),
+          ("podcast", "card", None))
+    check("only real answers and codes go on a new profile",
+          (_site.signup_extras(None, None), _site.signup_extras("myspace", "zz"),
+           _site.signup_extras("friend", "tt")),
+          ({}, {}, {"heard_from": "friend", "signup_src": "tt"}))
+    _now30 = [0.0]
+    _f30 = _g.PendingFlows(ttl=600, clock=lambda: _now30[0])
+    _fid30, _ver30 = _f30.start(src="ig")
+    check("a Google sign-in keeps its link code on the server",
+          _f30.take_flow(_fid30), (_ver30, "ig"))
+    check("...once only", _f30.take_flow(_fid30), (None, None))
+    _fid30b, _ = _f30.start(src="ig")
+    _now30[0] += 601
+    check("...and not after 10 minutes", _f30.take_flow(_fid30b), (None, None))
+    _src30 = open(APP, encoding="utf-8").read()
+    _ns30 = {}
+    exec(_src30[_src30.index("def _write_with_extras"):_src30.index("def get_user_tier")], _ns30)
+    _wwe = _ns30["_write_with_extras"]
+    _wrote = []
+
+    def _db_without(col):
+        def _w(row):
+            if col and col in row:
+                raise RuntimeError(f"column {col} does not exist")
+            _wrote.append(row)
+        return _w
+    check("profile write: both fields go in when the database has them",
+          (_wwe(_db_without(None), {"id": 1}, {"heard_from": "x", "signup_src": "ig"}), _wrote[-1]),
+          (True, {"id": 1, "heard_from": "x", "signup_src": "ig"}))
+    check("...before the migration, the answer still goes in without the code",
+          (_wwe(_db_without("signup_src"), {"id": 2}, {"heard_from": "x", "signup_src": "ig"}),
+           _wrote[-1]), (True, {"id": 2, "heard_from": "x"}))
+    check("...and if nothing extra fits, the caller writes the plain trial row",
+          _wwe(_db_without("heard_from"), {"id": 3}, {"heard_from": "x"}), False)
+    check("...with nothing extra, it doesn't write at all", (_wwe(_db_without(None), {"id": 4}, {}),
+          _wrote[-1]["id"]), (False, 2))
+    _top30 = _src30[_src30.index("_qp = st.query_params"):]
+    check("the link code is read before anything clears the address bar",
+          _top30.index('_qp.get_all("src")') < _top30.index("st.query_params.clear()"), True)
+    check("the Google button sends the link code along with the sign-in",
+          '_google_flows().start(st.session_state.get("signup_src"))' in _src30, True)
+    check("a Google link code is only stored for a brand-new account",
+          "_flow_src if _is_new else None" in _src30, True)
+    check("the Privacy Notice says link source codes are stored",
+          "source code" in _site.PRIVACY_MD and "totals" in _site.PRIVACY_MD, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
