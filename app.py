@@ -609,6 +609,30 @@ def render_google_button():
     st.caption("New here? This starts your free 3-day trial too. Or use your email below.")
 
 
+def render_resend_verification(key):
+    """A "Resend verification email" button for the address waiting on one (T33).
+
+    Shown after an email sign-up and after a login refused as "not confirmed".
+    Held back for a minute after each send, matching Supabase's own per-user gap,
+    so a sailor tapping it repeatedly can't burn the shared 30-emails-an-hour limit.
+    """
+    email = st.session_state.get("verify_email")
+    if not email:
+        return
+    wait = int(site.RESEND_COOLDOWN_SECONDS
+               - (time.time() - st.session_state.get("verify_resent_at", 0)))
+    if st.button("📧 Resend verification email", key=key, disabled=wait > 0,
+                 width="stretch"):
+        try:
+            supabase.auth.resend({"type": "signup", "email": email})
+            st.session_state["verify_resent_at"] = time.time()
+            st.success(site.resend_message())
+        except Exception as _resend_exc:
+            st.warning(site.resend_message(_resend_exc))
+    elif wait > 0:
+        st.caption(f"You can send another in about {wait} seconds.")
+
+
 # ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
@@ -661,7 +685,8 @@ def show_auth_page():
                     st.session_state.refresh_token = res.session.refresh_token
                     st.session_state.tier = get_user_tier(res.user.id, res.user.email or "",
                                                           signup_extras_of(res.user))
-                    for _k in ("_email_confirmed", "_confirm_failed", "_paid_logged_out"):
+                    for _k in ("_email_confirmed", "_confirm_failed", "_paid_logged_out",
+                               "verify_email", "verify_resent_at"):
                         st.session_state.pop(_k, None)
                     # One login at a time: this device becomes the active one, and any
                     # other device signed in to this account is signed out within a minute.
@@ -669,6 +694,15 @@ def show_auth_page():
                     st.rerun()
                 except Exception as _login_exc:
                     st.error(site.login_error_message(_login_exc))
+                    if "not confirmed" in str(_login_exc).lower():
+                        st.session_state["verify_email"] = site.clean_email(login_email)
+
+        # A login refused as "not confirmed" (or a fresh email sign-up) can ask for
+        # the verification email again from right here.
+        if st.session_state.get("verify_email"):
+            st.caption("Still waiting on the verification email for "
+                       f"{st.session_state['verify_email']}?")
+            render_resend_verification("resend_verify_login")
 
         # ── FORGOT PASSWORD ──────────────────────────────────────────────────
         #
@@ -843,9 +877,16 @@ def show_auth_page():
                         locks.claim_session(supabase, res.user.id, st.session_state)
                         st.rerun()
                     else:
-                        st.info("Check your email to confirm your account, then log in.")
+                        # Shown below, and kept on screen across reruns, with a
+                        # resend button: the email often lands in spam (T33).
+                        st.session_state["verify_email"] = site.clean_email(signup_email)
+                        st.session_state.pop("verify_resent_at", None)
                 except Exception as e:
                     st.error("Sign up failed: " + str(e))
+
+        if st.session_state.get("verify_email"):
+            st.info(site.verify_email_notice(st.session_state["verify_email"]))
+            render_resend_verification("resend_verify_signup")
 
 
 _qp = st.query_params
@@ -965,7 +1006,8 @@ if _qp.get(gsi.FLOW_PARAM) or _qp.get("google_error") == "1":
             # A Google signup never saw the "How did you hear about us?" question,
             # so the rating screen asks it once instead.
             st.session_state["_ask_heard_from"] = _is_new
-            for _k in ("_email_confirmed", "_confirm_failed", "_signed_out_elsewhere"):
+            for _k in ("_email_confirmed", "_confirm_failed", "_signed_out_elsewhere",
+                       "verify_email", "verify_resent_at"):
                 st.session_state.pop(_k, None)
             locks.claim_session(supabase, _res.user.id, st.session_state)
         except Exception as _e:

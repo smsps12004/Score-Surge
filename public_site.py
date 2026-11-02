@@ -82,6 +82,36 @@ def clean_email(value):
     return (value or "").strip().lower()
 
 
+# ── Verification emails land in spam (T33, 2 Nov 2026) ──────────────────────
+# Shawn saw every test sign-up's "confirm your email" message go to Gmail spam,
+# including ones sent through Resend. A sailor who never finds that email never
+# gets in, and the old screen just said "Check your email". Until the
+# deliverability fix lands, the app says exactly where to look and who it's from,
+# and lets them send it again.
+EMAIL_SENDER = "Score Surge (no-reply@strategicsailor.com)"
+RESEND_COOLDOWN_SECONDS = 60   # Supabase's own minimum gap between emails to one user
+
+
+def verify_email_notice(email):
+    """What a sailor sees right after signing up with email."""
+    return (f"**Check your email to confirm your account.** We just sent a link to "
+            f"**{email}**. If it isn't in your inbox within 2 minutes, check your "
+            f"**Spam** or **Promotions** folder and mark it **Not spam**. It comes "
+            f"from {EMAIL_SENDER}. Tap the link, then log in here.")
+
+
+def resend_message(exc=None):
+    """Result of tapping "Resend verification email". Never says whether an
+    address has an account."""
+    if exc is None:
+        return ("Sent. If that address has an account waiting to be confirmed, a fresh "
+                "link is on its way. Check Spam and Promotions too.")
+    text = str(exc).lower()
+    if "rate limit" in text or "too many" in text or "seconds" in text:
+        return "Too many emails in a short time. Wait a minute, then try again."
+    return "We couldn't send it just now. Wait a minute and try again."
+
+
 def login_error_message(exc):
     """Plain-English reason a login failed, from Supabase's own error text.
 
@@ -90,8 +120,9 @@ def login_error_message(exc):
     """
     text = str(exc).lower()
     if "not confirmed" in text:
-        return ("Your email isn't confirmed yet. Open the confirmation email we sent "
-                "(check spam/junk), tap the link, then log in here.")
+        return ("Your email isn't confirmed yet. Open the email from "
+                f"{EMAIL_SENDER} (check Spam and Promotions too), tap the link, then "
+                "log in here. Can't find it? Tap **Resend verification email** below.")
     if "rate limit" in text or "too many" in text:
         return ("Too many login attempts in a short time. Wait a few minutes, then "
                 "try again.")
