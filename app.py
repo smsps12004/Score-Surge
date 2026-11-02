@@ -219,6 +219,25 @@ def _write_with_extras(write, row: dict, extras: dict | None) -> bool:
     return False
 
 
+def _fill_signup_extras(user_id: str, extras: dict | None) -> None:
+    """Copy the signup answers onto an EXISTING profile row, only where still blank.
+
+    Found live 2 Nov 2026: the login kept heard_from=friend and signup_src=ig, but
+    the profile row showed both empty. Supabase's on_auth_user_created step creates
+    the row at signup, so get_user_tier never takes its "new row" branch and the
+    answers were never copied (heard_from had the same hole since 22 Oct).
+
+    Each field is written only while it's still empty (`is null`), so a later
+    login can never overwrite an answer. profiles_guard doesn't restrict these
+    columns. Optional marketing data: a failure is logged, never shown.
+    """
+    for col, val in (extras or {}).items():
+        try:
+            supabase.table("profiles").update({col: val}).eq("id", user_id).is_(col, "null").execute()
+        except Exception as _e:
+            print(f"[signup_extras] could not fill {col}: {_e!r}")
+
+
 def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None) -> str:
     """What this sailor is entitled to see.
 
@@ -276,6 +295,10 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
                 return "free"
 
         profile = rows[0]
+        # The row usually exists already: Supabase's own on_auth_user_created step
+        # (set up in the dashboard, not in this repo) makes it at signup, before the
+        # app ever sees the sailor. So the answers are filled in here, once.
+        _fill_signup_extras(user_id, extras)
         tier = profile.get("tier") or "free"
         if tier == "trial":
             started = profile.get("trial_start")
