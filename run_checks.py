@@ -67,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 552
+EXPECTED_TOTAL = 560
 
 
 def skip(reason):
@@ -2107,6 +2107,27 @@ def main():
     check("no screen still calls the E7 exam a 'CPO Board Exam (est.)'",
           "CPO Board Exam (est.)" in _src31, False)
     check("no screen still reads the old estimate field", 'CPO_EXAM["est_date"]' in _src31, False)
+
+    # ── 32. Verification email in spam: say where to look, offer a resend (T33) ─
+    # Every test sign-up's "confirm your email" landed in Gmail spam (Shawn, 2 Nov),
+    # and the screen only said "Check your email".
+    print("\n32. VERIFY EMAIL IN SPAM (T33)")
+    _n32 = _site.verify_email_notice("a@b.test")
+    check("sign-up notice echoes the address", "a@b.test" in _n32, True)
+    check("sign-up notice names Spam and Promotions", "Spam" in _n32 and "Promotions" in _n32, True)
+    check("sign-up notice names the sender", "no-reply@strategicsailor.com" in _n32, True)
+    _l32 = _site.login_error_message(Exception("Email not confirmed"))
+    check("'not confirmed' login points to the resend button",
+          "Resend verification email" in _l32 and "Spam" in _l32, True)
+    check("a resend never says whether the address has an account",
+          "If that address has an account" in _site.resend_message(), True)
+    check("a rate-limited resend says to wait",
+          _site.resend_message(Exception("only request this after 42 seconds")),
+          "Too many emails in a short time. Wait a minute, then try again.")
+    check("resend waits at least Supabase's 60-second per-user gap",
+          _site.RESEND_COOLDOWN_SECONDS >= 60, True)
+    check("resend asks Supabase for the sign-up email, not a magic link",
+          '"type": "signup"' in _src31, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

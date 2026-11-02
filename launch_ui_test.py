@@ -108,6 +108,31 @@ class LaunchUITests(unittest.TestCase):
         app, _ = self._login('sailor@test.invalid', 'Email not confirmed')
         self.assertTrue(any("isn't confirmed yet" in e.value for e in app.error))
 
+    def test_unconfirmed_login_can_resend_the_email(self):
+        # T33: the verify email lands in spam; a sailor stuck at "not confirmed"
+        # can ask for it again from the login screen, for the address they typed.
+        app, db = self._login(' Sailor@Test.INVALID ', 'Email not confirmed')
+        self.assertTrue(any('Spam' in e.value and 'no-reply@strategicsailor.com' in e.value
+                            for e in app.error))
+        with patch('supabase.create_client', return_value=db):
+            [b for b in app.button if b.key == 'resend_verify_login'][0].click().run()
+        self.assertEqual(len(app.exception), 0)
+        db.auth.resend.assert_called_once_with({'type': 'signup', 'email': 'sailor@test.invalid'})
+        self.assertTrue(any('fresh link is on its way' in s.value for s in app.success))
+        # Held back for a minute so repeated taps can't burn the shared email limit.
+        app.run()
+        self.assertTrue([b for b in app.button if b.key == 'resend_verify_login'][0].disabled)
+        self.assertTrue(any('send another in about' in c.value for c in app.caption))
+        self.assertEqual(db.auth.resend.call_count, 1)
+
+    def test_resend_rate_limit_is_explained(self):
+        app, db = self._login('sailor@test.invalid', 'Email not confirmed')
+        db.auth.resend.side_effect = Exception('For security purposes, you can only request this after 42 seconds.')
+        with patch('supabase.create_client', return_value=db):
+            [b for b in app.button if b.key == 'resend_verify_login'][0].click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any('Wait a minute' in w.value for w in app.warning))
+
     # ── Continue with Google (29 Oct 2026) ─────────────────────────────────────
     def _logged_out(self, google='on'):
         app = build_app()
@@ -272,6 +297,15 @@ class LaunchUITests(unittest.TestCase):
         sent = db.auth.sign_up.call_args.args[0]
         self.assertEqual(sent['options']['data'], {'heard_from': 'friend', 'signup_src': 'tt'})
         self.assertTrue(any('confirm your account' in i.value for i in app.info))
+        # T33: say where to look, who it's from, and offer to send it again.
+        notice = [i.value for i in app.info if 'confirm your account' in i.value][0]
+        for bit in ('new@test.invalid', 'Spam', 'Promotions', 'no-reply@strategicsailor.com'):
+            self.assertIn(bit, notice)
+        app.run()   # the notice stays put on the next rerun
+        self.assertTrue(any('confirm your account' in i.value for i in app.info))
+        with patch('supabase.create_client', return_value=db):
+            [b for b in app.button if b.key == 'resend_verify_signup'][0].click().run()
+        db.auth.resend.assert_called_once_with({'type': 'signup', 'email': 'new@test.invalid'})
 
     def test_google_signup_carries_link_code_through_google(self):
         import urllib.parse
