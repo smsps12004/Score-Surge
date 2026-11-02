@@ -38,17 +38,37 @@ TRIAL_LINE = "3-day free trial, no card required"
 
 # "How did you hear about us?" -- optional, stored on profiles.heard_from.
 # Values on the left are what's stored (short and stable for counting); the labels
-# on the right are what a sailor sees. The database CHECK constraint in
-# supabase/migrations/20261022_heard_from.sql must list the same values.
+# on the right are what a sailor sees, in this order (Marketing's list, 28 Oct
+# 2026, T2). The database CHECK constraint in the newest supabase/migrations file
+# that touches heard_from (20261102_signup_source.sql) must list the same values.
 HEARD_FROM_CHOICES = {
     "facebook": "Facebook",
     "instagram": "Instagram",
     "tiktok": "TikTok",
+    "youtube": "YouTube",
     "reddit": "Reddit",
     "discord": "Discord",
     "google": "Google",
+    "podcast": "Podcast",
+    "card": "Business card / QR code",
     "friend": "A friend or shipmate",
     "other": "Other",
+}
+
+# Link codes (T2, 2 Nov 2026). A post or QR code links to
+# app.strategicsailor.com/?src=ig and so on. The code is kept on the account
+# (profiles.signup_src) exactly as it came in, even if the sailor picks a different
+# answer above, so Marketing can compare where people really came from with what
+# they say. It also pre-fills the answer. Unknown codes are ignored, never stored.
+SRC_CODES = {
+    "fb": "facebook",
+    "ig": "instagram",
+    "tt": "tiktok",
+    "yt": "youtube",
+    "rd": "reddit",
+    "dc": "discord",
+    "pts": "podcast",     # "Permission to Speak Freely"
+    "card": "card",       # business card QR code
 }
 
 
@@ -83,6 +103,29 @@ def clean_heard_from(value):
     """A stored value, or None. Anything not on the list is dropped, never stored."""
     value = (value or "").strip().lower()
     return value if value in HEARD_FROM_CHOICES else None
+
+
+def clean_src(value):
+    """A known link code (e.g. "ig"), or None. Anything else is dropped, never stored."""
+    if isinstance(value, (list, tuple)):        # ?src=a&src=b -- take the first
+        value = value[0] if value else None
+    value = (value or "").strip().lower() if isinstance(value, str) else ""
+    return value if value in SRC_CODES else None
+
+
+def heard_from_for_src(src):
+    """The signup answer a link code pre-fills ("ig" -> "instagram"), or None."""
+    return SRC_CODES.get(clean_src(src))
+
+
+def signup_extras(heard_from=None, src=None):
+    """The optional marketing fields for a new profile row, only the ones present."""
+    extras = {}
+    if clean_heard_from(heard_from):
+        extras["heard_from"] = clean_heard_from(heard_from)
+    if clean_src(src):
+        extras["signup_src"] = clean_src(src)
+    return extras
 
 
 # ── Legal pages ──────────────────────────────────────────────────────────────
@@ -184,7 +227,10 @@ Privacy questions and requests: {SUPPORT_EMAIL}.
   picture. We use the email address to run your account and don't use the rest. We never
   see your Google password.
 - **How you heard about us:** if you answer the optional signup question, we store your
-  answer to understand which outreach works.
+  answer to understand which outreach works. If you arrived through one of our links
+  (for example from a social media post or a business card), we also store that
+  link's short source code, such as "ig" for Instagram. We only look at these as
+  totals, never to follow one person.
 - **Practice history:** placement and mock-exam results by topic, so the app can show
   your progress and weak spots.
 - **Questions generated for you:** practice questions the AI writes for you are saved

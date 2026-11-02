@@ -181,18 +181,45 @@ LEGACY_PRICE_IDS = {
 PRICE_TO_TIER = {v: k for k, v in STRIPE_PRICE_IDS.items()}
 PRICE_TO_TIER.update(LEGACY_PRICE_IDS)
 
-def heard_from_of(user) -> str | None:
-    """The optional "How did you hear about us?" answer saved on the login at signup.
+def signup_extras_of(user, src: str | None = None) -> dict:
+    """The optional marketing fields to put on a NEW profile row (T2, 2 Nov 2026).
 
-    It's kept in the login's own metadata as well as on the profile, because with
-    email confirmation on, signup returns no session and the profile row isn't
-    created until the sailor's first real login -- by then the form is long gone.
+    heard_from and the ?src= link code, both read from the login's own metadata
+    (where email signup leaves them). They're kept on the login as well as the
+    profile because, with email confirmation on, signup returns no session and the
+    profile row isn't created until the first real login; by then the form is gone.
+    `src` is for Google signups, whose link code waits on the server with the
+    sign-in (google_signin.PendingFlows).
     """
     meta = getattr(user, "user_metadata", None) or {}
-    return site.clean_heard_from(meta.get("heard_from") if isinstance(meta, dict) else None)
+    meta = meta if isinstance(meta, dict) else {}
+    return site.signup_extras(meta.get("heard_from"), meta.get("signup_src") or src)
 
 
-def get_user_tier(user_id: str, user_email: str = "", heard_from: str | None = None) -> str:
+def _write_with_extras(write, row: dict, extras: dict | None) -> bool:
+    """Try writing a profile row with the marketing fields, dropping them if refused.
+
+    If Shawn hasn't run the newest migration yet (the column or the allowed list is
+    missing), the database refuses the row. A new sailor's trial matters more than
+    a marketing answer, so: all fields, then heard_from alone. False means neither
+    went in and the caller writes the plain row as before.
+    """
+    extras = dict(extras or {})
+    attempts = []
+    if extras:
+        attempts.append({**row, **extras})
+    if "signup_src" in extras and "heard_from" in extras:
+        attempts.append({**row, "heard_from": extras["heard_from"]})
+    for attempt in attempts:
+        try:
+            write(attempt)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None) -> str:
     """What this sailor is entitled to see.
 
     This used to call `.single()`, which raises both when there is no row AND when
@@ -235,14 +262,11 @@ def get_user_tier(user_id: str, user_email: str = "", heard_from: str | None = N
                 # The Stripe webhook matches profiles on email. A row without one can
                 # never be upgraded by it.
                 new_row["email"] = user_email
-            if heard_from:
-                # Tried first, then dropped: if the heard_from column hasn't been
-                # added in Supabase yet, a new sailor must still get their trial.
-                try:
-                    supabase.table("profiles").insert({**new_row, "heard_from": heard_from}).execute()
-                    return "trial"
-                except Exception:
-                    pass
+            # The "How did you hear" answer and the ?src= link code are tried first,
+            # then dropped: a new sailor must get their trial either way.
+            if _write_with_extras(lambda r: supabase.table("profiles").insert(r).execute(),
+                                  new_row, extras):
+                return "trial"
             try:
                 supabase.table("profiles").insert(new_row).execute()
                 return "trial"
@@ -550,7 +574,7 @@ def render_google_button():
         st.warning(gsi.failure_message(_failed, SUPPORT_EMAIL))
     if st.button("Continue with Google", key="google_signin", type="primary",
                  width="stretch"):
-        _flow_id, _verifier = _google_flows().start()
+        _flow_id, _verifier = _google_flows().start(st.session_state.get("signup_src"))
         st.session_state["_google_url"] = gsi.authorize_url(
             SUPABASE_URL, gsi.return_url(get_app_base_url(), _flow_id), _verifier)
     # Popped, not read: the browser is sent to Google once, and coming back to this
@@ -613,7 +637,7 @@ def show_auth_page():
                     st.session_state.access_token = res.session.access_token
                     st.session_state.refresh_token = res.session.refresh_token
                     st.session_state.tier = get_user_tier(res.user.id, res.user.email or "",
-                                                          heard_from_of(res.user))
+                                                          signup_extras_of(res.user))
                     for _k in ("_email_confirmed", "_confirm_failed", "_paid_logged_out"):
                         st.session_state.pop(_k, None)
                     # One login at a time: this device becomes the active one, and any
@@ -720,13 +744,16 @@ def show_auth_page():
     with tab_signup:
         st.subheader("Start your free 3-day trial.")
         st.caption("Full access for 3 days. No credit card required.")
+        # A ?src= link pre-fills the answer; the sailor can still change it.
+        _pre_heard = site.heard_from_for_src(st.session_state.get("signup_src"))
         with st.form("signup_form"):
             signup_email = st.text_input("Email")
             signup_password = st.text_input("Password", type="password")
             signup_password2 = st.text_input("Confirm Password", type="password")
             signup_heard = st.selectbox(
                 "How did you hear about us? (optional)",
-                list(site.HEARD_FROM_CHOICES), index=None,
+                list(site.HEARD_FROM_CHOICES),
+                index=list(site.HEARD_FROM_CHOICES).index(_pre_heard) if _pre_heard else None,
                 format_func=lambda v: site.HEARD_FROM_CHOICES[v],
                 placeholder="Choose one, or skip",
                 key="signup_heard_from",
@@ -744,13 +771,14 @@ def show_auth_page():
                 st.error("Password must be at least 6 characters.")
             else:
                 try:
-                    _heard = site.clean_heard_from(signup_heard)
+                    _extras = site.signup_extras(signup_heard,
+                                                 st.session_state.get("signup_src"))
                     _signup = {"email": site.clean_email(signup_email),
                                "password": signup_password}
-                    if _heard:
+                    if _extras:
                         # Kept on the login itself too: with email confirmation on,
                         # the profile row is only created at first login.
-                        _signup["options"] = {"data": {"heard_from": _heard}}
+                        _signup["options"] = {"data": _extras}
                     res = supabase.auth.sign_up(_signup)
                     if res.user and res.session:
                         st.session_state.user = res.user
@@ -769,14 +797,11 @@ def show_auth_page():
                                     datetime.timezone.utc
                                 ).isoformat(),
                             }
-                            try:
-                                if not _heard:
-                                    raise ValueError("no answer to store")
-                                supabase.table("profiles").upsert(
-                                    {**_row, "heard_from": _heard}).execute()
-                            except Exception:
-                                # No answer, or the heard_from column isn't in
-                                # Supabase yet -- the trial row matters more.
+                            if not _write_with_extras(
+                                    lambda r: supabase.table("profiles").upsert(r).execute(),
+                                    _row, _extras):
+                                # No answers, or the columns aren't in Supabase
+                                # yet -- the trial row matters more.
                                 supabase.table("profiles").upsert(_row).execute()
                         except Exception:
                             # Most likely `email` is not a column on profiles yet.
@@ -800,8 +825,18 @@ def show_auth_page():
                     st.error("Sign up failed: " + str(e))
 
 
-# ── STRIPE SUCCESS CALLBACK ────────────────────────────────────────────────────
 _qp = st.query_params
+
+# ── ?src= LINK CODES (T2, 2 Nov 2026) ─────────────────────────────────────────
+# app.strategicsailor.com/?src=ig etc. Remembered for this visit (the first known
+# code wins), stored with the account at signup, and used to pre-fill "How did you
+# hear about us?". Read before any handler below clears the address bar.
+if not st.session_state.user and _qp.get("src"):
+    _src_in = site.clean_src(_qp.get_all("src"))
+    if _src_in:
+        st.session_state.setdefault("signup_src", _src_in)
+
+# ── STRIPE SUCCESS CALLBACK ────────────────────────────────────────────────────
 if _qp.get("stripe_success") == "true" and st.session_state.user:
     _sid = _qp.get("session_id", "")
     if _sid:
@@ -851,7 +886,7 @@ if _qp.get("token_hash") and not st.session_state.user:
             st.session_state.access_token = _res.session.access_token
             st.session_state.refresh_token = _res.session.refresh_token
             st.session_state.tier = get_user_tier(_res.user.id, _res.user.email or "",
-                                                  heard_from_of(_res.user))
+                                                  signup_extras_of(_res.user))
             locks.claim_session(supabase, _res.user.id, st.session_state)
         else:
             st.session_state["_email_confirmed"] = True
@@ -884,7 +919,7 @@ def _created_just_now(user, minutes: int = 15) -> bool:
 if _qp.get(gsi.FLOW_PARAM) or _qp.get("google_error") == "1":
     _flow, _code, _gerr = _qp.get(gsi.FLOW_PARAM), _qp.get("code"), _qp.get("error")
     st.query_params.clear()   # the code is single-use; never leave it in the address bar
-    _verifier = _google_flows().take(_flow)
+    _verifier, _flow_src = _google_flows().take_flow(_flow)
     if not st.session_state.user:
         try:
             if _gerr or not _code:
@@ -898,11 +933,15 @@ if _qp.get(gsi.FLOW_PARAM) or _qp.get("google_error") == "1":
             st.session_state.user = _res.user
             st.session_state.access_token = _res.session.access_token
             st.session_state.refresh_token = _res.session.refresh_token
-            st.session_state.tier = get_user_tier(_res.user.id, _res.user.email or "",
-                                                  heard_from_of(_res.user))
+            _is_new = _created_just_now(_res.user)
+            if _is_new and _flow_src:
+                st.session_state["signup_src"] = _flow_src   # pre-fills the question below
+            st.session_state.tier = get_user_tier(
+                _res.user.id, _res.user.email or "",
+                signup_extras_of(_res.user, _flow_src if _is_new else None))
             # A Google signup never saw the "How did you hear about us?" question,
             # so the rating screen asks it once instead.
-            st.session_state["_ask_heard_from"] = _created_just_now(_res.user)
+            st.session_state["_ask_heard_from"] = _is_new
             for _k in ("_email_confirmed", "_confirm_failed", "_signed_out_elsewhere"):
                 st.session_state.pop(_k, None)
             locks.claim_session(supabase, _res.user.id, st.session_state)
@@ -978,9 +1017,11 @@ if st.session_state.get("locked_rating", "?") is None:
     )
     _heard_pick = None
     if st.session_state.get("_ask_heard_from"):
+        _pre_g = site.heard_from_for_src(st.session_state.get("signup_src"))
         _heard_pick = st.selectbox(
             "How did you hear about us? (optional)",
-            list(site.HEARD_FROM_CHOICES), index=None,
+            list(site.HEARD_FROM_CHOICES),
+            index=list(site.HEARD_FROM_CHOICES).index(_pre_g) if _pre_g else None,
             format_func=lambda v: site.HEARD_FROM_CHOICES[v],
             placeholder="Choose one, or skip", key="google_heard_from",
         )

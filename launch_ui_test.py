@@ -143,7 +143,7 @@ class LaunchUITests(unittest.TestCase):
         body = base64.urlsafe_b64encode(json.dumps({'exp': time.time() + 3600}).encode())
         return 'h.' + body.decode().rstrip('=') + '.s'
 
-    def _come_back(self, params, exchange=None, created_minutes_ago=1):
+    def _come_back(self, params, exchange=None, created_minutes_ago=1, rows=None):
         import datetime as dt
         app = self._logged_out()
         for k, v in params.items():
@@ -155,7 +155,7 @@ class LaunchUITests(unittest.TestCase):
         db.auth.exchange_code_for_session.return_value = exchange or types.SimpleNamespace(
             user=user, session=types.SimpleNamespace(access_token=self._fake_jwt(), refresh_token='rt-1'))
         db.table.return_value.select.return_value.eq.return_value.limit.return_value \
-            .execute.return_value.data = [{'tier': 'trial', 'trial_start': None}]
+            .execute.return_value.data = [{'tier': 'trial', 'trial_start': None}] if rows is None else rows
         with patch('supabase.create_client', return_value=db), \
                 patch('account_locks.claim_session'), \
                 patch('account_locks.session_still_active', return_value=True), \
@@ -206,5 +206,82 @@ class LaunchUITests(unittest.TestCase):
         self.assertEqual(db.auth.exchange_code_for_session.call_count, 0)
         self.assertTrue(any('cancelled' in w.value for w in app.warning))
         self.assertEqual(dict(app.query_params), {})
+
+    # ── ?src= link codes (T2, 2 Nov 2026) ──────────────────────────────────────
+    def _signup_answer(self, app):
+        return [s for s in app.selectbox if s.key == 'signup_heard_from'][0]
+
+    def test_link_code_prefills_the_signup_answer(self):
+        app = self._logged_out(google='off')
+        app.query_params['src'] = 'ig'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._signup_answer(app).value, 'instagram')
+        self.assertEqual(app.session_state['signup_src'], 'ig')
+
+    def test_unknown_link_code_is_ignored(self):
+        app = self._logged_out(google='off')
+        app.query_params['src'] = 'myspace'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertIsNone(self._signup_answer(app).value)
+        self.assertNotIn('signup_src', app.session_state)
+
+    def test_link_code_survives_the_landing_page_signup_button(self):
+        # ?signup=1 clears the address bar; the code must be read first.
+        app = self._logged_out(google='off')
+        app.query_params['signup'] = '1'
+        app.query_params['src'] = 'card'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state['signup_src'], 'card')
+        self.assertEqual(self._signup_answer(app).value, 'card')
+
+    def test_email_signup_keeps_link_code_even_if_answer_changes(self):
+        app = self._logged_out(google='off')
+        app.query_params['src'] = 'tt'
+        app.run()
+        db = MagicMock()
+        db.auth.sign_up.return_value = types.SimpleNamespace(user=types.SimpleNamespace(id='new'), session=None)
+        with patch('supabase.create_client', return_value=db):
+            [t for t in app.text_input if t.label == 'Email'][-1].input('new@test.invalid')
+            [t for t in app.text_input if t.label == 'Password'][-1].input('secret123')
+            [t for t in app.text_input if t.label == 'Confirm Password'][0].input('secret123')
+            self._signup_answer(app).select('friend')
+            [b for b in app.button if 'Create Account' in b.label][0].click().run()
+        self.assertEqual(len(app.exception), 0)
+        sent = db.auth.sign_up.call_args.args[0]
+        self.assertEqual(sent['options']['data'], {'heard_from': 'friend', 'signup_src': 'tt'})
+        self.assertTrue(any('confirm your account' in i.value for i in app.info))
+
+    def test_google_signup_carries_link_code_through_google(self):
+        import urllib.parse
+        app = self._logged_out()
+        app.query_params['src'] = 'yt'
+        app.run()
+        self._google_buttons(app)[0].click().run()
+        url = [l for l in app.get('link_button') if 'Opening Google' in l.proto.label][0].proto.url
+        back = urllib.parse.urlparse(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['redirect_to'][0])
+        self.assertNotIn('yt', back.query)          # the code waits on the server, not in the URL
+        flow = urllib.parse.parse_qs(back.query)['google_flow'][0]
+        app2, db = self._come_back({'google_flow': flow, 'code': 'c'}, rows=[])
+        self.assertEqual(len(app2.exception), 0)
+        inserted = db.table.return_value.insert.call_args_list[0].args[0]
+        self.assertEqual((inserted['tier'], inserted['signup_src']), ('trial', 'yt'))
+        self.assertEqual([s for s in app2.selectbox if s.key == 'google_heard_from'][0].value, 'youtube')
+
+    def test_returning_google_sailor_gets_no_link_code(self):
+        app = self._logged_out()
+        app.query_params['src'] = 'fb'
+        app.run()
+        self._google_buttons(app)[0].click().run()
+        import urllib.parse
+        url = [l for l in app.get('link_button') if 'Opening Google' in l.proto.label][0].proto.url
+        flow = urllib.parse.parse_qs(urllib.parse.urlparse(
+            urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['redirect_to'][0]).query)['google_flow'][0]
+        app2, db = self._come_back({'google_flow': flow, 'code': 'c'}, created_minutes_ago=600, rows=[])
+        self.assertEqual(len(app2.exception), 0)
+        inserted = db.table.return_value.insert.call_args_list[0].args[0]
+        self.assertNotIn('signup_src', inserted)
 
 if __name__ == '__main__': unittest.main()
