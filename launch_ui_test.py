@@ -284,4 +284,60 @@ class LaunchUITests(unittest.TestCase):
         inserted = db.table.return_value.insert.call_args_list[0].args[0]
         self.assertNotIn('signup_src', inserted)
 
+    # ── 2 Nov 2026, found live: Supabase makes the profile row itself at signup ──
+    def _filled(self, db):
+        """{column: value} the app filled in, each only where still blank."""
+        upd = db.table.return_value.update
+        out = {}
+        for c in upd.call_args_list:
+            row = c.args[0]
+            if set(row) <= {'heard_from', 'signup_src'}:
+                out.update(row)
+        is_calls = [c.args for c in upd.return_value.eq.return_value.is_.call_args_list]
+        return out, is_calls
+
+    def test_confirm_link_fills_answers_on_row_supabase_already_made(self):
+        import datetime as dt
+        app = self._logged_out(google='off')
+        app.query_params['token_hash'] = 'th'
+        app.query_params['type'] = 'email'
+        db = MagicMock()
+        user = types.SimpleNamespace(
+            id='e-user', email='new@test.invalid', created_at=dt.datetime.now(dt.timezone.utc),
+            user_metadata={'heard_from': 'friend', 'signup_src': 'ig'})
+        db.auth.verify_otp.return_value = types.SimpleNamespace(
+            user=user, session=types.SimpleNamespace(access_token=self._fake_jwt(), refresh_token='rt'))
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value \
+            .execute.return_value.data = [{'tier': 'trial', 'trial_start': None}]
+        with patch('supabase.create_client', return_value=db), \
+                patch('account_locks.claim_session'), \
+                patch('account_locks.session_still_active', return_value=True), \
+                patch('account_locks.load_rating', return_value=(None, None)):
+            app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(db.table.return_value.insert.call_count, 0)   # row already there
+        filled, is_calls = self._filled(db)
+        self.assertEqual(filled, {'heard_from': 'friend', 'signup_src': 'ig'})
+        self.assertEqual(sorted(is_calls), [('heard_from', 'null'), ('signup_src', 'null')])
+
+    def test_google_link_code_fills_row_supabase_already_made(self):
+        import urllib.parse
+        app = self._logged_out()
+        app.query_params['src'] = 'pts'
+        app.run()
+        self._google_buttons(app)[0].click().run()
+        url = [l for l in app.get('link_button') if 'Opening Google' in l.proto.label][0].proto.url
+        flow = urllib.parse.parse_qs(urllib.parse.urlparse(
+            urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['redirect_to'][0]).query)['google_flow'][0]
+        app2, db = self._come_back({'google_flow': flow, 'code': 'c'})   # row exists
+        self.assertEqual(len(app2.exception), 0)
+        filled, is_calls = self._filled(db)
+        self.assertEqual(filled, {'signup_src': 'pts'})
+        self.assertEqual(is_calls, [('signup_src', 'null')])
+
+    def test_login_without_answers_writes_nothing_extra(self):
+        _, _, _, flow = self._start_google()
+        app, db = self._come_back({'google_flow': flow, 'code': 'c'}, created_minutes_ago=600)
+        self.assertEqual(self._filled(db), ({}, []))
+
 if __name__ == '__main__': unittest.main()
