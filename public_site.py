@@ -382,3 +382,26 @@ def rewrite_relative_links(md, base_url=""):
     """Point the legal pages' '(?page=...)' links at the app's real address."""
     base = (base_url or "").rstrip("/")
     return md.replace("(?page=", f"({base}/?page=")
+
+
+def beta_active(beta_until, today):
+    """True while a Plank Owner's free Chief access runs (T31): today is on or before
+    profiles.beta_until. Empty or unreadable means no beta."""
+    import datetime
+    if not beta_until:
+        return False
+    try:
+        until = datetime.date.fromisoformat(str(beta_until)[:10])
+    except ValueError:
+        return False
+    return today <= until
+
+
+def beta_banner_text(beta_until):
+    """'Plank Owner beta: Chief access, free, through 31 March 2027.'"""
+    import datetime
+    until = datetime.date.fromisoformat(str(beta_until)[:10])
+    return (f"⚓ **Plank Owner beta:** Chief access, free, through "
+            f"{until.day} {until:%B %Y}. No card on file. Tell us what's wrong or "
+            f"missing: {SUPPORT_EMAIL}")
+

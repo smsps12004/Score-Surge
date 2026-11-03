@@ -223,7 +223,7 @@ class LaunchUITests(unittest.TestCase):
         body = base64.urlsafe_b64encode(json.dumps({'exp': time.time() + 3600}).encode())
         return 'h.' + body.decode().rstrip('=') + '.s'
 
-    def _come_back(self, params, exchange=None, created_minutes_ago=1, rows=None):
+    def _come_back(self, params, exchange=None, created_minutes_ago=1, rows=None, rating=None):
         import datetime as dt
         app = self._logged_out()
         for k, v in params.items():
@@ -239,9 +239,27 @@ class LaunchUITests(unittest.TestCase):
         with patch('supabase.create_client', return_value=db), \
                 patch('account_locks.claim_session'), \
                 patch('account_locks.session_still_active', return_value=True), \
-                patch('account_locks.load_rating', return_value=(None, None)):
+                patch('account_locks.load_rating', return_value=(rating, None)):
             app.run()
         return app, db
+
+    def test_plank_owner_gets_chief_free(self):
+        # T31: beta_until in the future means Chief, no card, with a Profile note.
+        app, _ = self._come_back({'google_flow': self._start_google()[3], 'code': 'c'},
+                                 rows=[{'tier': 'free', 'trial_start': '2026-10-01T00:00:00+00:00',
+                                        'beta_until': '2099-03-31'}], rating='PS')
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state['tier'], 'chief')
+        self.assertFalse(app.session_state['trial_available'])
+        self.assertTrue(any('Plank Owner beta' in s.value for s in app.success))
+
+    def test_finished_beta_drops_back_to_real_plan(self):
+        app, _ = self._come_back({'google_flow': self._start_google()[3], 'code': 'c'},
+                                 rows=[{'tier': 'free', 'trial_start': '2026-10-01T00:00:00+00:00',
+                                        'beta_until': '2020-03-31'}], rating='PS')
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state['tier'], 'free')
+        self.assertFalse(any('Plank Owner beta' in s.value for s in app.success))
 
     def test_coming_back_from_google_logs_the_sailor_in(self):
         _, _, q, flow = self._start_google()
