@@ -269,14 +269,12 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
 
         if not rows:
             # Genuinely new. Signup only creates this row when Supabase returns a
-            # session immediately; with email confirmation switched on it does not,
-            # and every new sailor silently lost the 3-day trial they were promised
-            # on the signup screen. Creating it here closes that hole.
-            new_row = {
-                "id": user_id,
-                "tier": "trial",
-                "trial_start": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            }
+            # session immediately; with email confirmation switched on it does not.
+            # Creating it here closes that hole. Since T28 (2 Nov 2026) a new account
+            # starts on the free plan with its 3-day trial NOT yet started: the trial
+            # begins when the sailor taps "Start my 3-day free trial".
+            new_row = {"id": user_id, "tier": "free"}
+            st.session_state["trial_available"] = True
             if user_email:
                 # The Stripe webhook matches profiles on email. A row without one can
                 # never be upgraded by it.
@@ -285,11 +283,12 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
             # then dropped: a new sailor must get their trial either way.
             if _write_with_extras(lambda r: supabase.table("profiles").insert(r).execute(),
                                   new_row, extras):
-                return "trial"
+                return "free"
             try:
                 supabase.table("profiles").insert(new_row).execute()
-                return "trial"
+                return "free"
             except Exception:
+                st.session_state["trial_available"] = False
                 # Most likely the row exists after all and this raced, or `email` is
                 # not a column. Either way: do not invent an entitlement.
                 return "free"
@@ -300,6 +299,10 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
         # app ever sees the sailor. So the answers are filled in here, once.
         _fill_signup_extras(user_id, extras)
         tier = profile.get("tier") or "free"
+        # T28: a free account whose trial has never started can start it once.
+        # (The database function start_my_trial() makes the final call.)
+        st.session_state["trial_available"] = (tier == "free"
+                                               and not profile.get("trial_start"))
         if tier == "trial":
             started = profile.get("trial_start")
             if not started:
@@ -320,6 +323,51 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
         # but write NOTHING — the next rerun tries again, and a paying sailor is not
         # demoted in the database over a failed lookup.
         return "free"
+
+
+TRIAL_START_BUTTON = "▶️ Start my 3-day free trial"
+
+
+def start_free_trial():
+    """Button callback: start this sailor's one 3-day trial (T28, 2 Nov 2026).
+
+    The sailor's own session can't change its tier (profiles_guard), so the switch
+    is made by the database function start_my_trial(), which only works for a free
+    account whose trial has never started and has no Stripe customer. It answers
+    'started' or 'not available'.
+    """
+    try:
+        result = supabase.rpc("start_my_trial").execute().data
+    except Exception:
+        result = None
+    if result == "started":
+        st.session_state.tier = "trial"
+        st.session_state["trial_available"] = False
+        st.session_state["_trial_note"] = ("success",
+            "**Your 3-day free trial has started.** Every tool is unlocked for the "
+            "next 3 days. No card needed, and it never turns into a charge.")
+    elif result == "not available":
+        st.session_state["trial_available"] = False
+        st.session_state["_trial_note"] = ("info",
+            "This account has already used its free trial. Pick a plan below to "
+            f"keep full access, or email {SUPPORT_EMAIL} if that looks wrong.")
+    else:
+        st.session_state["_trial_note"] = ("warning",
+            "We couldn't start your trial just now. Wait a minute and tap again, or "
+            f"email {SUPPORT_EMAIL}.")
+
+
+def trial_start_button(where: str):
+    """The 'Start my 3-day free trial' button, shown only while the trial is unused."""
+    if st.session_state.get("trial_available") and st.session_state.get("tier") == "free":
+        # A plain press, not on_click: a callback runs before this rerun rebuilds the
+        # Supabase client, so it would call the database with the previous run's one.
+        if st.button(TRIAL_START_BUTTON, key=f"start_trial_{where}", type="primary",
+                     width="stretch"):
+            start_free_trial()
+            st.rerun()
+        return True
+    return False
 
 
 def can_access(required_tier: str) -> bool:
@@ -375,6 +423,8 @@ def upgrade_banner(required_tier: str, where: str):
     """
     label, price, features = UPGRADE_INFO.get(required_tier, ("", "", ""))
     st.warning(f"🔒 **{label} tier required** ({price})\n\nUnlock: {features}")
+    if trial_start_button(f"banner_{where}"):
+        st.caption("Try everything free for 3 days first — no card. Or pick a plan below.")
     upgrade_controls(required_tier, where)
 
 
@@ -606,7 +656,7 @@ def render_google_button():
     if _url:
         st.html(_GOOGLE_GO_JS % json.dumps(_url), unsafe_allow_javascript=True)
         st.link_button("Opening Google… tap here if nothing happens", _url, width="stretch")
-    st.caption("New here? This starts your free 3-day trial too. Or use your email below.")
+    st.caption("New here? This creates your free account too. Or use your email below.")
 
 
 def render_resend_verification(key):
@@ -643,7 +693,8 @@ def show_auth_page():
             "Each Score Surge account is for one sailor, one device at a time."
         )
     if st.session_state.get("_email_confirmed"):
-        st.success("✅ **Email confirmed.** Log in below to start your free trial.")
+        st.success("✅ **Email confirmed.** Log in below, then tap **Start my 3-day free trial** "
+                   "whenever you're ready.")
     if st.session_state.get("_confirm_failed"):
         # The usual cause is tapping the same link twice: the first tap confirmed
         # the account, the second finds the one-time code spent. Lead with that.
@@ -799,8 +850,9 @@ def show_auth_page():
                     st.rerun()
 
     with tab_signup:
-        st.subheader("Start your free 3-day trial.")
-        st.caption("Full access for 3 days. No credit card required.")
+        st.subheader("Create your free account.")
+        st.caption("Free tools right away. When you're ready, tap **Start my 3-day free "
+                   "trial** for full access — no credit card.")
         # A ?src= link pre-fills the answer; the sailor can still change it.
         _pre_heard = site.heard_from_for_src(st.session_state.get("signup_src"))
         with st.form("signup_form"):
@@ -816,7 +868,7 @@ def show_auth_page():
                 key="signup_heard_from",
             )
             signup_submit = st.form_submit_button(
-                "Create Account & Start Free Trial", width="stretch"
+                "Create Account (free)", width="stretch"
             )
 
         if signup_submit:
@@ -841,7 +893,9 @@ def show_auth_page():
                         st.session_state.user = res.user
                         st.session_state.access_token = res.session.access_token
                         st.session_state.refresh_token = res.session.refresh_token
-                        st.session_state.tier = "trial"
+                        # T28: free plan, trial ready to start when they tap for it.
+                        st.session_state.tier = "free"
+                        st.session_state["trial_available"] = True
                         try:
                             # `email` is written because the Stripe webhook matches
                             # profiles on it. Without it, a sailor can pay and the
@@ -849,28 +903,22 @@ def show_auth_page():
                             _row = {
                                 "id": res.user.id,
                                 "email": res.user.email,
-                                "tier": "trial",
-                                "trial_start": datetime.datetime.now(
-                                    datetime.timezone.utc
-                                ).isoformat(),
+                                "tier": "free",
                             }
                             if not _write_with_extras(
                                     lambda r: supabase.table("profiles").upsert(r).execute(),
                                     _row, _extras):
                                 # No answers, or the columns aren't in Supabase
-                                # yet -- the trial row matters more.
+                                # yet -- the account row matters more.
                                 supabase.table("profiles").upsert(_row).execute()
                         except Exception:
                             # Most likely `email` is not a column on profiles yet.
                             # Fall back to the row we know the schema accepts, so a
-                            # new sailor still gets the trial they were promised.
+                            # new sailor still gets an account with a trial to start.
                             try:
                                 supabase.table("profiles").upsert({
                                     "id": res.user.id,
-                                    "tier": "trial",
-                                    "trial_start": datetime.datetime.now(
-                                        datetime.timezone.utc
-                                    ).isoformat(),
+                                    "tier": "free",
                                 }).execute()
                             except Exception:
                                 pass
@@ -1256,7 +1304,16 @@ def _go_to_profile():
 
 
 def trial_nudge(where: str):
-    """One small line at the top of a tab during the free trial, with a way to upgrade."""
+    """One small line at the top of a tab during the free trial, with a way to upgrade.
+
+    Before the trial has started (T28), the same spot offers to start it instead.
+    """
+    if st.session_state.get("trial_available") and st.session_state.get("tier") == "free":
+        with st.container(border=True):
+            st.markdown("**Your 3-day free trial is ready when you are.** Full access to "
+                        "every tool, no card. It starts the moment you tap below.")
+            trial_start_button(f"nudge_{where}")
+        return
     if not TRIAL_BANNER:
         return
     with st.container(border=True):
@@ -2723,6 +2780,12 @@ Rules:
 # ones the Chief tier is sold on. Shawn uses this app from a phone and so do his
 # sailors, so the tab strip has to fit a phone, not a laptop. The emoji carries the
 # recognition and the word carries the meaning; nothing is renamed beyond trimming.
+
+# The result of tapping "Start my 3-day free trial" (T28), shown once, above the tabs.
+_trial_note = st.session_state.pop("_trial_note", None)
+if _trial_note:
+    getattr(st, _trial_note[0])(_trial_note[1])
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🏠 FMS",
     "📋 Info",
@@ -5743,6 +5806,8 @@ with tab7:
         if st.session_state.tier == "trial":
             st.caption("Upgrade now and your plan starts right away — no need to wait for "
                        "the trial to end.")
+        elif trial_start_button("profile_upgrade"):
+            st.caption("Or try everything free for 3 days first — no card.")
         _pcols = st.columns(2)
         for _pcol, _ptier in zip(_pcols, ("petty_officer", "chief")):
             _plabel, _pprice, _pfeatures = UPGRADE_INFO[_ptier]

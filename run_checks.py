@@ -67,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 560
+EXPECTED_TOTAL = 570
 
 
 def skip(reason):
@@ -2128,6 +2128,38 @@ def main():
           _site.RESEND_COOLDOWN_SECONDS >= 60, True)
     check("resend asks Supabase for the sign-up email, not a magic link",
           '"type": "signup"' in _src31, True)
+
+    # ── 33. The 3-day trial starts on tap, not at sign-up (T28, 2 Nov 2026) ───
+    # Shawn approved 29 Oct (S14): November sign-ups for the free tools were burning
+    # their trial months before the March exam. The database decides who may start
+    # one, so these check the migration as well as the app.
+    print("\n33. TRIAL STARTS ON TAP (T28)")
+    _mig33 = open(os.path.join(HERE, "supabase", "migrations", "20261102_trial_on_tap.sql"),
+                  encoding="utf-8").read()
+    _app33 = open(APP, encoding="utf-8").read()
+    check("new accounts default to the free plan",
+          "alter column tier set default 'free'" in _mig33, True)
+    check("new accounts get no trial start date", "alter column trial_start drop default" in _mig33, True)
+    _ins33 = _mig33[_mig33.index("if tg_op = 'INSERT' then"):_mig33.index("-- UPDATE from the sailor")]
+    check("an app-made new row is forced to free with no trial",
+          "'tier', 'free'" in _ins33 and "'trial_start', null" in _ins33, True)
+    check("the guard still lets a session go only trial -> free",
+          "and not (o->>'tier' = 'trial' and n->>'tier' = 'free')" in _mig33, True)
+    _fn33 = _mig33[_mig33.index("create or replace function public.start_my_trial()"):]
+    check("start_my_trial only starts a never-used free trial with no Stripe customer",
+          all(c in _fn33 for c in ("tier = 'free'", "trial_start is null",
+                                   "stripe_customer_id is null", "id = auth.uid()")), True)
+    check("start_my_trial runs with the database's own rights (the guard blocks sailors)",
+          "security definer" in _fn33 and "set search_path = public" in _fn33, True)
+    check("only signed-in sailors can call start_my_trial",
+          "revoke all on function public.start_my_trial() from public, anon" in _mig33
+          and "grant execute on function public.start_my_trial() to authenticated" in _mig33, True)
+    check("the app no longer creates a trial row at sign-up",
+          '"tier": "trial"' in _app33, False)
+    check("the app starts the trial through the database function",
+          'supabase.rpc("start_my_trial")' in _app33, True)
+    check("the Terms describe a trial the sailor starts",
+          "Start my 3-day free trial" in _site.TERMS_MD, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
