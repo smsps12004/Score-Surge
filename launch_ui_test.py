@@ -65,6 +65,42 @@ class LaunchUITests(unittest.TestCase):
         labels = [e.value for e in list(app.info) + list(app.warning)]
         self.assertTrue(any('excerpts supplied' in v or 'written from memory' in v for v in labels))
 
+    def _free_with_trial(self, rpc_answer):
+        # T28: a new account is free with its 3-day trial ready to start on tap.
+        app = build_app(tier='free')
+        app.session_state['trial_available'] = True
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        starts = [b for b in app.button if b.label == '▶️ Start my 3-day free trial']
+        self.assertTrue(starts)
+        db = MagicMock()
+        db.rpc.return_value.execute.return_value.data = rpc_answer
+        with patch('supabase.create_client', return_value=db):
+            starts[0].click().run()
+        self.assertEqual(len(app.exception), 0)
+        return app, db
+
+    def test_free_sailor_starts_trial_on_tap(self):
+        app, db = self._free_with_trial('started')
+        self.assertEqual([c.args for c in db.rpc.call_args_list].count(('start_my_trial',)), 1)
+        self.assertEqual(app.session_state['tier'], 'trial')
+        self.assertFalse(app.session_state['trial_available'])
+        self.assertTrue(any('free trial has started' in s.value for s in app.success))
+        self.assertFalse([b for b in app.button if b.label == '▶️ Start my 3-day free trial'])
+
+    def test_used_trial_cannot_restart(self):
+        app, _ = self._free_with_trial('not available')
+        self.assertEqual(app.session_state['tier'], 'free')
+        self.assertTrue(any('already used its free trial' in i.value for i in app.info))
+        self.assertFalse([b for b in app.button if b.label == '▶️ Start my 3-day free trial'])
+
+    def test_no_start_button_once_the_trial_was_used(self):
+        app = build_app(tier='free')
+        app.session_state['trial_available'] = False
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertFalse([b for b in app.button if b.label == '▶️ Start my 3-day free trial'])
+
     def test_e7_sees_the_published_exam_date(self):
         # T43: NAVADMIN 241/26 sets the January 2027 E7 exam for 21 Jan 2027. The
         # app said "1 Feb 2027 estimated, NAVADMIN not yet released" to E7s.
@@ -320,7 +356,10 @@ class LaunchUITests(unittest.TestCase):
         app2, db = self._come_back({'google_flow': flow, 'code': 'c'}, rows=[])
         self.assertEqual(len(app2.exception), 0)
         inserted = db.table.return_value.insert.call_args_list[0].args[0]
-        self.assertEqual((inserted['tier'], inserted['signup_src']), ('trial', 'yt'))
+        # T28: a new account starts free; the 3-day trial starts on tap.
+        self.assertEqual((inserted['tier'], inserted['signup_src']), ('free', 'yt'))
+        self.assertNotIn('trial_start', inserted)
+        self.assertTrue(app2.session_state['trial_available'])
         self.assertEqual([s for s in app2.selectbox if s.key == 'google_heard_from'][0].value, 'youtube')
 
     def test_returning_google_sailor_gets_no_link_code(self):

@@ -13,7 +13,7 @@ Rules this file holds to:
 """
 
 SUPPORT_EMAIL = "strategicsailor@gmail.com"
-EFFECTIVE_DATE = "22 October 2026"
+EFFECTIVE_DATE = "2 November 2026"
 
 # The marketing review asked for:
 #   "Advancement exam prep for PS, YN and NC. Every practice question shows the exact
@@ -34,7 +34,7 @@ INDEPENDENCE_LINE = (
     "the U.S. Navy or DoD."
 )
 
-TRIAL_LINE = "3-day free trial, no card required"
+TRIAL_LINE = "3-day free trial when you're ready, no card required"
 
 # "How did you hear about us?" -- optional, stored on profiles.heard_from.
 # Values on the left are what's stored (short and stable for counting); the labels
@@ -207,8 +207,9 @@ billet assignments.
   information or controlled unclassified information anywhere in the app.
 
 ## Free trial
-New accounts get a **3-day free trial with full access. No card is required, and the
-trial never turns into a charge.** When it ends, your account moves to the free plan
+Every new account can start one **3-day free trial with full access**, whenever you
+choose, by tapping **Start my 3-day free trial** in the app. **No card is required, and
+the trial never turns into a charge.** When it ends, your account moves to the free plan
 unless you choose to subscribe.
 
 ## Subscriptions

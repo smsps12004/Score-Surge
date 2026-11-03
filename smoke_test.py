@@ -434,7 +434,7 @@ def main():
     check("the tagline is above the login", site.TAGLINE in _all, True)
     check("both prices shown, read from the app's own plan table",
           "$12.99/mo" in _all and "$19.99/mo" in _all, True)
-    check("trial terms shown", "3-day free trial, no card required" in _all, True)
+    check("trial terms shown", site.TRIAL_LINE in _all and "no card required" in _all, True)
     check("placement coverage stated exactly", "Covers PS E6 today" in _all, True)
     check("the independence line is on the login page", site.INDEPENDENCE_LINE in _all, True)
     for _slug in ("terms", "privacy", "refunds"):
