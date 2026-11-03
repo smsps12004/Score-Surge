@@ -250,10 +250,10 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
     A plain select tells the two cases apart: `[]` means genuinely new, an exception
     means we could not find out. Only the first one is allowed to write anything.
     """
-    def _fetch():
+    def _fetch(columns):
         return (
             supabase.table("profiles")
-            .select("tier, trial_start")
+            .select(columns)
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -261,9 +261,12 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
 
     try:
         try:
-            result = _fetch()
+            result = _fetch("tier, trial_start, beta_until")
         except Exception:
-            result = _fetch()  # one retry — a blip should not cost someone their tier
+            # One retry — a blip should not cost someone their tier. Without
+            # beta_until, so a database that doesn't have that column yet (T31
+            # migration not run) still reads every sailor's real tier.
+            result = _fetch("tier, trial_start")
 
         rows = result.data or []
 
@@ -303,6 +306,13 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
         # (The database function start_my_trial() makes the final call.)
         st.session_state["trial_available"] = (tier == "free"
                                                and not profile.get("trial_start"))
+        # T31: a Plank Owner gets Chief, free, through the beta_until date Shawn
+        # set in the dashboard. Afterwards they're back on whatever plan they have.
+        if site.beta_active(profile.get("beta_until"), datetime.date.today()):
+            st.session_state["beta_until"] = str(profile["beta_until"])[:10]
+            st.session_state["trial_available"] = False
+            return "chief"
+        st.session_state.pop("beta_until", None)
         if tier == "trial":
             started = profile.get("trial_start")
             if not started:
@@ -5749,6 +5759,8 @@ with tab7:
         _locked = st.session_state.get("locked_rating")
         st.markdown(f"**Rating:** {_locked or 'not set'}  ·  **Plan:** "
                     f"{TIER_LABELS.get(st.session_state.tier, st.session_state.tier)}")
+        if st.session_state.get("beta_until"):
+            st.success(site.beta_banner_text(st.session_state["beta_until"]))
         _u = current_usage()
         for _kind in ("ai", "download"):
             _line = locks.usage_line(_u, _kind)

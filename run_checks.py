@@ -67,7 +67,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 570
+EXPECTED_TOTAL = 580
 
 
 def skip(reason):
@@ -2160,6 +2160,29 @@ def main():
           'supabase.rpc("start_my_trial")' in _app33, True)
     check("the Terms describe a trial the sailor starts",
           "Start my 3-day free trial" in _site.TERMS_MD, True)
+
+    # ── 34. Plank Owner beta access (T31, 2 Nov 2026) ─────────────────────────
+    # 30 testers get Chief free through 31 Mar 2027, no card (Shawn, S16). The date
+    # lives on the profile, set only by Shawn in the dashboard.
+    print("\n34. PLANK OWNER BETA (T31)")
+    _mig34 = open(os.path.join(HERE, "supabase", "migrations", "20261103_plank_owner_beta.sql"),
+                  encoding="utf-8").read()
+    _d34 = datetime.date
+    check("beta runs through its last day", _site.beta_active("2027-03-31", _d34(2027, 3, 31)), True)
+    check("beta ends the day after", _site.beta_active("2027-03-31", _d34(2027, 4, 1)), False)
+    check("no date means no beta", _site.beta_active(None, _d34(2026, 11, 2)), False)
+    check("an unreadable date means no beta", _site.beta_active("soon", _d34(2026, 11, 2)), False)
+    check("the migration adds beta_until", "add column if not exists beta_until date" in _mig34, True)
+    _ins34 = _mig34[_mig34.index("if tg_op = 'INSERT' then"):_mig34.index("-- UPDATE from the sailor")]
+    check("a sailor can't give themselves a beta on a new row", "'beta_until', null" in _ins34, True)
+    check("a sailor can't change their beta date",
+          "patch := patch || jsonb_build_object('beta_until', o->'beta_until');" in _mig34, True)
+    check("usage limits count a live beta as Chief",
+          "p.beta_until >= current_date then 'chief'" in _mig34, True)
+    check("the trial-on-tap rules are kept in the new guard",
+          "'tier', 'free'" in _ins34 and "'trial_start', null" in _ins34, True)
+    check("the app still reads tiers if beta_until isn't in the database yet",
+          '_fetch("tier, trial_start")' in open(APP, encoding="utf-8").read(), True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
