@@ -1,0 +1,7 @@
+# Score Surge API (for the iPhone app). Kept separate from the root
+# requirements.txt on purpose: the website's Render and Streamlit Cloud builds
+# don't install these, so adding the API changes nothing for the live site.
+fastapi==0.121.3
+uvicorn==0.38.0
+# Test only (FastAPI's TestClient needs it):
+httpx==0.28.1
