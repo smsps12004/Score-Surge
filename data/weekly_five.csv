@@ -1,0 +1,11 @@
+# Weekly Five schedule (T49). One row per question; week_id = the Friday it opens.
+# Picks come only from marketing_approved.csv (word-for-word checked) and get the
+# same-day online check before the week is loaded. Check: python weekly_five.py check
+# Week of 2026-11-20: first prize week. Drafted 5 Nov from BUPERSINST 1430.16H rows
+# (edition confirmed current online 5 Nov). Marketing re-checks Sun 15 Nov.
+week_id,idx,question_id
+2026-11-20,1,ADV054
+2026-11-20,2,ADV077
+2026-11-20,3,ADV094
+2026-11-20,4,ADV107
+2026-11-20,5,ADV146

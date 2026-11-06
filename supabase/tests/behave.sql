@@ -71,8 +71,9 @@ end $$;
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-00000000000c',false);
 select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-00000000000c","email":"c@x.com"}',false);
 insert into public.profiles (id,email,tier,trial_start,stripe_customer_id) values (auth.uid(),'b@x.com','chief',now()+interval '1 year','cus_B');
-insert into results select 'C insert: tier forced to trial', tier='trial' from public.profiles where id=auth.uid();
-insert into results select 'C insert: trial starts now', trial_start <= now() from public.profiles where id=auth.uid();
+-- Since T28 (2 Nov 2026) a new row is free with the trial NOT started (start_my_trial() starts it).
+insert into results select 'C insert: tier forced to free', tier='free' from public.profiles where id=auth.uid();
+insert into results select 'C insert: trial not started', trial_start is null from public.profiles where id=auth.uid();
 insert into results select 'C insert: no stripe id', stripe_customer_id is null from public.profiles where id=auth.uid();
 insert into results select 'C insert: email is own login email', email='c@x.com' from public.profiles where id=auth.uid();
 -- trial ai limit 10

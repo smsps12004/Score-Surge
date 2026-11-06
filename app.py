@@ -20,6 +20,7 @@ import account_locks as locks
 import public_site as site
 import readiness
 import google_signin as gsi
+import weekly_five as w5
 
 # PAGE CONFIG — must be first
 st.set_page_config(page_title="Score Surge", page_icon="⚓", layout="centered")
@@ -261,12 +262,15 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
 
     try:
         try:
-            result = _fetch("tier, trial_start, beta_until")
+            result = _fetch("tier, trial_start, beta_until, comp_until")
         except Exception:
-            # One retry — a blip should not cost someone their tier. Without
-            # beta_until, so a database that doesn't have that column yet (T31
-            # migration not run) still reads every sailor's real tier.
-            result = _fetch("tier, trial_start")
+            # One retry — a blip should not cost someone their tier. Without the
+            # newer columns (beta_until, T31; comp_until, T47), so a database that
+            # doesn't have them yet still reads every sailor's real tier.
+            try:
+                result = _fetch("tier, trial_start, beta_until")
+            except Exception:
+                result = _fetch("tier, trial_start")
 
         rows = result.data or []
 
@@ -313,6 +317,13 @@ def get_user_tier(user_id: str, user_email: str = "", extras: dict | None = None
             st.session_state["trial_available"] = False
             return "chief"
         st.session_state.pop("beta_until", None)
+        # T47: a Weekly Five winner gets Chief, free, through the comp_until date
+        # Shawn set in the dashboard. No Plank Owner label.
+        if site.beta_active(profile.get("comp_until"), datetime.date.today()):
+            st.session_state["comp_until"] = str(profile["comp_until"])[:10]
+            st.session_state["trial_available"] = False
+            return "chief"
+        st.session_state.pop("comp_until", None)
         if tier == "trial":
             started = profile.get("trial_start")
             if not started:
@@ -706,6 +717,8 @@ def render_resend_verification(key):
 def show_auth_page():
     st.title("⚓ Score Surge | by Strategic Sailor")
     scrub_tokens_from_url()
+    if st.session_state.get("w5_open"):
+        st.info("🏆 **Log in or create a free account to play this week's Weekly Five.**")
     if st.session_state.get("_signed_out_elsewhere"):
         st.warning(
             "You were signed out because this account signed in on another device. "
@@ -1088,7 +1101,12 @@ if _qp.get("signup") == "1" and not st.session_state.user:
     st.query_params.clear()
     st.rerun()
 
-# ── PUBLIC LEGAL PAGES: ?page=terms | privacy | refunds ───────────────────────
+# ── ?play=w5: a Weekly Five post's link opens the game (T49) ──────────────────
+# Remembered for this visit, so it still opens after the sailor logs in.
+if _qp.get("play") == "w5":
+    st.session_state["w5_open"] = True
+
+# ── PUBLIC LEGAL PAGES: ?page=terms | privacy | refunds | rules ───────────────
 if _qp.get("page") in site.LEGAL_PAGES:
     _title, _body = site.LEGAL_PAGES[_qp.get("page")]
     st.markdown(f"[← Back to Score Surge]({get_app_base_url()}/)")
@@ -2734,6 +2752,306 @@ Rules:
 # sailors, so the tab strip has to fit a phone, not a laptop. The emoji carries the
 # recognition and the word carries the meaning; nothing is renamed beyond trimming.
 
+# ── THE WEEKLY FIVE (T49 + T47, 5 Nov 2026) ───────────────────────────────────
+# A timed 5-question quiz, one try per account per week, free accounts included.
+# The rules live in the database (supabase/migrations/20261105_weekly_five.sql):
+# it starts each question's 20 seconds, grades against an answer key sailors can't
+# read, and won't say which answers were right until the week closes. This code only
+# shows what the database says. If that migration hasn't been run yet, every call
+# below fails quietly and the Weekly Five simply doesn't appear.
+W5_WEEKS_TTL = 60   # seconds between checks for this week's quiz
+
+
+def _w5_rpc(name, params=None):
+    try:
+        return supabase.rpc(name, params or {}).execute().data
+    except Exception as e:
+        print(f"[w5] {name} failed: {e!r}")
+        return None
+
+
+def w5_weeks():
+    """{'open'|'upcoming'|'closed': week} for the weeks worth showing now."""
+    cached = st.session_state.get("_w5_weeks")
+    if not cached or time.time() - cached[0] > W5_WEEKS_TTL:
+        rows = _w5_rpc("w5_weeks_now")
+        cached = (time.time(), rows if isinstance(rows, list) else [])
+        st.session_state["_w5_weeks"] = cached
+    out = {}
+    for w in cached[1]:
+        if isinstance(w, dict) and w.get("status") in ("open", "upcoming", "closed"):
+            if w["status"] == "upcoming":
+                out.setdefault("upcoming", w)      # the soonest
+            else:
+                out[w["status"]] = w               # the latest
+    return out
+
+
+def _w5_open_page(week_id):
+    st.session_state["w5_open"] = True
+    st.session_state["w5_week_id"] = week_id
+
+
+def _w5_close_page():
+    for k in ("w5_open", "w5_week_id"):
+        st.session_state.pop(k, None)
+    if "play" in st.query_params:
+        del st.query_params["play"]
+
+
+def render_w5_card():
+    """The Weekly Five box at the top of the home tab. Nothing if no week is set up."""
+    weeks = w5_weeks()
+    if not weeks:
+        return
+    with st.container(border=True):
+        if "open" in weeks:
+            w = weeks["open"]
+            st.markdown("🏆 **The Weekly Five is open.** 5 PS questions, 20 seconds each, "
+                        "one try. Top score wins 30 days of Chief, free.")
+            st.caption(f"Closes {w5.when_text(w['closes_at'])}. Free accounts can play.")
+            st.button("Play the Weekly Five", key="w5_card_play", type="primary",
+                      width="stretch", on_click=_w5_open_page, args=(w["week_id"],))
+        elif "upcoming" in weeks:
+            st.markdown(f"🏆 **Next Weekly Five opens "
+                        f"{w5.when_text(weeks['upcoming']['opens_at'])}.** 5 PS questions, "
+                        "20 seconds each. Top score wins 30 days of Chief.")
+        if "closed" in weeks and "open" not in weeks:
+            st.button("See last week's answers and leaderboard", key="w5_card_results",
+                      width="stretch", on_click=_w5_open_page,
+                      args=(weeks["closed"]["week_id"],))
+
+
+def _w5_leaderboard(week_id, title):
+    rows = _w5_rpc("w5_leaderboard", {"p_week": week_id, "p_limit": 10})
+    st.markdown(f"**{title}**")
+    if not isinstance(rows, list) or not rows:
+        st.caption("No finished entries yet. Be the first.")
+        return
+    lines = ["| # | Sailor | Score | Time |", "|---|---|---|---|"]
+    for r in rows:
+        name = str(r.get("name") or "Anonymous sailor").replace("|", "")
+        if r.get("is_me"):
+            name += " **(you)**"
+        lines.append(f"| {r.get('place')} | {name} | {r.get('score')} | {r.get('seconds')} s |")
+    st.markdown("\n".join(lines))
+
+
+def _w5_share():
+    st.caption("Think your shop can beat you? Send them this link:")
+    st.code(f"{get_app_base_url().rstrip('/')}/?play=w5&src=w5", language=None)
+
+
+def _w5_note():
+    note = st.session_state.pop("_w5_note", None)
+    if note:
+        getattr(st, note[0])(note[1])
+
+
+def _w5_start(week_id):
+    """Button callback: agree to the rules, start the one attempt, open question 1."""
+    handle = (st.session_state.get("w5_handle") or "").strip()
+    show = bool(st.session_state.get("w5_show_handle")) and bool(handle)
+    state = _w5_rpc("w5_start", {"p_week": week_id, "p_handle": handle or None,
+                                 "p_show_handle": show})
+    if isinstance(state, dict) and state.get("started"):
+        _w5_rpc("w5_show", {"p_week": week_id, "p_idx": int(state.get("next_idx") or 1)})
+    else:
+        st.session_state["_w5_note"] = ("warning", "We couldn't start the quiz just now. "
+                                        "Wait a moment and try again.")
+
+
+def _w5_show(week_id, idx):
+    """Button callback: this is when question idx's 20 seconds start."""
+    if not isinstance(_w5_rpc("w5_show", {"p_week": week_id, "p_idx": idx}), dict):
+        st.session_state["_w5_note"] = ("warning", "We couldn't open that question. "
+                                        "Wait a moment and try again; its clock hasn't started.")
+
+
+def _w5_pick(week_id, idx, real_letter):
+    """Button callback: lock in an answer (sent as the bank's own letter)."""
+    st.session_state["_w5_answered"] = (week_id, idx)
+    if _w5_rpc("w5_answer", {"p_week": week_id, "p_idx": idx, "p_choice": real_letter}) is None:
+        st.session_state["_w5_note"] = ("warning", "That answer may not have reached us. "
+                                        "Check your connection; the clock keeps running.")
+    elif idx < int(st.session_state.get("_w5_questions") or 5):
+        st.session_state["_w5_note"] = ("success", f"Question {idx} locked in.")
+
+
+@st.fragment(run_every=1)
+def _w5_clock(week_id, idx):
+    """The countdown under a question. When it hits zero the question is recorded as
+    unanswered (the database would count it wrong anyway) and the page moves on."""
+    left = st.session_state.get("w5_deadline", 0) - time.time()
+    if left <= 0:
+        if (st.session_state.get("_w5_timeout_sent") != (week_id, idx)
+                and st.session_state.get("_w5_answered") != (week_id, idx)):
+            st.session_state["_w5_timeout_sent"] = (week_id, idx)
+            _w5_rpc("w5_answer", {"p_week": week_id, "p_idx": idx, "p_choice": None})
+            st.session_state["_w5_note"] = ("warning", f"⏱ Time's up on question {idx}. "
+                                            "It counts as wrong.")
+        st.rerun(scope="app")
+    st.progress(min(1.0, left / w5.SECONDS_PER_QUESTION),
+                text=f"⏱ {int(left) + 1} seconds left")
+
+
+def _w5_intro(week_id, state):
+    st.markdown(
+        f"**{state.get('questions', 5)} PS questions. {w5.SECONDS_PER_QUESTION} seconds "
+        "each. One try.**\n"
+        "- Each question's clock starts when it appears, and our server keeps the time: "
+        "leaving or refreshing the page doesn't stop it. No answer counts as wrong.\n"
+        "- Most right wins; a tie goes to the faster total time.\n"
+        "- Every question comes from the verified question bank. The right answers and "
+        "the exact manual text come out when the quiz closes, "
+        f"{w5.when_text(state.get('closes_at'))}.\n"
+        "- Top score wins 30 days of the Chief plan, free. "
+        f"[Official rules]({get_app_base_url().rstrip('/')}/?page=rules)")
+    st.text_input("Leaderboard name (optional)", key="w5_handle", max_chars=31,
+                  placeholder="@yourhandle",
+                  help="Letters, numbers, _ and . only, 2 to 30 characters.")
+    st.checkbox("Show my name on the leaderboard (otherwise you're \"Anonymous sailor\")",
+                key="w5_show_handle")
+    _h = (st.session_state.get("w5_handle") or "").strip()
+    if _h and not re.fullmatch(r"@?[A-Za-z0-9_.]{2,30}", _h):
+        st.caption("That name has characters we can't show, so you'll play as "
+                   "\"Anonymous sailor\".")
+    agreed = st.checkbox("I'm 18 or older and I agree to the official rules.",
+                         key="w5_agree")
+    st.button("Start: question 1's clock starts right away", key="w5_start",
+              type="primary", width="stretch", disabled=not agreed,
+              on_click=_w5_start, args=(week_id,))
+
+
+def _w5_play(week_id, state):
+    n = int(state.get("questions") or 5)
+    st.session_state["_w5_questions"] = n
+    cur = state.get("current")
+    if not cur:
+        idx = int(state.get("next_idx") or 1)
+        st.markdown(f"**Question {idx} of {n}.** Its {w5.SECONDS_PER_QUESTION} seconds "
+                    "start when you tap.")
+        st.button(f"Show question {idx}", key=f"w5_show_{idx}", type="primary",
+                  width="stretch", on_click=_w5_show, args=(week_id, idx))
+        return
+    idx = int(cur["idx"])
+    ms_left = int(cur.get("ms_left") or 0)
+    q = w5.question(cur.get("question_id"))
+    if ms_left <= 0 or q is None:
+        # Time ran out while away, or (shouldn't happen: run_checks section 37) the
+        # question isn't in this copy of the bank. Record it and move on.
+        _w5_rpc("w5_answer", {"p_week": week_id, "p_idx": idx, "p_choice": None})
+        if q is None:
+            st.session_state["_w5_note"] = ("error", f"Question {idx} couldn't be shown. "
+                                            f"Please tell us at {SUPPORT_EMAIL}; it will be "
+                                            "thrown out for everyone.")
+        else:
+            st.session_state["_w5_note"] = ("warning", f"⏱ Time ran out on question {idx}.")
+        st.rerun()
+    st.session_state["w5_deadline"] = time.time() + ms_left / 1000
+    st.markdown(f"**Question {idx} of {n}**")
+    st.markdown(f"##### {q['question']}")
+    _w5_clock(week_id, idx)
+    for shown, real in w5.shuffled(st.session_state.user.id, week_id, idx):
+        st.button(f"{shown}.  {q['answers'][real]}", key=f"w5_pick_{week_id}_{idx}_{shown}",
+                  width="stretch", on_click=_w5_pick, args=(week_id, idx, real))
+    st.caption("Tap an answer to lock it in. No changes after that.")
+
+
+def _w5_done(week_id, state):
+    st.success(f"**Locked in: {state.get('score')} of {state.get('questions')}** in "
+               f"{w5.seconds_text(state.get('total_ms'))}.")
+    st.markdown("Which ones you got right, and the exact manual text, come out when the "
+                f"quiz closes, {w5.when_text(state.get('closes_at'))}. Nobody sees the "
+                "answers before then.")
+    _w5_leaderboard(week_id, "Leaderboard so far")
+    _w5_share()
+
+
+def _w5_challenge(qid):
+    """Button callback: take this question to the Challenge form on the Profile tab
+    (the form is defined further down the page than this screen)."""
+    st.session_state["w5_challenge"] = qid
+    _w5_close_page()
+    st.session_state["main_tab"] = MAIN_TAB_PROFILE
+
+
+def _w5_results(week_id, state):
+    if state.get("started"):
+        st.success(f"**Your score: {state.get('score')} of {state.get('questions')}** in "
+                   f"{w5.seconds_text(state.get('total_ms'))}.")
+    _w5_leaderboard(week_id, "Final leaderboard")
+    rows = _w5_rpc("w5_reveal", {"p_week": week_id})
+    if not isinstance(rows, list) or not rows:
+        st.caption("The answers aren't available just now. Try again in a minute.")
+        return
+    st.markdown("#### The answers, from the manual")
+    for r in rows:
+        q = w5.question(r.get("question_id"))
+        if not q:
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{r.get('idx')}. {q['question']}**")
+            if r.get("voided"):
+                st.warning("Thrown out: this question turned out to be wrong, so it "
+                           "doesn't count for anyone.")
+                continue
+            right = r.get("correct")
+            st.markdown(f"✅ **{q['answers'].get(right, '')}**")
+            if state.get("started"):
+                mine = r.get("my_choice")
+                st.caption("Your answer: " + (f"{q['answers'].get(mine, '')} "
+                           + ("✅" if r.get("my_correct") else "❌") if mine
+                           else "none (time ran out) ❌"))
+            if r.get("pct_correct") is not None:
+                st.caption(f"{r['pct_correct']}% of players got it right · "
+                           f"average {r.get('avg_seconds')} s")
+            if q["quote"]:
+                st.markdown(f"> {q['quote']}")
+            src = " · ".join(x for x in (q["source_manual"], q["edition"],
+                                         f"p. {q['page']}" if q["page"] else "") if x)
+            st.caption(f"[{src}]({q['url']})" if q["url"].startswith("https://") else src)
+            st.button("🚩 Think this is wrong? Challenge it", key=f"w5_ch_{q['id']}",
+                      on_click=_w5_challenge, args=(q["id"],))
+
+
+def render_w5_page():
+    """The Weekly Five screen, in place of the tabs while it's open."""
+    st.button("← Back to Score Surge", key="w5_back", on_click=_w5_close_page)
+    st.subheader("🏆 The Weekly Five")
+    _w5_note()
+    weeks = w5_weeks()
+    week_id = st.session_state.get("w5_week_id") or next(
+        (weeks[s]["week_id"] for s in ("open", "closed") if s in weeks), None)
+    if not week_id:
+        if "upcoming" in weeks:
+            st.info(f"The next Weekly Five opens {w5.when_text(weeks['upcoming']['opens_at'])}.")
+        else:
+            st.info("There's no Weekly Five running right now. Follow us to hear when "
+                    "the next one opens.")
+        return
+    state = _w5_rpc("w5_state", {"p_week": week_id})
+    if not isinstance(state, dict) or state.get("status") in (None, "none", "login"):
+        st.warning("We couldn't reach the quiz just now. Wait a moment, then tap Reload.")
+        st.button("Reload", key="w5_reload")
+        return
+    if state["status"] == "upcoming":
+        st.info(f"This Weekly Five opens {w5.when_text(state.get('opens_at'))}.")
+    elif state["status"] == "closed":
+        _w5_results(week_id, state)
+    elif not state.get("started"):
+        _w5_intro(week_id, state)
+    elif state.get("finished"):
+        _w5_done(week_id, state)
+    else:
+        _w5_play(week_id, state)
+
+
+if st.session_state.get("w5_open"):
+    render_w5_page()
+    render_footer()
+    st.stop()
+
 # The result of tapping "Start my 3-day free trial" (T28), shown once, above the tabs.
 _trial_note = st.session_state.pop("_trial_note", None)
 if _trial_note:
@@ -2751,6 +3069,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 
 # ── TAB 1: FMS CALCULATOR ─────────────────────────────────────────────────────
 with tab1:
+    render_w5_card()
     trial_nudge("fms")
     st.subheader("📤 Upload Profile Sheet (Optional)")
     uploaded_file = st.file_uploader(
@@ -5695,6 +6014,14 @@ Avoid presenting unverified policy or timelines as facts.
 # ── TAB 7: MY PROFILE ─────────────────────────────────────────────────────────
 with tab7:
     trial_nudge("profile")
+    # A Weekly Five question someone wants to challenge (sent here from the results).
+    _w5_ch = w5.question(st.session_state.get("w5_challenge"))
+    if _w5_ch:
+        with st.container(border=True):
+            st.markdown(f"**Challenging a Weekly Five question:** {_w5_ch['question']}")
+            render_challenge_button(w5.as_bank_row(_w5_ch), f"w5_{_w5_ch['id']}")
+            st.button("Done", key="w5_challenge_done",
+                      on_click=lambda: st.session_state.pop("w5_challenge", None))
     st.subheader("👤 My Profile")
 
     # ── Your plan: rating lock and this month's usage (account_locks.py) ──
@@ -5704,6 +6031,8 @@ with tab7:
                     f"{TIER_LABELS.get(st.session_state.tier, st.session_state.tier)}")
         if st.session_state.get("beta_until"):
             st.success(site.beta_banner_text(st.session_state["beta_until"]))
+        elif st.session_state.get("comp_until"):
+            st.success(site.comp_banner_text(st.session_state["comp_until"]))
         _u = current_usage()
         for _kind in ("ai", "download"):
             _line = locks.usage_line(_u, _kind)

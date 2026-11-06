@@ -309,6 +309,141 @@ class LaunchUITests(unittest.TestCase):
     def _signup_answer(self, app):
         return [s for s in app.selectbox if s.key == 'signup_heard_from'][0]
 
+    # ── The Weekly Five (T49 + T47, 5 Nov 2026) ───────────────────────────────
+    W5_OPEN = [{'week_id': '2026-11-20', 'opens_at': '2026-11-20T18:30:00-06:00',
+                'closes_at': '2026-11-22T23:59:00-06:00', 'status': 'open'}]
+
+    def _w5_db(self, answers):
+        """A Supabase stand-in whose rpc(name) returns answers[name] (callable or value)."""
+        db = MagicMock()
+        db.calls = []
+        def rpc(name, params=None):
+            db.calls.append((name, params or {}))
+            val = answers.get(name)
+            val = val(params or {}) if callable(val) else val
+            return types.SimpleNamespace(execute=lambda: types.SimpleNamespace(data=val))
+        db.rpc.side_effect = rpc
+        return db
+
+    def _w5_run(self, answers, state=None, tier='free', **session):
+        app = build_app(tier)
+        for k, v in session.items():
+            app.session_state[k] = v
+        db = self._w5_db(answers)
+        with patch('supabase.create_client', return_value=db):
+            app.run()
+        self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+        return app, db
+
+    def test_weekly_five_card_shows_when_a_week_is_open(self):
+        app, _ = self._w5_run({'w5_weeks_now': self.W5_OPEN})
+        self.assertTrue([b for b in app.button if b.key == 'w5_card_play'])
+        self.assertTrue(any('Weekly Five is open' in m.value for m in app.markdown))
+
+    def test_weekly_five_hidden_when_database_not_ready(self):
+        # Before the migration runs every call fails: the app must look exactly as before.
+        app = build_app('free'); app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertFalse([b for b in app.button if (b.key or '').startswith('w5_')])
+        self.assertEqual(len(app.tabs), 7)
+
+    def test_weekly_five_start_needs_the_rules_box_then_opens_question_1(self):
+        state = {'status': 'open', 'started': False, 'questions': 5,
+                 'closes_at': '2026-11-22T23:59:00-06:00'}
+        answers = {'w5_weeks_now': self.W5_OPEN, 'w5_state': state,
+                   'w5_start': {'status': 'open', 'started': True, 'next_idx': 1},
+                   'w5_show': {'idx': 1, 'question_id': 'ADV054', 'ms_left': 20000}}
+        app, db = self._w5_run(answers, w5_open=True, w5_week_id='2026-11-20')
+        start = [b for b in app.button if b.key == 'w5_start'][0]
+        self.assertTrue(start.disabled)
+        self.assertEqual(len(app.tabs), 0)      # the game screen replaces the tabs
+        [c for c in app.checkbox if c.key == 'w5_agree'][0].check()
+        with patch('supabase.create_client', return_value=db):
+            app.run()
+            [b for b in app.button if b.key == 'w5_start'][0].click().run()
+        names = [n for n, _ in db.calls]
+        self.assertIn('w5_start', names)
+        self.assertEqual(names[names.index('w5_start') + 1], 'w5_show')
+        self.assertEqual(db.calls[names.index('w5_show')][1], {'p_week': '2026-11-20', 'p_idx': 1})
+
+    def test_weekly_five_answer_sends_the_banks_own_letter(self):
+        import weekly_five as w5
+        state = {'status': 'open', 'started': True, 'finished': False, 'questions': 5,
+                 'next_idx': 1, 'current': {'idx': 1, 'question_id': 'ADV054', 'ms_left': 15000}}
+        answers = {'w5_weeks_now': self.W5_OPEN, 'w5_state': state, 'w5_answer': {'answered': 1}}
+        app, db = self._w5_run(answers, w5_open=True, w5_week_id='2026-11-20')
+        picks = [b for b in app.button if (b.key or '').startswith('w5_pick_')]
+        self.assertEqual(len(picks), 4)
+        q = w5.question('ADV054')
+        right = [shown for shown, real in w5.shuffled('smoke-test-user', '2026-11-20', 1)
+                 if real == q['correct']][0]
+        self.assertTrue(any(b.label.startswith(f"{right}.") and q['answers'][q['correct']] in b.label
+                            for b in picks))
+        with patch('supabase.create_client', return_value=db):
+            [b for b in picks if b.label.startswith(f"{right}.")][0].click().run()
+        sent = [p for n, p in db.calls if n == 'w5_answer']
+        self.assertEqual(sent[-1], {'p_week': '2026-11-20', 'p_idx': 1, 'p_choice': q['correct']})
+
+    def test_weekly_five_expired_question_is_recorded_as_no_answer(self):
+        state = {'status': 'open', 'started': True, 'finished': False, 'questions': 5,
+                 'next_idx': 2, 'current': {'idx': 2, 'question_id': 'ADV077', 'ms_left': 0}}
+        after = {'status': 'open', 'started': True, 'finished': False, 'questions': 5,
+                 'next_idx': 3, 'current': None}
+        calls = {'n': 0}
+        def st_(p):
+            calls['n'] += 1
+            return state if calls['n'] == 1 else after
+        app, db = self._w5_run({'w5_weeks_now': self.W5_OPEN, 'w5_state': st_,
+                                'w5_answer': {'answered': 2}},
+                               w5_open=True, w5_week_id='2026-11-20')
+        self.assertIn(('w5_answer', {'p_week': '2026-11-20', 'p_idx': 2, 'p_choice': None}), db.calls)
+        self.assertTrue([b for b in app.button if b.key == 'w5_show_3'])
+
+    def test_weekly_five_finished_shows_score_not_answers(self):
+        state = {'status': 'open', 'started': True, 'finished': True, 'questions': 5,
+                 'score': 4, 'total_ms': 41200, 'closes_at': '2026-11-22T23:59:00-06:00'}
+        board = [{'place': 1, 'name': '@squared.away', 'score': 4, 'seconds': 41.2, 'is_me': True}]
+        app, db = self._w5_run({'w5_weeks_now': self.W5_OPEN, 'w5_state': state,
+                                'w5_leaderboard': board}, w5_open=True, w5_week_id='2026-11-20')
+        self.assertTrue(any('4 of 5' in s.value for s in app.success))
+        self.assertNotIn('w5_reveal', [n for n, _ in db.calls])
+        self.assertTrue(any('@squared.away **(you)**' in m.value for m in app.markdown))
+        self.assertTrue(any('?play=w5&src=w5' in c.value for c in app.code))
+
+    def test_weekly_five_closed_week_shows_answers_with_manual_text(self):
+        import weekly_five as w5
+        state = {'status': 'closed', 'started': True, 'finished': True, 'questions': 5,
+                 'score': 1, 'total_ms': 30500}
+        reveal = [{'idx': 1, 'question_id': 'ADV054', 'correct': 'A', 'voided': False,
+                   'my_choice': 'A', 'my_correct': True, 'pct_correct': 100, 'avg_seconds': 4.4}]
+        app, _ = self._w5_run({'w5_weeks_now': self.W5_OPEN, 'w5_state': state,
+                               'w5_leaderboard': [], 'w5_reveal': reveal},
+                              w5_open=True, w5_week_id='2026-11-20')
+        self.assertTrue(any(w5.question('ADV054')['quote'] in m.value for m in app.markdown))
+        self.assertTrue([b for b in app.button if b.key == 'w5_ch_ADV054'])
+
+    def test_play_link_before_login_says_log_in_to_play(self):
+        app = self._logged_out(google='off')
+        app.query_params['play'] = 'w5'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any('Weekly Five' in i.value for i in app.info))
+
+    def test_weekly_five_prize_gives_chief_without_plank_owner_label(self):
+        import datetime
+        app = build_app()
+        app.session_state['tier'] = None
+        db = MagicMock()
+        until = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'tier': 'free', 'trial_start': None, 'beta_until': None, 'comp_until': until}]
+        with patch('supabase.create_client', return_value=db):
+            app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state['tier'], 'chief')
+        self.assertEqual(app.session_state['comp_until'], until)
+        self.assertNotIn('beta_until', app.session_state)
+
     # ── "Follow us" links (T48, 5 Nov 2026) ────────────────────────────────────
     def _follow_rows(self, app):
         return [m.value for m in app.markdown if 'tiktok.com/@score.surge.app' in m.value]
@@ -321,6 +456,7 @@ class LaunchUITests(unittest.TestCase):
         self.assertEqual(len(rows), 2)  # under the trial button + footer
         self.assertIn('instagram.com/scoresurgeapp', rows[0])
         self.assertIn('discord.gg/q3advbdPf', rows[0])
+        self.assertIn('facebook.com/profile.php?id=61596184705519', rows[0])
 
     def test_follow_us_links_leave_the_link_code_alone(self):
         app = self._logged_out(google='off')

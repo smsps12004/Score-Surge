@@ -68,7 +68,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 594
+EXPECTED_TOTAL = 620
 
 
 def skip(reason):
@@ -1820,7 +1820,8 @@ def main():
     check("refund policy: full refund of the latest charge within 7 days",
           "within 7 days of a charge and we'll refund that charge in full" in _site.REFUNDS_MD, True)
     _mig25 = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
-                               "20261102_signup_source.sql"), encoding="utf-8").read()
+                               "20261105_weekly_five.sql"), encoding="utf-8").read()
+    # (the newest migration that sets the heard_from / signup_src lists: T47 added w5)
     check("every signup answer the form offers is allowed by the database",
           all(f"'{v}'" in _mig25 for v in _site.HEARD_FROM_CHOICES), True)
     check("an answer not on the list is never stored", _site.clean_heard_from("myspace"), None)
@@ -2032,9 +2033,10 @@ def main():
     check("the signup answers are Marketing's list, in Marketing's order",
           list(_site.HEARD_FROM_CHOICES.values()),
           ["Facebook", "Instagram", "TikTok", "YouTube", "Reddit", "Discord", "Google",
-           "Podcast", "Business card / QR code", "A friend or shipmate", "Other"])
-    check("the link codes are exactly Marketing's eight",
-          sorted(_site.SRC_CODES), sorted(["fb", "ig", "tt", "yt", "rd", "dc", "pts", "card"]))
+           "Podcast", "Business card / QR code", "Weekly Five quiz challenge",
+           "A friend or shipmate", "Other"])
+    check("the link codes are exactly Marketing's eight, plus w5 (T47)",
+          sorted(_site.SRC_CODES), sorted(["fb", "ig", "tt", "yt", "rd", "dc", "pts", "card", "w5"]))
     check("every link code pre-fills a real signup answer",
           all(v in _site.HEARD_FROM_CHOICES for v in _site.SRC_CODES.values()), True)
     _con30 = _mig25[_mig25.index("profiles_signup_src_check\n"):]
@@ -2229,6 +2231,90 @@ def main():
           True)
     check("the footer on every page shows them",
           "    st.divider()\n    render_follow_us()\n    st.caption(site.INDEPENDENCE_LINE)" in _app36, True)
+
+    # ── 37. The Weekly Five (T49 + T47, 5 Nov 2026) ───────────────────────────
+    print("\n37. THE WEEKLY FIVE (T49 + T47)")
+    import weekly_five as _w5
+    _mig37 = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
+                               "20261105_weekly_five.sql"), encoding="utf-8").read()
+    _app37 = open(APP, encoding="utf-8").read()
+    _sched37 = _w5.load_schedule()
+    check("the schedule is safe to load (every question verified, 5 a week, Fridays)",
+          _w5.problems(), [])
+    check("every scheduled question is a verified PS row (both gates PASS)",
+          all(_w5.question(q) is not None for ids in _sched37.values() for q in ids), True)
+    _seed_ok37 = True
+    for _wk in _sched37:
+        _f = os.path.join(_w5.SEED_DIR, f"{_wk}.sql")
+        if os.path.exists(_f) and open(_f, encoding="utf-8").read() != _w5.seed_sql(_wk):
+            _seed_ok37 = False
+    check("every week's SQL file matches the schedule and the bank's answer key (not hand-edited)",
+          _seed_ok37, True)
+    check("the seed refuses an unverified question",
+          any("not a verified" in p for p in _w5.problems({"2026-11-27": ["ADV054", "ADV077", "ADV094", "ADV107", "NOPE1"]})), True)
+    check("the seed refuses a week that isn't 5 questions on a Friday",
+          (bool(_w5.problems({"2026-11-21": ["ADV054", "ADV077", "ADV094", "ADV107", "ADV146"]})),
+           bool(_w5.problems({"2026-11-27": ["ADV054", "ADV077", "ADV094", "ADV107"]})),
+           bool(_w5.problems({"2026-11-27": ["ADV054", "ADV054", "ADV094", "ADV107", "ADV146"]}))),
+          (True, True, True))
+    check("a question can't run twice in different weeks",
+          any("already ran" in p for p in _w5.problems({
+              "2026-11-20": ["ADV054", "ADV077", "ADV094", "ADV107", "ADV146"],
+              "2026-11-27": ["ADV054", "ADV012", "ADV013", "ADV025", "ADV038"]})), True)
+    check("the app's 20 seconds match the database's", (_w5.SECONDS_PER_QUESTION,
+          "language sql immutable as $$ select 20 $$" in _mig37), (20, True))
+    check("quiz window is Friday 6:30 PM to Sunday 11:59 PM Central",
+          [t.isoformat() for t in _w5.window("2026-11-20")],
+          ["2026-11-20T18:30:00-06:00", "2026-11-22T23:59:00-06:00"])
+    _sh37 = _w5.shuffled("sailor-a", "2026-11-20", 1)
+    check("each sailor sees all four answers once, shown A to D",
+          ([x for x, _ in _sh37], sorted(r for _, r in _sh37)), (list("ABCD"), list("ABCD")))
+    check("a refresh doesn't reshuffle", _w5.shuffled("sailor-a", "2026-11-20", 1), _sh37)
+    check("different sailors get different orders",
+          len({tuple(r for _, r in _w5.shuffled(f"s{i}", "2026-11-20", 1)) for i in range(20)}) > 5, True)
+    check("sailors can't read the answer key or graded answers (GRANT rule)",
+          "revoke all on public.w5_key from anon, authenticated;" in _mig37
+          and "revoke all on public.w5_answers from anon, authenticated;" in _mig37
+          and "grant select on public.w5_key" not in _mig37
+          and "grant select on public.w5_answers to authenticated" not in _mig37, True)
+    check("every new table has row level security on",
+          all(f"alter table public.{t} enable row level security" in _mig37
+              for t in ("w5_weeks", "w5_key", "w5_attempts", "w5_answers")), True)
+    check("Shawn's report and the winners' emails can't be run by sailors",
+          "revoke all on function public.w5_report(text) from public, anon, authenticated;" in _mig37
+          and "revoke all on function public.w5_winners_private(text) from public, anon, authenticated;" in _mig37,
+          True)
+    check("the right answers are revealed only after the week closes",
+          "join public.w5_weeks w on w.week_id = k.week_id and w.closes_at <= now()" in _mig37, True)
+    check("the clock is the database's (now()), and late answers count wrong",
+          "took := (extract(epoch from (now() - a.shown_at)) * 1000)::int;" in _mig37
+          and "is_correct = (not late) and c is not null and c = k.correct" in _mig37, True)
+    check("prize access is dashboard-only and counts as Chief",
+          "patch := patch || jsonb_build_object('comp_until', o->'comp_until');" in _mig37
+          and "when p.comp_until is not null and p.comp_until >= current_date then 'chief'" in _mig37
+          and "'comp_until', null" in _mig37, True)
+    check("the w5 sign-up code pre-fills 'Weekly Five quiz challenge'",
+          (_site.heard_from_for_src("w5"), _site.HEARD_FROM_CHOICES.get("weekly_five")),
+          ("weekly_five", "Weekly Five quiz challenge"))
+    check("the official rules page sits beside Terms and Privacy",
+          "rules" in _site.LEGAL_PAGES and "?page=rules" in _site.legal_links_md(), True)
+    _rules37 = _site.RULES_MD
+    check("the rules say 20 seconds, Friday 6:30 PM to Sunday 11:59 PM, ties by time",
+          all(t in _rules37 for t in ("20 seconds", "Friday about 6:30 PM Central",
+                                      "Sunday\n   11:59 PM Central", "shorter\n   total answering time")), True)
+    check("the rules promise no exam outcome and name no price",
+          "Advancement is never guaranteed" in _rules37 and re.search(r"\$\d", _rules37) is None, True)
+    check("the Privacy Notice covers the Weekly Five", "Weekly Five quiz" in _site.PRIVACY_MD, True)
+    check("the home tab shows the Weekly Five box first",
+          "with tab1:\n    render_w5_card()\n    trial_nudge(\"fms\")" in _app37, True)
+    check("the game screen replaces the tabs (and stops before them)",
+          _app37.index("    render_w5_page()\n    render_footer()\n    st.stop()") < _app37.index("tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["),
+          True)
+    check("the answer sent for grading is the bank's own letter, not the shown one",
+          "on_click=_w5_pick, args=(week_id, idx, real))" in _app37, True)
+    check("Facebook is now on the follow-us row (T48)",
+          dict(_site.social_links()).get("Facebook"),
+          "https://www.facebook.com/profile.php?id=61596184705519")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
