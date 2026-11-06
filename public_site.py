@@ -72,6 +72,51 @@ SRC_CODES = {
 }
 
 
+# "Follow us" links (T48, 5 Nov 2026). Shown on the welcome page under the free-trial
+# button and at the bottom of every page, so people who scan the QR code -- and
+# sailors playing the weekly quiz -- can find every account. Handles checked from
+# Shawn's screenshots (TikTok is @score.surge.app, not @scoresurgeapp). A link with
+# an empty address is hidden, so the Facebook button appears the moment its address
+# is filled in. Facebook gave the new Page no username yet (3 Nov), so its address
+# has to come from the Page's own Share -> Copy link.
+FACEBOOK_PAGE_URL = ""
+
+SOCIAL_LINKS = (
+    ("Instagram", "https://www.instagram.com/scoresurgeapp/"),
+    ("TikTok", "https://www.tiktok.com/@score.surge.app"),
+    ("Facebook", FACEBOOK_PAGE_URL),
+    ("Discord", "https://discord.gg/q3advbdPf"),
+)
+
+FOLLOW_US_LINE = "Follow Score Surge for the weekly quiz, study tips and exam news:"
+
+
+def social_links():
+    """The accounts to show, in order. Only https links with an address filled in."""
+    return [(name, url) for name, url in SOCIAL_LINKS
+            if isinstance(url, str) and url.startswith("https://")]
+
+
+def follow_us_html():
+    """One row of tap-sized buttons that wraps on a phone. Opens each in a new tab.
+
+    Plain text labels, no logos (no brand marks to keep current, and nothing that
+    could be mistaken for Navy branding).
+    """
+    import html as _html
+    pill = ("display:inline-block;margin:0 6px 8px 0;padding:8px 16px;"
+            "border:1px solid rgba(128,128,128,0.45);border-radius:999px;"
+            "text-decoration:none;color:inherit;font-weight:600;font-size:0.95rem;")
+    buttons = "".join(
+        f'<a href="{_html.escape(url, quote=True)}" target="_blank" '
+        f'rel="noopener noreferrer" style="{pill}">{_html.escape(name)}</a>'
+        for name, url in social_links()
+    )
+    return (f'<div style="margin:4px 0 4px 0">'
+            f'<div style="margin-bottom:8px">{_html.escape(FOLLOW_US_LINE)}</div>'
+            f'<div style="display:flex;flex-wrap:wrap">{buttons}</div></div>')
+
+
 def clean_email(value):
     """An email as Supabase stores it: no spaces around it, all lowercase.
 

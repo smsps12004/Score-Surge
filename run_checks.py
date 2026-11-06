@@ -68,7 +68,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 585
+EXPECTED_TOTAL = 594
 
 
 def skip(reason):
@@ -2203,6 +2203,32 @@ def main():
           "from fms_core import" in _api35 and "compute_fms(" in _api35, True)
     check("the API has no copy of the FMS chart or math",
           any(s in _api35 for s in ("FMS_RULES = {", "def compute_fms", "pma_mult")), False)
+
+    # ── 36. "Follow us" links on the welcome page and every footer (T48) ──────
+    print("\n36. FOLLOW-US SOCIAL LINKS (T48)")
+    import public_site as _site36
+    _links36 = dict(_site36.social_links())
+    _html36 = _site36.follow_us_html()
+    _app36 = open(APP, encoding="utf-8").read()
+    check("Instagram goes to @scoresurgeapp",
+          _links36.get("Instagram"), "https://www.instagram.com/scoresurgeapp/")
+    check("TikTok goes to @score.surge.app (not @scoresurgeapp)",
+          _links36.get("TikTok"), "https://www.tiktok.com/@score.surge.app")
+    check("Discord goes to the Score Surge server",
+          _links36.get("Discord"), "https://discord.gg/q3advbdPf")
+    check("Facebook is shown only once its address is filled in",
+          ("Facebook" in _links36) == bool(_site36.FACEBOOK_PAGE_URL), True)
+    check("every link is https", all(u.startswith("https://") for u in _links36.values()), True)
+    check("every button opens a new tab",
+          _html36.count('target="_blank"') == len(_links36)
+          and _html36.count('rel="noopener noreferrer"') == len(_links36), True)
+    check("no Navy name or image in the buttons",
+          "navy" in _html36.lower() or "<img" in _html36.lower(), False)
+    check("the welcome page shows them under the trial button",
+          _app36.index('key="start_free_trial"') < _app36.index("    render_follow_us()\n\n\ndef plan_features"),
+          True)
+    check("the footer on every page shows them",
+          "    st.divider()\n    render_follow_us()\n    st.caption(site.INDEPENDENCE_LINE)" in _app36, True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)

@@ -309,6 +309,33 @@ class LaunchUITests(unittest.TestCase):
     def _signup_answer(self, app):
         return [s for s in app.selectbox if s.key == 'signup_heard_from'][0]
 
+    # ── "Follow us" links (T48, 5 Nov 2026) ────────────────────────────────────
+    def _follow_rows(self, app):
+        return [m.value for m in app.markdown if 'tiktok.com/@score.surge.app' in m.value]
+
+    def test_welcome_page_shows_follow_us_links(self):
+        app = self._logged_out(google='off')
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        rows = self._follow_rows(app)
+        self.assertEqual(len(rows), 2)  # under the trial button + footer
+        self.assertIn('instagram.com/scoresurgeapp', rows[0])
+        self.assertIn('discord.gg/q3advbdPf', rows[0])
+
+    def test_follow_us_links_leave_the_link_code_alone(self):
+        app = self._logged_out(google='off')
+        app.query_params['src'] = 'card'
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state['signup_src'], 'card')
+        self.assertEqual(len(self._follow_rows(app)), 2)
+
+    def test_logged_in_footer_shows_follow_us_links(self):
+        app = build_app()
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(self._follow_rows(app)), 1)
+
     def test_link_code_prefills_the_signup_answer(self):
         app = self._logged_out(google='off')
         app.query_params['src'] = 'ig'
