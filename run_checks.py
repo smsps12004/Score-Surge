@@ -61,13 +61,14 @@ import fitz
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "app.py")
+FMS_CORE = os.path.join(HERE, "fms_core.py")
 SHEETS = os.path.join(HERE, "test-profile-sheets")
 
 PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 580
+EXPECTED_TOTAL = 585
 
 
 def skip(reason):
@@ -93,9 +94,9 @@ def load_logic():
 
     ns = {"re": re, "datetime": datetime}
     exec(slab("CYCLE = {", "# ── CONSTANTS"), ns)
-    exec(slab("FMS_RULES = {", "EXAM_MAX = 80.0"), ns)
-    ns["EXAM_MAX"] = 80.0
-    exec(slab("def pma_points", "LABEL_PATTERNS"), ns)
+    # The FMS chart and math moved to fms_core.py on 5 Nov 2026 (one copy, shared
+    # with the iPhone app's API). Section 35 proves app.py imports it, not a copy.
+    exec(open(FMS_CORE, encoding="utf-8").read(), ns)
     exec(slab("LABEL_PATTERNS = {", "def extract_text_from_upload"), ns)
     return ns
 
@@ -2183,6 +2184,25 @@ def main():
           "'tier', 'free'" in _ins34 and "'trial_start', null" in _ins34, True)
     check("the app still reads tiers if beta_until isn't in the database yet",
           '_fetch("tier, trial_start")' in open(APP, encoding="utf-8").read(), True)
+
+    # ── 35. One copy of the FMS math (iPhone app groundwork, 5 Nov 2026) ─────
+    # The website and the phone app's API must give the same FMS. That only stays
+    # true if there is exactly one copy of the chart: fms_core.py.
+    print("\n35. ONE COPY OF THE FMS MATH (website + iPhone API)")
+    _app35 = open(APP, encoding="utf-8").read()
+    _core35 = open(FMS_CORE, encoding="utf-8").read()
+    _api35 = open(os.path.join(HERE, "api", "main.py"), encoding="utf-8").read()
+    check("app.py imports the FMS math from fms_core",
+          "from fms_core import FMS_RULES, EXAM_MAX, pma_points, tir_points, compute_fms" in _app35, True)
+    check("app.py has no second copy of the FMS chart or math",
+          any(s in _app35 for s in ("FMS_RULES = {", "def compute_fms", "def pma_points",
+                                    "def tir_points", "EXAM_MAX = ")), False)
+    check("fms_core.py never touches Streamlit",
+          re.search(r"^\s*(import|from)\s+streamlit", _core35, re.M) is None, True)
+    check("the API takes its FMS from fms_core",
+          "from fms_core import" in _api35 and "compute_fms(" in _api35, True)
+    check("the API has no copy of the FMS chart or math",
+          any(s in _api35 for s in ("FMS_RULES = {", "def compute_fms", "pma_mult")), False)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
