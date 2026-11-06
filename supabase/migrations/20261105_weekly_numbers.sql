@@ -36,15 +36,14 @@ create or replace function public.weekly_numbers(p_days int default 7)
 returns table (section text, line text, value bigint)
 language sql stable security definer set search_path = public as $$
     with win as (select now() - make_interval(days => greatest(1, coalesce(p_days, 7))) as since),
-    -- Shawn's own test sign-ups use "+" addresses (name+test@...); left out of counts.
-    new_acc as (
-        select p.* from public.profiles p, win
-         where p.created_at >= win.since
-           and coalesce(p.email, '') not like '%+%@%'
-    ),
+    -- Real sailors only: Shawn's own test sign-ups use "+" addresses
+    -- (name+test@...) and are left out of every line below.
+    real as (select * from public.profiles where coalesce(email, '') not like '%+%@%'),
+    new_acc as (select r.* from real r, win where r.created_at >= win.since),
     sh as (
-        select s.user_id, s.created_at, s.source, count(*) over (partition by s.user_id, s.created_at) as n_rows
-          from public.score_history s, win
+        select s.user_id, s.created_at, s.source,
+               count(*) over (partition by s.user_id, s.created_at) as n_rows
+          from public.score_history s join real r on r.id = s.user_id, win
          where s.created_at >= win.since
     ),
     batches as (
@@ -61,26 +60,26 @@ language sql stable security definer set search_path = public as $$
       from new_acc group by signup_src
     union all
     select 'activity', 'trials started', count(*)
-      from public.profiles p, win where p.trial_start >= win.since
+      from real r, win where r.trial_start >= win.since
     union all
     select 'activity', 'placement tests finished', count(*) from batches where kind = 'placement'
     union all
     select 'activity', 'mock exams finished', count(*) from batches where kind = 'mock'
     union all
     select 'activity', 'Weekly Five entries', count(*)
-      from public.w5_attempts a, win where a.started_at >= win.since
+      from public.w5_attempts a join real r on r.id = a.user_id, win where a.started_at >= win.since
     union all
     select 'plans right now', coalesce(tier, '(none)'), count(*)
-      from public.profiles group by tier
+      from real group by tier
     union all
     select 'plans right now', 'Plank Owner beta (live)', count(*)
-      from public.profiles where beta_until >= current_date
+      from real where beta_until >= current_date
     union all
     select 'plans right now', 'Weekly Five prize (live)', count(*)
-      from public.profiles where comp_until >= current_date
+      from real where comp_until >= current_date
     union all
     select 'plans right now', 'linked to Stripe', count(*)
-      from public.profiles where stripe_customer_id is not null
+      from real where stripe_customer_id is not null
 $$;
 
 -- ── 3. Shawn's private list ──────────────────────────────────────────────────

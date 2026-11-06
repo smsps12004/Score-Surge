@@ -2351,8 +2351,9 @@ def main():
     _counts38 = _mig38[_mig38.index("create or replace function public.weekly_numbers"):_mig38.index("-- ── 3.")]
     check("the counts report never shows an email or name (email is only used to skip test sign-ups)",
           (_counts38.count("email"), "raw_user_meta_data" in _counts38), (1, False))
-    check("test sign-ups (+ addresses) are left out of the counts",
-          "coalesce(p.email, '') not like '%+%@%'" in _counts38, True)
+    check("test sign-ups (+ addresses) are left out of every count",
+          "real as (select * from public.profiles where coalesce(email, '') not like '%+%@%')" in _counts38
+          and "public.profiles" not in _counts38.replace("real as (select * from public.profiles", ""), True)
     check("the private list says which accounts look like tests",
           "coalesce(p.email, '') like '%+%@%'" in _mig38[_mig38.index("weekly_signups_private"):], True)
 

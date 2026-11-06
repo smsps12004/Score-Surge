@@ -9,7 +9,7 @@ insert into auth.users (id, email, raw_user_meta_data) values
   ('00000000-0000-0000-0000-0000000000b3','old@x.com','{}');
 insert into public.profiles (id, email, tier, trial_start, created_at, heard_from, signup_src, stripe_customer_id) values
   ('00000000-0000-0000-0000-0000000000b1','new1@x.com','trial', now() - interval '1 day', now() - interval '2 days','instagram','ig', null),
-  ('00000000-0000-0000-0000-0000000000b2','shawn+srctest@x.com','free', null, now() - interval '1 day', 'tiktok','tt', null),
+  ('00000000-0000-0000-0000-0000000000b2','shawn+srctest@x.com','trial', now() - interval '1 day', now() - interval '1 day', 'tiktok','tt', null),
   ('00000000-0000-0000-0000-0000000000b3','old@x.com','chief', null, now() - interval '30 days', null, null, 'cus_1');
 -- one placement test (3 topic rows in one insert), one labelled mock, one old unlabelled mock
 insert into public.score_history (user_id, date, topic, score, total, pct, source) values
@@ -26,7 +26,8 @@ create function pg_temp.v(s text, l text) returns bigint language sql as
 insert into results select 'new accounts leave out + test addresses', pg_temp.v('new accounts','total') = 1;
 insert into results select 'by heard_from', pg_temp.v('new accounts by "How did you hear"','instagram') = 1;
 insert into results select 'by link code', pg_temp.v('new accounts by link code','ig') = 1;
-insert into results select 'trials started', pg_temp.v('activity','trials started') = 1;
+insert into results select 'trials started (test account left out)', pg_temp.v('activity','trials started') = 1;
+insert into results select 'plans right now leave out test accounts', pg_temp.v('plans right now','trial') = 1;
 insert into results select 'placement counted once (3 rows = 1 test)', pg_temp.v('activity','placement tests finished') = 1;
 insert into results select 'mock exams: labelled + old unlabelled', pg_temp.v('activity','mock exams finished') = 2;
 insert into results select 'plans right now', pg_temp.v('plans right now','chief') = 1 and pg_temp.v('plans right now','linked to Stripe') = 1;
