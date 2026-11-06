@@ -455,7 +455,7 @@ class LaunchUITests(unittest.TestCase):
         rows = self._follow_rows(app)
         self.assertEqual(len(rows), 2)  # under the trial button + footer
         self.assertIn('instagram.com/scoresurgeapp', rows[0])
-        self.assertIn('discord.gg/q3advbdPf', rows[0])
+        self.assertIn('discord.gg/eRHKU4QKmE', rows[0])
         self.assertIn('facebook.com/profile.php?id=61596184705519', rows[0])
 
     def test_follow_us_links_leave_the_link_code_alone(self):

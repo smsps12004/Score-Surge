@@ -87,7 +87,9 @@ SOCIAL_LINKS = (
     ("Instagram", "https://www.instagram.com/scoresurgeapp/"),
     ("TikTok", "https://www.tiktok.com/@score.surge.app"),
     ("Facebook", FACEBOOK_PAGE_URL),
-    ("Discord", "https://discord.gg/q3advbdPf"),
+    # Discord: never-expiring invite made 5 Nov (the old q3advbdPf link had expired;
+    # Discord invites expire after 7 days unless set to "Never").
+    ("Discord", "https://discord.gg/eRHKU4QKmE"),
 )
 
 FOLLOW_US_LINE = "Follow Score Surge for the weekly quiz, study tips and exam news:"
