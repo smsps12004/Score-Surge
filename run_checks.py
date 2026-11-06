@@ -2217,7 +2217,7 @@ def main():
     check("TikTok goes to @score.surge.app (not @scoresurgeapp)",
           _links36.get("TikTok"), "https://www.tiktok.com/@score.surge.app")
     check("Discord goes to the Score Surge server",
-          _links36.get("Discord"), "https://discord.gg/q3advbdPf")
+          _links36.get("Discord"), "https://discord.gg/eRHKU4QKmE")
     check("Facebook is shown only once its address is filled in",
           ("Facebook" in _links36) == bool(_site36.FACEBOOK_PAGE_URL), True)
     check("every link is https", all(u.startswith("https://") for u in _links36.values()), True)
