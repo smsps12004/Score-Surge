@@ -68,7 +68,7 @@ PASS, FAIL, SKIP = [], [], []
 
 # Every check this file is supposed to run when nothing is missing. If the count
 # at the end doesn't match this, checks went missing and the run is NOT a pass.
-EXPECTED_TOTAL = 620
+EXPECTED_TOTAL = 628
 
 
 def skip(reason):
@@ -1735,7 +1735,7 @@ def main():
           _src24.index("    render_placement_section()") < _src24.index('upgrade_banner("petty_officer", "study_guide")'),
           True)
     check("placement results are saved to score_history",
-          'supabase.table("score_history").insert(' in _sect, True)
+          'save_score_history(' in _sect and '"placement")' in _sect, True)
     check("the Study Guide prompt carries the placement brief",
           "{sg_brief}" in _src24 and "placement.chief_brief(" in _src24, True)
 
@@ -2315,6 +2315,46 @@ def main():
     check("Facebook is now on the follow-us row (T48)",
           dict(_site.social_links()).get("Facebook"),
           "https://www.facebook.com/profile.php?id=61596184705519")
+
+    # ── 38. Weekly numbers (T29) and Shawn's private sign-up list (T44) ────────
+    print("\n38. WEEKLY NUMBERS (T29) + PRIVATE SIGN-UP LIST (T44)")
+    _mig38 = open(os.path.join(os.path.dirname(APP), "supabase", "migrations",
+                               "20261105_weekly_numbers.sql"), encoding="utf-8").read()
+    _app38 = open(APP, encoding="utf-8").read()
+    _ns38 = {}
+    exec(_app38[_app38.index("def save_score_history"):_app38.index("def load_score_history")], _ns38)
+    class _T38:
+        def __init__(self, fail_on_source):
+            self.fail, self.sent = fail_on_source, []
+        def table(self, name):
+            return self
+        def insert(self, rows):
+            self.sent.append(rows); self._rows = rows; return self
+        def execute(self):
+            if self.fail and any("source" in r for r in self._rows):
+                raise Exception("Could not find the 'source' column of 'score_history'")
+            return self
+    _ok38 = _T38(False); _ns38["supabase"] = _ok38
+    _ns38["save_score_history"]([{"user_id": "u", "topic": "A"}], "placement")
+    check("results are saved with their label", _ok38.sent[-1][0].get("source"), "placement")
+    _old38 = _T38(True); _ns38["supabase"] = _old38
+    _ns38["save_score_history"]([{"user_id": "u", "topic": "A"}], "mock")
+    check("a database without the label column still gets the result",
+          (len(_old38.sent), "source" in _old38.sent[-1][0]), (2, False))
+    check("placement and mock exam saves both go through the labelled save",
+          ('save_score_history(\n                [{"user_id": st.session_state.user.id, **e} for e in entries], "placement")' in _app38,
+           '[{"user_id": st.session_state.user.id, **entry}], "mock")' in _app38), (True, True))
+    check("only two labels are allowed", "check (source is null or source in ('placement', 'mock'))" in _mig38, True)
+    check("sailors can't run either report",
+          "revoke all on function public.weekly_numbers(int) from public, anon, authenticated;" in _mig38
+          and "revoke all on function public.weekly_signups_private(int) from public, anon, authenticated;" in _mig38, True)
+    _counts38 = _mig38[_mig38.index("create or replace function public.weekly_numbers"):_mig38.index("-- ── 3.")]
+    check("the counts report never shows an email or name (email is only used to skip test sign-ups)",
+          (_counts38.count("email"), "raw_user_meta_data" in _counts38), (1, False))
+    check("test sign-ups (+ addresses) are left out of the counts",
+          "coalesce(p.email, '') not like '%+%@%'" in _counts38, True)
+    check("the private list says which accounts look like tests",
+          "coalesce(p.email, '') like '%+%@%'" in _mig38[_mig38.index("weekly_signups_private"):], True)
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
