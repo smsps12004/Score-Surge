@@ -561,9 +561,17 @@ def scrub_tokens_from_url():
     st.html(_SCRUB_TOKEN_JS, unsafe_allow_javascript=True)
 
 
+def render_follow_us():
+    """Instagram / TikTok / Facebook / Discord buttons (T48). Each opens a new tab."""
+    if site.social_links():
+        st.markdown(site.follow_us_html(), unsafe_allow_html=True)
+
+
 def render_footer():
-    """The bottom of every page, logged in or not: independence line + legal links."""
+    """The bottom of every page, logged in or not: follow-us links, independence
+    line, legal links."""
     st.divider()
+    render_follow_us()
     st.caption(site.INDEPENDENCE_LINE)
     st.caption(site.legal_links_md(get_app_base_url()) +
                f" · [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})")
@@ -588,6 +596,7 @@ def render_welcome():
     st.markdown(f"**{site.TRIAL_LINE}.**")
     st.button("Start free trial", type="primary", width="stretch",
               key="start_free_trial", on_click=_open_signup_tab)
+    render_follow_us()
 
 
 def plan_features(tier: str) -> str:
