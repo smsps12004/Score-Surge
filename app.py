@@ -518,6 +518,22 @@ def refresh_my_plan():
                 f"so in 10 minutes, email {SUPPORT_EMAIL}.")
 
 
+def save_score_history(rows: list, source: str):
+    """Save score rows, labelled 'placement' or 'mock' for the weekly numbers (T29).
+
+    The label column comes from 20261105_weekly_numbers.sql. If a database doesn't
+    have it yet, the rows are saved without it rather than not at all. Raises if the
+    save itself fails, so the callers can tell the sailor (they never pretend it saved).
+    """
+    labelled = [{**r, "source": source} for r in rows]
+    try:
+        supabase.table("score_history").insert(labelled).execute()
+    except Exception as e:
+        if "source" not in str(e):
+            raise
+        supabase.table("score_history").insert(rows).execute()
+
+
 def load_score_history(user_id: str) -> list:
     try:
         result = (
@@ -4399,9 +4415,8 @@ def _save_placement_result(result: dict, paygrade: str):
     if st.session_state.user and entries:
         # Same rule as the Mock Exam: never crash over history, never pretend it saved.
         try:
-            supabase.table("score_history").insert(
-                [{"user_id": st.session_state.user.id, **e} for e in entries]
-            ).execute()
+            save_score_history(
+                [{"user_id": st.session_state.user.id, **e} for e in entries], "placement")
         except Exception as e:
             save_error = f"{type(e).__name__}: {e}"
     # Open the Study Guide on this paygrade and on their weakest topic. Both keys are
@@ -5611,9 +5626,8 @@ with tab5:
                         # either. Swallowing this meant a sailor watched their score appear,
                         # then found it gone at next login with no explanation.
                         try:
-                            supabase.table("score_history").insert(
-                                {"user_id": st.session_state.user.id, **entry}
-                            ).execute()
+                            save_score_history(
+                                [{"user_id": st.session_state.user.id, **entry}], "mock")
                         except Exception as e:
                             save_error = f"{type(e).__name__}: {e}"
 
