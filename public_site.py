@@ -13,7 +13,7 @@ Rules this file holds to:
 """
 
 SUPPORT_EMAIL = "strategicsailor@gmail.com"
-EFFECTIVE_DATE = "2 November 2026"
+EFFECTIVE_DATE = "5 November 2026"
 
 # The marketing review asked for:
 #   "Advancement exam prep for PS, YN and NC. Every practice question shows the exact
@@ -51,6 +51,7 @@ HEARD_FROM_CHOICES = {
     "google": "Google",
     "podcast": "Podcast",
     "card": "Business card / QR code",
+    "weekly_five": "Weekly Five quiz challenge",   # T47, 5 Nov 2026
     "friend": "A friend or shipmate",
     "other": "Other",
 }
@@ -69,6 +70,7 @@ SRC_CODES = {
     "dc": "discord",
     "pts": "podcast",     # "Permission to Speak Freely"
     "card": "card",       # business card QR code
+    "w5": "weekly_five",  # Weekly Five posts and leaderboard (T47, 5 Nov 2026)
 }
 
 
@@ -79,7 +81,7 @@ SRC_CODES = {
 # an empty address is hidden, so the Facebook button appears the moment its address
 # is filled in. Facebook gave the new Page no username yet (3 Nov), so its address
 # has to come from the Page's own Share -> Copy link.
-FACEBOOK_PAGE_URL = ""
+FACEBOOK_PAGE_URL = "https://www.facebook.com/profile.php?id=61596184705519"  # Score Surge App Page (read 5 Nov from Shawn's Chrome; it has no username yet)
 
 SOCIAL_LINKS = (
     ("Instagram", "https://www.instagram.com/scoresurgeapp/"),
@@ -312,6 +314,10 @@ Privacy questions and requests: {SUPPORT_EMAIL}.
   your progress and weak spots.
 - **Questions generated for you:** practice questions the AI writes for you are saved
   so they can be checked and, if they pass, added to the question bank.
+- **The Weekly Five quiz:** if you play, we keep your answers, how long each took,
+  your score and, only if you choose to show it, the leaderboard name you type. Other
+  players see that name and your score, nothing else. We use your email only to run
+  the contest and deliver a prize.
 - **Challenges:** if you dispute a question, we keep your explanation, the question
   and an AI's first opinion so the error can be investigated.
 - **Usage counts:** how many AI generations and downloads you've used this month.
@@ -373,10 +379,61 @@ Nothing in this policy limits any right you have that cannot be waived under
 applicable law.
 """
 
+# The Weekly Five official rules (T47, 5 Nov 2026). From Marketing's draft (the last
+# section of the Weekly Five plan doc), with "How to enter" moved into the app's timed
+# quiz (T49). Plain English, not legal advice: add it to the lawyer review planned for
+# Terms and Privacy (launch gate 4). Times and numbers must match weekly_five.py and
+# the database (20 s a question, Friday 6:30 PM to Sunday 11:59 PM Central).
+RULES_MD = f"""
+# Weekly Five Rules
+
+The official rules for the Weekly Five quiz challenge.
+
+**Effective {EFFECTIVE_DATE}**
+
+1. **Sponsor:** Strategic Solutions LLC, Illinois, maker of Score Surge.
+   Contact: {SUPPORT_EMAIL}.
+2. **Not affiliated:** The Weekly Five is not sponsored, endorsed or run by
+   Instagram, Facebook, TikTok, the U.S. Navy or DoD.
+3. **Who can enter:** Anyone 18 or older living in the United States, including
+   service members with an APO/FPO address. Void where prohibited.
+4. **How to enter:** Free. Log in to Score Surge (a free account works) and play that
+   week's 5-question Weekly Five. One try per person per week; extra or shared
+   accounts are disqualified. No purchase needed, and buying a plan doesn't help you
+   win.
+5. **The clock:** Each question has 20 seconds, timed by our server, starting when
+   the question appears. Leaving or refreshing the page doesn't stop the clock. An
+   answer that arrives after the time is up, or no answer, counts as wrong. The timer
+   makes looking answers up hard; it can't make it impossible, so play it straight.
+6. **When:** Each quiz opens Friday about 6:30 PM Central and closes Sunday
+   11:59 PM Central.
+7. **How the winner is picked:** Most correct answers wins. A tie goes to the shorter
+   total answering time, then to whoever finished first. This is a contest of skill,
+   not a random drawing.
+8. **Answers:** The right answers and the exact manual text behind them are shown
+   after the quiz closes, so nobody can pass them along mid-week.
+9. **Prize:** 30 days of the Score Surge Chief plan (worth one month of Chief at
+   the price shown on the welcome page). Requires a free Score Surge account. No cash value, not transferable. If the winner already has
+   Chief free through a beta, the 30 days start when that ends.
+10. **Getting the prize:** We email the winner within 3 days. If they don't reply
+    within 7 days, the next-highest score wins.
+11. **Mistakes in a question:** If a question turns out to be wrong, it's removed for
+    everyone and the week is re-scored.
+12. **Your information:** We use your email only to run the contest and deliver the
+    prize. Your leaderboard name appears only if you say yes; otherwise you show as
+    "Anonymous sailor". See the [Privacy Notice](?page=privacy).
+13. **Your job's rules:** You are responsible for following any rules from your
+    employer or command about accepting prizes.
+14. **Results:** Winning says nothing about how you will do on any Navy exam.
+    Advancement is never guaranteed.
+"""
+
+
 LEGAL_PAGES = {
     "terms": ("Terms of Use", TERMS_MD),
     "privacy": ("Privacy Notice", PRIVACY_MD),
     "refunds": ("Refund Policy", REFUNDS_MD),
+    "rules": ("Weekly Five Rules", RULES_MD),
 }
 
 
@@ -450,3 +507,11 @@ def beta_banner_text(beta_until):
             f"{until.day} {until:%B %Y}. No card on file. Tell us what's wrong or "
             f"missing: {SUPPORT_EMAIL}")
 
+
+
+def comp_banner_text(comp_until):
+    """'Weekly Five prize: Chief access, free, through 20 December 2026.' (T47)"""
+    import datetime
+    until = datetime.date.fromisoformat(str(comp_until)[:10])
+    return (f"🏆 **Weekly Five prize:** Chief access, free, through "
+            f"{until.day} {until:%B %Y}. No card on file.")
